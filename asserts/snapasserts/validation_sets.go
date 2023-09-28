@@ -189,6 +189,22 @@ type ValidationSets struct {
 	snaps map[string]*snapContraints
 }
 
+// Revisions returns the set of snap revisions that is enforced by the
+// validation sets that ValidationSets manages. ValidationSets.Conflict should
+// be checked before calling this method.
+func (v *ValidationSets) Revisions() map[string]snap.Revision {
+	snapNameToRevision := make(map[string]snap.Revision, len(v.snaps))
+	for _, sn := range v.snaps {
+		for revision := range sn.revisions {
+			if revision == invalidPresRevision {
+				continue
+			}
+			snapNameToRevision[sn.name] = revision
+		}
+	}
+	return snapNameToRevision
+}
+
 const presConflict asserts.Presence = "conflict"
 
 var unspecifiedRevision = snap.R(0)
@@ -590,6 +606,16 @@ func (v *ValidationSets) CheckPresenceRequired(snapRef naming.SnapRef) ([]Valida
 
 	sort.Sort(ValidationSetKeySlice(keys))
 	return keys, snapRev, nil
+}
+
+// IsPresenceInvalid returns true if a snap has presence=invalid in any of the
+// validation sets associated with this type.
+func (v *ValidationSets) IsPresenceInvalid(snapRef naming.SnapRef) bool {
+	cstrs := v.constraintsForSnap(snapRef)
+	if cstrs == nil {
+		return false
+	}
+	return cstrs.presence == asserts.PresenceInvalid
 }
 
 // CheckPresenceInvalid returns the list of all validation sets that declare
