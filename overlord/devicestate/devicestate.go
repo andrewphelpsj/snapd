@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/snapcore/snapd/asserts"
+	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/boot"
 	"github.com/snapcore/snapd/gadget"
 	"github.com/snapcore/snapd/i18n"
@@ -387,6 +388,30 @@ func notInstalled(st *state.State, name string) (bool, error) {
 	return false, err
 }
 
+func installedSnapRevisionChanged(st *state.State, modelSnapName string, newRevision snap.Revision) (bool, error) {
+	if newRevision == snap.R(0) {
+		return false, nil
+	}
+
+	var ss snapstate.SnapState
+	if err := snapstate.Get(st, modelSnapName, &ss); err != nil {
+		// this is unexpected as we know the snap exists
+		return false, err
+	}
+
+	if ss.Current.Local() {
+		// currently installed snap has a local revision, since it's
+		// unasserted we cannot say whether it needs a change or not
+		return false, nil
+	}
+
+	if ss.Current != newRevision {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func installedSnapChannelChanged(st *state.State, modelSnapName, declaredChannel string) (changed bool, err error) {
 	if declaredChannel == "" {
 		return false, nil
@@ -429,6 +454,7 @@ type modelSnapsForRemodel struct {
 	new              *asserts.Model
 	newSnap          string
 	newModelSnap     *asserts.ModelSnap
+	newSnapRevision  snap.Revision
 }
 
 func (ms *modelSnapsForRemodel) canHaveUC18PinnedTrack() bool {
@@ -446,7 +472,7 @@ type pathSideInfo struct {
 }
 
 func (ro *remodelVariant) UpdateWithDeviceContext(st *state.State,
-	pathSI *pathSideInfo, snapName, channel string,
+	pathSI *pathSideInfo, snapName, channel string, revision snap.Revision,
 	userID int, snapStateFlags snapstate.Flags,
 	deviceCtx snapstate.DeviceContext, fromChange string) (*state.TaskSet, error) {
 	logger.Debugf("snap %s track changed", snapName)
@@ -454,23 +480,29 @@ func (ro *remodelVariant) UpdateWithDeviceContext(st *state.State,
 		if pathSI == nil {
 			return nil, fmt.Errorf("no snap file provided for %q (track changed)", snapName)
 		}
+		if !revision.Unset() && pathSI.localSi.Revision != revision {
+			return nil, fmt.Errorf("cannot install local snap of different revision: %v != %v", revision, pathSI.localSi.Revision)
+		}
 		return snapstateUpdatePathWithDeviceContext(st, pathSI.localSi, pathSI.path, snapName,
-			&snapstate.RevisionOptions{Channel: channel},
+			&snapstate.RevisionOptions{Channel: channel, Revision: revision},
 			userID, snapStateFlags, deviceCtx, fromChange)
 	}
 	return snapstateUpdateWithDeviceContext(st, snapName,
-		&snapstate.RevisionOptions{Channel: channel},
+		&snapstate.RevisionOptions{Channel: channel, Revision: revision},
 		userID, snapStateFlags, deviceCtx, fromChange)
 }
 
 func (ro *remodelVariant) InstallWithDeviceContext(ctx context.Context, st *state.State,
-	pathSI *pathSideInfo, snapName, channel string, userID int,
+	pathSI *pathSideInfo, snapName, channel string, revision snap.Revision, userID int,
 	snapStateFlags snapstate.Flags, deviceCtx snapstate.DeviceContext,
 	fromChange string) (*state.TaskSet, error) {
 	logger.Debugf("snap %s needs install", snapName)
 	if ro.localSnapsRequired {
 		if pathSI == nil {
 			return nil, fmt.Errorf("no snap file provided for %q", snapName)
+		}
+		if !revision.Unset() && pathSI.localSi.Revision != revision {
+			return nil, fmt.Errorf("cannot install local snap of different revision: %v != %v", revision, pathSI.localSi.Revision)
 		}
 		return snapstateInstallPathWithDeviceContext(st, pathSI.localSi, pathSI.path, snapName,
 			&snapstate.RevisionOptions{Channel: channel},
@@ -495,23 +527,31 @@ func remodelEssentialSnapTasks(ctx context.Context, st *state.State, pathSI *pat
 
 	if ms.currentSnap == ms.newSnap {
 		// new model uses the same base, kernel or gadget snap
-		changed := false
+		channelChanged := false
 		if ms.new.Grade() != asserts.ModelGradeUnset {
 			// UC20 models can specify default channel for all snaps
 			// including base, kernel and gadget
-			changed, err = installedSnapChannelChanged(st, ms.newSnap, newModelSnapChannel)
+			channelChanged, err = installedSnapChannelChanged(st, ms.newSnap, newModelSnapChannel)
 			if err != nil {
 				return nil, err
 			}
 		} else if ms.canHaveUC18PinnedTrack() {
 			// UC18 models could only specify track for the kernel
 			// and gadget snaps
-			changed = ms.currentModelSnap.PinnedTrack != ms.newModelSnap.PinnedTrack
+			channelChanged = ms.currentModelSnap.PinnedTrack != ms.newModelSnap.PinnedTrack
 		}
-		if changed {
-			// new model specifies the same snap, but with a new channel
+
+		newRevision, err := installedSnapRevisionChanged(st, ms.newSnap, ms.newSnapRevision)
+		if err != nil {
+			return nil, err
+		}
+
+		if channelChanged || newRevision {
+
+			// new model specifies the same snap, but with a new channel or
+			// different revision than the existing one
 			return remodelVar.UpdateWithDeviceContext(st,
-				pathSI, ms.newSnap, newModelSnapChannel, userID,
+				pathSI, ms.newSnap, newModelSnapChannel, ms.newSnapRevision, userID,
 				snapstate.Flags{NoReRefresh: true}, deviceCtx, fromChange)
 		}
 		return nil, nil
@@ -525,27 +565,32 @@ func remodelEssentialSnapTasks(ctx context.Context, st *state.State, pathSI *pat
 	if needsInstall {
 		// which needs to be installed
 		return remodelVar.InstallWithDeviceContext(ctx, st,
-			pathSI, ms.newSnap, newModelSnapChannel, userID,
+			pathSI, ms.newSnap, newModelSnapChannel, ms.newSnapRevision, userID,
 			snapstate.Flags{}, deviceCtx, fromChange)
 	}
 
 	// in UC20+ models, the model can specify a channel for each
 	// snap, thus making it possible to change already installed
 	// kernel or base snaps
-	changed := false
+	channelChanged := false
 	if ms.new.Grade() != asserts.ModelGradeUnset {
-		changed, err = installedSnapChannelChanged(st, ms.newModelSnap.SnapName(), newModelSnapChannel)
+		channelChanged, err = installedSnapChannelChanged(st, ms.newModelSnap.SnapName(), newModelSnapChannel)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	if !changed {
+	revisionChanged, err := installedSnapRevisionChanged(st, ms.newSnap, ms.newSnapRevision)
+	if err != nil {
+		return nil, err
+	}
+
+	if !channelChanged && !revisionChanged {
 		return addExistingSnapTasks(st, ms.newSnap, fromChange)
 	}
 
 	ts, err := remodelVar.UpdateWithDeviceContext(st,
-		pathSI, ms.newSnap, newModelSnapChannel, userID,
+		pathSI, ms.newSnap, newModelSnapChannel, ms.newSnapRevision, userID,
 		snapstate.Flags{NoReRefresh: true}, deviceCtx, fromChange)
 	if err != nil {
 		return nil, err
@@ -620,6 +665,102 @@ func sideInfoAndPathFromID(sis []*snap.SideInfo, paths []string, id string) *pat
 	return nil
 }
 
+func modelValidationSetsToAsserts(m *asserts.Model, db asserts.RODatabase) ([]*asserts.ValidationSet, error) {
+	vsAsserts := make([]*asserts.ValidationSet, 0, len(m.ValidationSets()))
+	for _, vs := range m.ValidationSets() {
+		atSeq := vs.AtSequence()
+
+		a, err := resolveValidationSetAssertion(atSeq, db)
+		if err != nil {
+			return nil, fmt.Errorf("internal error: cannot resolve validation-set: %v", err)
+		}
+
+		vsAsserts = append(vsAsserts, a.(*asserts.ValidationSet))
+	}
+	return vsAsserts, nil
+}
+
+func resolveValidationSetAssertion(seq *asserts.AtSequence, db asserts.RODatabase) (asserts.Assertion, error) {
+	if seq.Sequence <= 0 {
+		hdrs, err := asserts.HeadersFromSequenceKey(seq.Type, seq.SequenceKey)
+		if err != nil {
+			return nil, err
+		}
+		return db.FindSequence(seq.Type, hdrs, -1, seq.Type.MaxSupportedFormat())
+	}
+	return seq.Resolve(db.Find)
+}
+
+func validationSetsFromModel(model *asserts.Model, st *state.State, store snapstate.StoreService, offline bool) (*snapasserts.ValidationSets, error) {
+	save := func(a asserts.Assertion) error {
+		return assertstate.Add(st, a)
+	}
+
+	errOfflineRemodel := errors.New("cannot fetch assertions during offline remodel")
+
+	retrieve := func(ref *asserts.Ref) (asserts.Assertion, error) {
+		if offline {
+			return nil, errOfflineRemodel
+		}
+		return store.Assertion(ref.Type, ref.PrimaryKey, nil)
+	}
+
+	retrieveSeq := func(ref *asserts.AtSequence) (asserts.Assertion, error) {
+		if offline {
+			return nil, errOfflineRemodel
+		}
+		return store.SeqFormingAssertion(ref.Type, ref.SequenceKey, ref.Sequence, nil)
+	}
+
+	db := assertstate.DB(st)
+
+	fetcher := asserts.NewSequenceFormingFetcher(db, retrieve, retrieveSeq, save)
+
+	for _, vs := range model.ValidationSets() {
+		if err := fetcher.FetchSequence(vs.AtSequence()); err != nil {
+			return nil, err
+		}
+	}
+
+	// TODO: is am confident that none of this is right, as it is clobbered
+	// together from other parts of the codebase.
+	validationSets, err := modelValidationSetsToAsserts(model, db)
+	if err != nil {
+		return nil, err
+	}
+
+	vSets := snapasserts.NewValidationSets()
+	for _, vs := range validationSets {
+		vSets.Add(vs)
+	}
+
+	return vSets, nil
+}
+
+func checkForInvalidSnapsInModel(model *asserts.Model, vSets *snapasserts.ValidationSets) error {
+	checkSnapValidInValidationSet := func(snapRef naming.SnapRef) error {
+		if vSets.IsPresenceInvalid(snapRef) {
+			return fmt.Errorf("snap presence is invalid: %s", snapRef.SnapName())
+		}
+
+		return nil
+	}
+
+	for _, sn := range model.EssentialSnaps() {
+		if err := checkSnapValidInValidationSet(sn); err != nil {
+			return err
+		}
+	}
+
+	for _, sn := range model.SnapsWithoutEssential() {
+		if err := checkSnapValidInValidationSet(sn); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Model,
 	localSnaps []*snap.SideInfo, paths []string,
 	deviceCtx snapstate.DeviceContext, fromChange string) ([]*state.TaskSet, error) {
@@ -641,6 +782,24 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		return nil
 	}
 
+	vSets, err := validationSetsFromModel(new, st, deviceCtx.Store(), len(localSnaps) > 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := vSets.Conflict(); err != nil {
+		return nil, err
+	}
+
+	if err := checkForInvalidSnapsInModel(new, vSets); err != nil {
+		return nil, err
+	}
+
+	// any snap that has a required revision will be in this map, if the snap's
+	// version is unconstrained, then we'll get a default-initialized revision
+	// from the map
+	snapRevisions := vSets.Revisions()
+
 	// If local snaps are provided, all needed snaps must be locally
 	// provided. We check this flag whenever a snap installation/update is
 	// found needed for the remodel.
@@ -654,6 +813,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		new:              new,
 		newSnap:          new.Kernel(),
 		newModelSnap:     new.KernelSnap(),
+		newSnapRevision:  snapRevisions[new.Kernel()],
 	}
 	kernPathSi := sideInfoAndPathFromID(localSnaps, paths, new.KernelSnap().SnapID)
 	ts, err := remodelEssentialSnapTasks(ctx, st, kernPathSi, kms, remodelVar, deviceCtx, fromChange)
@@ -671,6 +831,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		new:              new,
 		newSnap:          new.Base(),
 		newModelSnap:     new.BaseSnap(),
+		newSnapRevision:  snapRevisions[new.Base()],
 	}
 	var basePathSi *pathSideInfo
 	// base might not set on UC16 models
@@ -692,6 +853,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		new:              new,
 		newSnap:          new.Gadget(),
 		newModelSnap:     new.GadgetSnap(),
+		newSnapRevision:  snapRevisions[new.Gadget()],
 	}
 	gadgetPathSi := sideInfoAndPathFromID(localSnaps, paths, new.GadgetSnap().SnapID)
 	ts, err = remodelEssentialSnapTasks(ctx, st, gadgetPathSi, gms, remodelVar, deviceCtx, fromChange)
@@ -744,7 +906,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 
 		if needsInstall {
 			ts, err := remodelVar.InstallWithDeviceContext(ctx, st,
-				snapPathSi, modelSnap.SnapName(), newModelSnapChannel,
+				snapPathSi, modelSnap.SnapName(), newModelSnapChannel, snapRevisions[modelSnap.SnapName()],
 				userID, snapstate.Flags{Required: true}, deviceCtx,
 				fromChange)
 			if err != nil {
@@ -761,7 +923,15 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 
 		// the snap is already installed and has its default channel declared in
 		// the model, but the local install may be tracking a different channel
-		changed, err := installedSnapChannelChanged(st, modelSnap.SnapName(), newModelSnapChannel)
+		channelChanged, err := installedSnapChannelChanged(st, modelSnap.SnapName(), newModelSnapChannel)
+		if err != nil {
+			return nil, err
+		}
+
+		// the validation-sets might require a specific version of the snap
+		revisionChanged, err := installedSnapRevisionChanged(
+			st, modelSnap.SnapName(), snapRevisions[modelSnap.SnapName()],
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -772,10 +942,10 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		// accounted for
 		// 2. the snap channel or revision is not being modified so grab
 		// whatever is required for the current revision
-		if changed {
+		if channelChanged || revisionChanged {
 			ts, err := remodelVar.UpdateWithDeviceContext(st,
 				snapPathSi, modelSnap.SnapName(),
-				newModelSnapChannel, userID,
+				newModelSnapChannel, snapRevisions[modelSnap.SnapName()], userID,
 				snapstate.Flags{NoReRefresh: true},
 				deviceCtx, fromChange)
 			if err != nil {
