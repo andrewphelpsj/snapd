@@ -189,20 +189,46 @@ type ValidationSets struct {
 	snaps map[string]*snapContraints
 }
 
-// Revisions returns the set of snap revisions that is enforced by the
-// validation sets that ValidationSets manages. ValidationSets.Conflict should
-// be checked before calling this method.
-func (v *ValidationSets) Revisions() map[string]snap.Revision {
-	snapNameToRevision := make(map[string]snap.Revision, len(v.snaps))
-	for _, sn := range v.snaps {
-		for revision := range sn.revisions {
-			if revision == invalidPresRevision {
+func (v *ValidationSets) Revisions() (map[string]snap.Revision, error) {
+	revisions := make(map[string]snap.Revision, len(v.snaps))
+	for name, constraints := range v.snaps {
+		for rev := range constraints.revisions {
+			switch rev {
+			case invalidPresRevision:
+				return nil, fmt.Errorf("invalid revision for snap %q", name)
+			case unspecifiedRevision:
 				continue
+			default:
+				revisions[name] = rev
 			}
-			snapNameToRevision[sn.name] = revision
 		}
 	}
-	return snapNameToRevision
+	return revisions, nil
+}
+
+// RevisionConstraint gets the revision of a snap that will respect this
+// validation set's set of rules. If the validation set is in conflict for that
+// snap, then invalidPresRevision and an error will be returned. If there isn't
+// a revision constraint for the snap, then unspecifiedRevision will be
+// returned.
+func (v *ValidationSets) RevisionConstraint(snapName string) (snap.Revision, error) {
+	constraints, ok := v.snaps[snapName]
+	if !ok {
+		return snap.R(0), nil
+	}
+
+	for rev := range constraints.revisions {
+		switch rev {
+		case invalidPresRevision:
+			return invalidPresRevision, fmt.Errorf("invalid revision for snap %q", snapName)
+		case unspecifiedRevision:
+			continue
+		default:
+			return rev, nil
+		}
+	}
+
+	return snap.R(0), nil
 }
 
 const presConflict asserts.Presence = "conflict"
@@ -679,4 +705,64 @@ func ParseValidationSet(arg string) (account, name string, seq int, err error) {
 	}
 
 	return account, name, seq, nil
+}
+
+func ValidatedEssentialSnaps(model *asserts.Model, sets *ValidationSets) ([]ValidatedSnap, error) {
+	snaps := make([]ValidatedSnap, 0, len(model.EssentialSnaps()))
+
+	for _, sn := range model.EssentialSnaps() {
+		rev, err := sets.RevisionConstraint(sn.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		snaps = append(snaps, ValidatedSnap{
+			ModelSnap: sn,
+			Revision:  rev,
+			Name:      sn.Name,
+		})
+	}
+
+	if model.BaseSnap() == nil {
+		rev, err := sets.RevisionConstraint(model.Base())
+		if err != nil {
+			return nil, err
+		}
+
+		snaps = append(snaps, ValidatedSnap{
+			Revision: rev,
+			Name:     model.Base(),
+		})
+	}
+
+	return snaps, nil
+}
+
+func ValidatedUnessentialSnaps(model *asserts.Model, sets *ValidationSets) ([]ValidatedSnap, error) {
+	snaps := make([]ValidatedSnap, 0, len(model.EssentialSnaps()))
+	for _, sn := range model.SnapsWithoutEssential() {
+		rev, err := sets.RevisionConstraint(sn.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		snaps = append(snaps, ValidatedSnap{
+			ModelSnap: sn,
+			Revision:  rev,
+			Name:      sn.Name,
+		})
+	}
+
+	return snaps, nil
+}
+
+type ValidatedSnap struct {
+	// Name is the name of the snap.
+	Name string
+	// Revision is the revision that the snap must use to verify against the
+	// validation sets in the model.
+	Revision snap.Revision
+	// ModelSnap is a pointer to the snap from the model. This may be nil in the
+	// case that the ValidatedSnap represents the base snap from a UC16 system.
+	ModelSnap *asserts.ModelSnap
 }

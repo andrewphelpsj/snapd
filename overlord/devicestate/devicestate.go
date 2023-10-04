@@ -428,8 +428,8 @@ func installedSnapChannelChanged(st *state.State, modelSnapName, declaredChannel
 	return false, nil
 }
 
-func modelSnapChannelFromDefaultOrPinnedTrack(new *asserts.Model, s *asserts.ModelSnap) (string, error) {
-	if new.Grade() == asserts.ModelGradeUnset {
+func modelSnapChannelFromDefaultOrPinnedTrack(model *asserts.Model, s *asserts.ModelSnap) (string, error) {
+	if model.Grade() == asserts.ModelGradeUnset {
 		if s == nil {
 			// it was possible to not specify the base snap in UC16
 			return "", nil
@@ -757,13 +757,152 @@ func checkForInvalidSnapsInModel(model *asserts.Model, vSets *snapasserts.Valida
 	return nil
 }
 
+type EssentialSnapAction struct {
+	SnapActionSnap
+	NeedsInstall bool
+	NeedsUpdate  bool
+}
+
+type SnapActionSnap struct {
+	Name     string
+	Type     string
+	Channel  string
+	Revision snap.Revision
+}
+
+func EssentialSnapActions(st *state.State, current, newModel *asserts.Model) ([]EssentialSnapAction, error) {
+	validations, err := validationSetsFromModel(newModel, st)
+	if err != nil {
+		return nil, err
+	}
+
+	revisions, err := validations.Revisions()
+	if err != nil {
+		return nil, err
+	}
+
+	type essentialSnap struct {
+		snapName    string
+		snapType    string
+		snapChannel string
+	}
+
+	currentSnaps := make(map[string]essentialSnap, len(current.EssentialSnaps()))
+	for _, sn := range newModel.EssentialSnaps() {
+		currentSnaps[sn.SnapType] = essentialSnap{
+			snapName: sn.Name,
+		}
+	}
+
+	// might not be present on UC16 systems
+	if current.BaseSnap() == nil {
+		currentSnaps["base"] = essentialSnap{
+			snapName: current.Base(),
+		}
+	}
+
+	newEssentialSnapAction := func(currentSnap, newSnap SnapActionSnap) (EssentialSnapAction, error) {
+		newModelSnapChannel, err := modelSnapChannelFromDefaultOrPinnedTrack(newModel, newSnap)
+		if err != nil {
+			return EssentialSnapAction{}, err
+		}
+
+		needsInstall, err := notInstalled(st, newSnap.Name)
+		if err != nil {
+			return EssentialSnapAction{}, err
+		}
+
+		if needsInstall {
+			return EssentialSnapAction{
+				NeedsInstall:   true,
+				SnapActionSnap: newSnap,
+			}, nil
+		}
+
+		revisionChanged, err := installedSnapRevisionChanged(st, newSnap.Name, newSnapRevision)
+		if err != nil {
+			return EssentialSnapAction{}, err
+		}
+
+		if revisionChanged {
+			return EssentialSnapAction{
+				NeedsUpdate:    true,
+				SnapActionSnap: snapActionSnap,
+			}, nil
+		}
+
+		// handle UC20 or greater
+		if newModel.Grade() != asserts.ModelGradeUnset {
+			changed, err := installedSnapChannelChanged(st, newSnap.Name, newModelSnapChannel)
+			if err != nil {
+				return EssentialSnapAction{}, err
+			}
+
+			if changed {
+				return EssentialSnapAction{
+					NeedsUpdate:    true,
+					SnapActionSnap: snapActionSnap,
+				}, nil
+			}
+		}
+
+		// rest will handle UC18
+		if newSnap.SnapType == "kernel" || newSnap.SnapType == "gadget" { // UC18
+			if currentSnap.PinnedTrack != newSnap.PinnedTrack {
+				return EssentialSnapAction{
+					NeedsUpdate:    true,
+					SnapActionSnap: snapActionSnap,
+				}, nil
+			}
+		}
+	}
+
+	var actions []EssentialSnapAction
+	for _, sn := range newModel.EssentialSnaps() {
+		action, err := newEssentialSnapAction(sn)
+		if err != nil {
+			return nil, fmt.Errorf("cannot create action for new snap: %w", err)
+		}
+		actions = append(actions, action)
+	}
+
+	return actions, nil
+}
+
+func essentialSnapsForRemodel(current, newModel *asserts.Model, revisions map[string]snap.Revision) []modelSnapsForRemodel {
+	return []modelSnapsForRemodel{
+		{
+			currentSnap:      current.Kernel(),
+			currentModelSnap: current.KernelSnap(),
+			new:              newModel,
+			newSnap:          newModel.Kernel(),
+			newModelSnap:     newModel.KernelSnap(),
+			newSnapRevision:  revisions[newModel.Kernel()],
+		},
+		{
+			currentSnap:      current.Base(),
+			currentModelSnap: current.BaseSnap(),
+			new:              newModel,
+			newSnap:          newModel.Base(),
+			newModelSnap:     newModel.BaseSnap(),
+			newSnapRevision:  revisions[newModel.Base()],
+		},
+		{
+			currentSnap:      current.Gadget(),
+			currentModelSnap: current.GadgetSnap(),
+			new:              newModel,
+			newSnap:          newModel.Gadget(),
+			newModelSnap:     newModel.GadgetSnap(),
+			newSnapRevision:  revisions[newModel.Gadget()],
+		},
+	}
+}
+
 func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Model,
 	localSnaps []*snap.SideInfo, paths []string,
 	deviceCtx snapstate.DeviceContext, fromChange string) ([]*state.TaskSet, error) {
 
 	userID := 0
-	var tss []*state.TaskSet
-
 	snapsAccountedFor := make(map[string]bool)
 	neededSnaps := make(map[string]bool)
 
@@ -791,78 +930,45 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		return nil, err
 	}
 
-	// any snap that has a required revision will be in this map, if the snap's
-	// version is unconstrained, then we'll get a default-initialized revision
-	// from the map
-	snapRevisions := vSets.Revisions()
-
 	// If local snaps are provided, all needed snaps must be locally
 	// provided. We check this flag whenever a snap installation/update is
 	// found needed for the remodel.
 	localSnapsRequired := len(localSnaps) > 0
 	remodelVar := remodelVariant{localSnapsRequired: localSnapsRequired}
 
-	// kernel
-	kms := modelSnapsForRemodel{
-		currentSnap:      current.Kernel(),
-		currentModelSnap: current.KernelSnap(),
-		new:              new,
-		newSnap:          new.Kernel(),
-		newModelSnap:     new.KernelSnap(),
-		newSnapRevision:  snapRevisions[new.Kernel()],
-	}
-	kernPathSi := sideInfoAndPathFromID(localSnaps, paths, new.KernelSnap().SnapID)
-	ts, err := remodelEssentialSnapTasks(ctx, st, kernPathSi, kms, remodelVar, deviceCtx, fromChange)
+	snapRevisions, err := vSets.Revisions()
 	if err != nil {
 		return nil, err
 	}
-	if ts != nil {
-		tss = append(tss, ts)
-	}
-	snapsAccountedFor[new.Kernel()] = true
-	// base
-	bms := modelSnapsForRemodel{
-		currentSnap:      current.Base(),
-		currentModelSnap: current.BaseSnap(),
-		new:              new,
-		newSnap:          new.Base(),
-		newModelSnap:     new.BaseSnap(),
-		newSnapRevision:  snapRevisions[new.Base()],
-	}
-	var basePathSi *pathSideInfo
-	// base might not set on UC16 models
-	if new.BaseSnap() != nil {
-		basePathSi = sideInfoAndPathFromID(localSnaps, paths, new.BaseSnap().SnapID)
-	}
-	ts, err = remodelEssentialSnapTasks(ctx, st, basePathSi, bms, remodelVar, deviceCtx, fromChange)
-	if err != nil {
-		return nil, err
-	}
-	if ts != nil {
-		tss = append(tss, ts)
-	}
-	snapsAccountedFor[new.Base()] = true
-	// gadget
-	gms := modelSnapsForRemodel{
-		currentSnap:      current.Gadget(),
-		currentModelSnap: current.GadgetSnap(),
-		new:              new,
-		newSnap:          new.Gadget(),
-		newModelSnap:     new.GadgetSnap(),
-		newSnapRevision:  snapRevisions[new.Gadget()],
-	}
-	gadgetPathSi := sideInfoAndPathFromID(localSnaps, paths, new.GadgetSnap().SnapID)
-	ts, err = remodelEssentialSnapTasks(ctx, st, gadgetPathSi, gms, remodelVar, deviceCtx, fromChange)
-	if err != nil {
-		return nil, err
-	}
-	if ts != nil {
-		tss = append(tss, ts)
-		if err := updateNeededSnapsFromTs(ts); err != nil {
+
+	var tss []*state.TaskSet
+
+	for _, sn := range essentialSnapsForRemodel(current, new, snapRevisions) {
+		snapsAccountedFor[sn.newSnap] = true
+
+		var pathSI *pathSideInfo
+
+		// this might not set for the base snap on UC16 models
+		if sn.newModelSnap != nil {
+			pathSI = sideInfoAndPathFromID(localSnaps, paths, sn.newModelSnap.SnapID)
+		}
+
+		ts, err := remodelEssentialSnapTasks(ctx, st, pathSI, sn, remodelVar, deviceCtx, fromChange)
+		if err != nil {
 			return nil, err
 		}
+
+		if ts != nil {
+			tss = append(tss, ts)
+
+			// only prereqs for gadget snaps are considered for essential snaps
+			if sn.newModelSnap.SnapType == "gadget" {
+				if err := updateNeededSnapsFromTs(ts); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
-	snapsAccountedFor[new.Gadget()] = true
 
 	// go through all the model snaps, see if there are new required snaps
 	// or a track for existing ones needs to be updated
