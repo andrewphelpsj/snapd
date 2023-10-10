@@ -739,7 +739,7 @@ func validationSetsFromModel(model *asserts.Model, st *state.State, store snapst
 
 func checkForInvalidSnapsInModel(model *asserts.Model, vSets *snapasserts.ValidationSets) error {
 	checkSnapValidInValidationSet := func(snapRef naming.SnapRef) error {
-		if vSets.IsPresenceInvalid(snapRef) {
+		if !vSets.CanBePresent(snapRef) {
 			return fmt.Errorf("snap presence is invalid: %s", snapRef.SnapName())
 		}
 
