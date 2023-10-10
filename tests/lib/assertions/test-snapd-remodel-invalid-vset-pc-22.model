@@ -1,19 +1,21 @@
 type: model
-authority-id: test-snapd
+authority-id: BhgbYoDtThegqVkEU7oiZP8GQwCoUIxz
 series: 16
-brand-id: test-snapd
-model: test-remodel-invalid-snap
+brand-id: BhgbYoDtThegqVkEU7oiZP8GQwCoUIxz
+model: my-model
 architecture: amd64
 base: core22
 grade: dangerous
+serial-authority:
+  - generic
 snaps:
   -
-    default-channel: 22/stable
-    id: bfwFXAeMCr9x5jt0WYhCe3rT5ueri0oE
-    name: test-snapd-remodel-pc
+    default-channel: 22/edge
+    id: UqFziVZDHLSyO3TqSWgNBoAdHbLI4dAH
+    name: pc
     type: gadget
   -
-    default-channel: 22/stable
+    default-channel: 22/edge
     id: pYVQrBcKmBa0mZ4CCN7ExT6jH8rY1hza
     name: pc-kernel
     type: kernel
@@ -32,22 +34,20 @@ snaps:
     id: buPKUD3TKqCOgLEjjHx5kSiCpIs5cMuQ
     name: hello-world
     type: app
-store: CQvkdMjgbapk821Po2cF
-system-user-authority: *
-timestamp: 2023-10-10T19:21:39+00:00
+timestamp: 2023-10-10T22:08:34+00:00
 validation-sets:
   -
     mode: enforce
     name: test-snapd-invalid-hello-world
 sign-key-sha3-384: 7qWG-Uwck6Dji43a3Z8ZZrm7rAziZAch3xf76iFvqe4GaD0LI7U9lYPWMSJAsEgu
 
-AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlJbFxAAoJEEMdJKf2hr9Aj2MP/jPf
-McVMdlmfoe8RehdpciO/jAosbxCSZ4oXTWEHNEBXtUVOPiGG7mPd0piUdXVf40qgxYITmfuiPhN4
-UZYbEsHTvNUEl91/+pLA2ZUcqFomtvCvbkhp6gcplxZ8Ik/FxI9viE6N/Ps4LJE4MzfEKkHzMOSi
-EWIuIExMydSzVHSRPT4HWUQFqN1qGl8yPO5Ze7wFfHEFX0Xh/EmRXQz0QVQ5ZSaucNoS96oCZIVO
-tXtcJHZNyE5OW6RYG+uAAjtPT7U2z5QuDmjxvxgGRfCkurcAE3q93d2L6hQ/btUoqMjmzqixPT0I
-podszFbsUs6iMsZK2WoDPOJXXUSDvlvewc5a9gKH1WN1S5KJFCgf9CYeleuN1/VNjZOEZ9lpHMpk
-tMzyNzNwOM0I5fd40vwrlK0WhrS8Jy1jSG97rY/HS/PFnRKnmziKVCNrmgrXWJso+484M2ca7Ee8
-SvAtO45RWUtLXUsLTEDGyxrvJY9ldWk/nf3Y+qtTnm3QGJLbuaEHwzgr+HW1QTSUQMeCxjN/htqu
-vHop/TnpbF6SueyMpX6tKVExNzu3reUxy1YmxRiPYEc/QIp/tXFXqkPVWSpoEg1ALhHJm5fG5ps6
-t7bpuAne5kG/q2i2wC1Wk7JYVar1p0eNFVksnHBe6/mHNczvNbrIpR9aH3m7ROYm3TqTqxPy
+AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlJctlAAoJEEMdJKf2hr9AWd4P/3Cv
+TPIo/CBAcxer2zKPDYHRpx8faXPGnNWTLEGkbJOX7vd5lbfhGn92/Wur4wE7aDhylKnDzC7r3Dyh
+bM7Th1jCLA7rMO9CDRfm/E9Gli6eC5XKCaQNjQvJUOcN8SZa4c9AKqnC3jIDtrjlZVDJXomOBauF
+gP9SRt0kl9aCXFrAsUVxh4enaq7NRY4Ag/+SNMqmiNvAtjIsy0IhddDDmPYYem/keBl1hGnYyvP0
+mkAioepnx86vXQX2yUAWdBzLC5RKFWEnpNjuEzKEZ0MDht75GO+iB4Hkxud9xvViDpShr9CqfM1T
+GIkw5Jkf5ocfZUqmWvinwIeBC/Ga8VwqIKnX0VGAPHxQTcGdxHEWG18YJSq6dC74uuBk+4doSspV
+V6trxUkyIyhuaARs6mw/wvrVSxiMEWD16xT0aZgeQONls/uDpz2godGX+V/AiZlqIHVyIObGV/fv
+FAr8otf/b6NvTXJS/yhvQNzg8M6P3xyGn4CODI43XmtAr4P4PNocfJn0GfW0+fhBu6piDtJvZ2DU
+zhGiatc7GfictEdKg8UUpiv2y5gEZSVS89hXm53DskxMGVhtulnTiFD9a3nZAJksd273MGR2hEa0
+yUN1vPWqlxVfdOe9omMeBnQtdX9lDZYq93EXHCMDNh+vN7IcKkqnSk8qWyn5V5vxSmC/onIJ
