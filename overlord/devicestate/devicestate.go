@@ -389,7 +389,7 @@ func notInstalled(st *state.State, name string) (bool, error) {
 }
 
 func installedSnapRevisionChanged(st *state.State, modelSnapName string, newRevision snap.Revision) (bool, error) {
-	if newRevision == snap.R(0) {
+	if newRevision.Unset() {
 		return false, nil
 	}
 
