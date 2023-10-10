@@ -17,13 +17,13 @@ prepare: |
 execute: |
     # shellcheck source=tests/lib/nested.sh
     . "$TESTSLIB/nested.sh"
-    boot_id="$(tests.nested boot-id)"
+    # boot_id="$(tests.nested boot-id)"
     remote.exec snap model | MATCH 'model +my-model$'
 
     # XXX: recovery system label is based on a date; we may end up with a
     # different label if the remodel runs around midnight; the label will
     # conflict with an existing system label
-    label_base=$(remote.exec "date '+%Y%m%d'")
+    # label_base=$(remote.exec "date '+%Y%m%d'")
 
     # wait until device is initialized and has a serial
     remote.wait-for device-initialized
