@@ -405,11 +405,7 @@ func installedSnapRevisionChanged(st *state.State, modelSnapName string, newRevi
 		return false, nil
 	}
 
-	if ss.Current != newRevision {
-		return true, nil
-	}
-
-	return false, nil
+	return ss.Current != newRevision, nil
 }
 
 func installedSnapChannelChanged(st *state.State, modelSnapName, declaredChannel string) (changed bool, err error) {
