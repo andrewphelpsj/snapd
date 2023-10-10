@@ -608,14 +608,14 @@ func (v *ValidationSets) CheckPresenceRequired(snapRef naming.SnapRef) ([]Valida
 	return keys, snapRev, nil
 }
 
-// IsPresenceInvalid returns true if a snap has presence=invalid in any of the
-// validation sets associated with this type.
-func (v *ValidationSets) IsPresenceInvalid(snapRef naming.SnapRef) bool {
+// CanBePresent returns true if a snap can be present in a situation in which
+// these validation sets are being applied.
+func (v *ValidationSets) CanBePresent(snapRef naming.SnapRef) bool {
 	cstrs := v.constraintsForSnap(snapRef)
 	if cstrs == nil {
 		return false
 	}
-	return cstrs.presence == asserts.PresenceInvalid
+	return cstrs.presence != asserts.PresenceInvalid
 }
 
 // CheckPresenceInvalid returns the list of all validation sets that declare
