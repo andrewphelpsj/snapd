@@ -495,115 +495,6 @@ func (ro *remodelVariant) InstallWithDeviceContext(ctx context.Context, st *stat
 		userID, snapStateFlags, deviceCtx, fromChange)
 }
 
-func remodelEssentialSnapTasks(ctx context.Context, st *state.State, pathSI *pathSideInfo, ms modelSnapsForRemodel, remodelVar remodelVariant, deviceCtx snapstate.DeviceContext, fromChange string) (*state.TaskSet, error) {
-	userID := 0
-	newModelSnapChannel, err := modelSnapChannelFromDefaultOrPinnedTrack(ms.new, ms.newModelSnap)
-	if err != nil {
-		return nil, err
-	}
-
-	addExistingSnapTasks := snapstate.LinkNewBaseOrKernel
-	if ms.newModelSnap != nil && ms.newModelSnap.SnapType == "gadget" {
-		addExistingSnapTasks = snapstate.SwitchToNewGadget
-	}
-
-	if ms.currentSnap == ms.newSnap {
-		// new model uses the same base, kernel or gadget snap
-		channelChanged := false
-		if ms.new.Grade() != asserts.ModelGradeUnset {
-			// UC20 models can specify default channel for all snaps
-			// including base, kernel and gadget
-			channelChanged, err = installedSnapChannelChanged(st, ms.newSnap, newModelSnapChannel)
-			if err != nil {
-				return nil, err
-			}
-		} else if ms.canHaveUC18PinnedTrack() {
-			// UC18 models could only specify track for the kernel
-			// and gadget snaps
-			channelChanged = ms.currentModelSnap.PinnedTrack != ms.newModelSnap.PinnedTrack
-		}
-
-		newRevision, err := installedSnapRevisionChanged(st, ms.newSnap, ms.newSnapRevision)
-		if err != nil {
-			return nil, err
-		}
-
-		if channelChanged || newRevision {
-
-			// new model specifies the same snap, but with a new channel or
-			// different revision than the existing one
-			return remodelVar.UpdateWithDeviceContext(st,
-				pathSI, ms.newSnap, newModelSnapChannel, ms.newSnapRevision, userID,
-				snapstate.Flags{NoReRefresh: true}, deviceCtx, fromChange)
-		}
-		return nil, nil
-	}
-
-	// new model specifies a different snap
-	needsInstall, err := notInstalled(st, ms.newModelSnap.SnapName())
-	if err != nil {
-		return nil, err
-	}
-	if needsInstall {
-		// which needs to be installed
-		return remodelVar.InstallWithDeviceContext(ctx, st,
-			pathSI, ms.newSnap, newModelSnapChannel, ms.newSnapRevision, userID,
-			snapstate.Flags{}, deviceCtx, fromChange)
-	}
-
-	// in UC20+ models, the model can specify a channel for each
-	// snap, thus making it possible to change already installed
-	// kernel or base snaps
-	channelChanged := false
-	if ms.new.Grade() != asserts.ModelGradeUnset {
-		channelChanged, err = installedSnapChannelChanged(st, ms.newModelSnap.SnapName(), newModelSnapChannel)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	revisionChanged, err := installedSnapRevisionChanged(st, ms.newSnap, ms.newSnapRevision)
-	if err != nil {
-		return nil, err
-	}
-
-	if !channelChanged && !revisionChanged {
-		return addExistingSnapTasks(st, ms.newSnap, fromChange)
-	}
-
-	ts, err := remodelVar.UpdateWithDeviceContext(st,
-		pathSI, ms.newSnap, newModelSnapChannel, ms.newSnapRevision, userID,
-		snapstate.Flags{NoReRefresh: true}, deviceCtx, fromChange)
-	if err != nil {
-		return nil, err
-	}
-
-	if edgeTask := ts.MaybeEdge(snapstate.LastBeforeLocalModificationsEdge); edgeTask != nil {
-		// no task is marked as being last before local modifications are
-		// introduced, indicating that the update is a simple
-		// switch-snap-channel
-		return ts, nil
-	}
-
-	switch ms.newModelSnap.SnapType {
-	case "kernel", "base":
-		// in other cases make sure that the kernel or base is linked and
-		// available, and that kernel updates boot assets if needed
-		ts, err = snapstate.AddLinkNewBaseOrKernel(st, ts)
-		if err != nil {
-			return nil, err
-		}
-	case "gadget":
-		// gadget snaps may need gadget related tasks such as assets update or
-		// command line update
-		ts, err = snapstate.AddGadgetAssetsTasks(st, ts)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return ts, nil
-}
-
 // collect all prerequisites of a given snap from its task set
 func prereqsFromSnapTaskSet(ts *state.TaskSet) ([]string, error) {
 	for _, t := range ts.Tasks() {
@@ -677,7 +568,7 @@ func resolveValidationSetAssertion(seq *asserts.AtSequence, db asserts.RODatabas
 	return seq.Resolve(db.Find)
 }
 
-func validationSetsFromModel(model *asserts.Model, st *state.State, store snapstate.StoreService, offline bool, extraVSets ...*asserts.ValidationSet) (*snapasserts.ValidationSets, error) {
+func validationSetsFromModel(model *asserts.Model, st *state.State, store snapstate.StoreService, offline bool) (*snapasserts.ValidationSets, error) {
 	save := func(a asserts.Assertion) error {
 		return assertstate.Add(st, a)
 	}
@@ -717,10 +608,6 @@ func validationSetsFromModel(model *asserts.Model, st *state.State, store snapst
 
 	vSets := snapasserts.NewValidationSets()
 	for _, vs := range validationSets {
-		vSets.Add(vs)
-	}
-
-	for _, vs := range extraVSets {
 		vSets.Add(vs)
 	}
 
@@ -767,9 +654,19 @@ type RemodelStepSnap struct {
 	PresenceOptional bool
 }
 
-func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model, extraVSets ...*asserts.ValidationSet) ([]RemodelStep, error) {
-	validations, err := validationSetsFromModel(newModel, st, extraVSets...)
+func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model, store snapstate.StoreService, offline bool, extraVSets ...*asserts.ValidationSet) ([]RemodelStep, error) {
+	validations, err := validationSetsFromModel(newModel, st, store, offline)
 	if err != nil {
+		return nil, err
+	}
+
+	for _, vs := range extraVSets {
+		if err := validations.Add(vs); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := validations.Conflict(); err != nil {
 		return nil, err
 	}
 
@@ -838,9 +735,19 @@ func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model, extraVSe
 	return steps, nil
 }
 
-func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Model, extraVSets ...*asserts.ValidationSet) ([]RemodelStep, error) {
-	validations, err := validationSetsFromModel(newModel, st, extraVSets...)
+func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Model, store snapstate.StoreService, offline bool, extraVSets ...*asserts.ValidationSet) ([]RemodelStep, error) {
+	validations, err := validationSetsFromModel(newModel, st, store, offline)
 	if err != nil {
+		return nil, err
+	}
+
+	for _, vs := range extraVSets {
+		if err := validations.Add(vs); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := validations.Conflict(); err != nil {
 		return nil, err
 	}
 
@@ -1127,7 +1034,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 
 	var tss []*state.TaskSet
 
-	essentialSteps, err := EssentialRemodelSteps(st, current, new)
+	essentialSteps, err := EssentialRemodelSteps(st, current, new, snapstate.Store(st, deviceCtx), localSnapsRequired)
 	if err != nil {
 		return nil, err
 	}
@@ -1155,7 +1062,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		}
 	}
 
-	nonEssentialSteps, err := NonEssentialRemodelSteps(st, new)
+	nonEssentialSteps, err := NonEssentialRemodelSteps(st, new, snapstate.Store(st, deviceCtx), localSnapsRequired)
 	if err != nil {
 		return nil, err
 	}
