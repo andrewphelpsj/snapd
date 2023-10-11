@@ -1607,6 +1607,15 @@ func CreateRecoverySystem(st *state.State, label string) (*state.Change, error) 
 	return chg, nil
 }
 
+func installSnapsForRecoverySystemTasks(st *state.State, validationSets []string) ([]*state.TaskSet, error) {
+	model, err := findModel(st)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
 // InstallFinish creates a change that will finish the install for the given
 // label and volumes. This includes writing missing volume content, seting
 // up the bootloader and installing the kernel.
