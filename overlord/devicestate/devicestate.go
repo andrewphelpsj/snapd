@@ -853,7 +853,7 @@ func EssentialSnapActions(st *state.State, currentModel, newModel *asserts.Model
 	}
 
 	modelSnapToEssentialSnap := func(model *asserts.Model, modelSnap *asserts.ModelSnap) (essentialSnap, error) {
-		newModelSnapChannel, err := modelSnapChannelFromDefaultOrPinnedTrack(model, modelSnap)
+		modelSnapChannel, err := modelSnapChannelFromDefaultOrPinnedTrack(model, modelSnap)
 		if err != nil {
 			return essentialSnap{}, err
 		}
@@ -861,7 +861,7 @@ func EssentialSnapActions(st *state.State, currentModel, newModel *asserts.Model
 		return essentialSnap{
 			Name:    modelSnap.Name,
 			Type:    modelSnap.SnapType,
-			Channel: newModelSnapChannel,
+			Channel: modelSnapChannel,
 			ID:      modelSnap.SnapID,
 		}, nil
 	}
