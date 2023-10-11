@@ -778,7 +778,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		return nil
 	}
 
-	vSets, err := validationSetsFromModel(new, st, deviceCtx.Store(), len(localSnaps) > 0)
+	vSets, err := validationSetsFromModel(new, st, snapstate.Store(st, deviceCtx), len(localSnaps) > 0)
 	if err != nil {
 		return nil, err
 	}
