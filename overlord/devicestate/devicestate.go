@@ -677,7 +677,7 @@ func resolveValidationSetAssertion(seq *asserts.AtSequence, db asserts.RODatabas
 	return seq.Resolve(db.Find)
 }
 
-func validationSetsFromModel(model *asserts.Model, st *state.State, store snapstate.StoreService, offline bool) (*snapasserts.ValidationSets, error) {
+func validationSetsFromModel(model *asserts.Model, st *state.State, store snapstate.StoreService, offline bool, extraVSets ...*asserts.ValidationSet) (*snapasserts.ValidationSets, error) {
 	save := func(a asserts.Assertion) error {
 		return assertstate.Add(st, a)
 	}
@@ -717,6 +717,10 @@ func validationSetsFromModel(model *asserts.Model, st *state.State, store snapst
 
 	vSets := snapasserts.NewValidationSets()
 	for _, vs := range validationSets {
+		vSets.Add(vs)
+	}
+
+	for _, vs := range extraVSets {
 		vSets.Add(vs)
 	}
 
@@ -763,8 +767,8 @@ type RemodelStepSnap struct {
 	PresenceOptional bool
 }
 
-func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model) ([]RemodelStep, error) {
-	validations, err := validationSetsFromModel(newModel, st)
+func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model, extraVSets ...*asserts.ValidationSet) ([]RemodelStep, error) {
+	validations, err := validationSetsFromModel(newModel, st, extraVSets...)
 	if err != nil {
 		return nil, err
 	}
@@ -774,7 +778,7 @@ func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model) ([]Remod
 		return nil, err
 	}
 
-	modelSnapToSnapAction := func(modelSnap *asserts.ModelSnap) (RemodelStep, error) {
+	modelSnapToRemodelStepSnap := func(modelSnap *asserts.ModelSnap) (RemodelStep, error) {
 		newModelSnapChannel, err := modelSnapChannelFromDefaultOrPinnedTrack(newModel, modelSnap)
 		if err != nil {
 			return RemodelStep{}, err
@@ -825,7 +829,7 @@ func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model) ([]Remod
 
 	var steps []RemodelStep
 	for _, sn := range newModel.SnapsWithoutEssential() {
-		step, err := modelSnapToSnapAction(sn)
+		step, err := modelSnapToRemodelStepSnap(sn)
 		if err != nil {
 			return nil, err
 		}
@@ -834,8 +838,8 @@ func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model) ([]Remod
 	return steps, nil
 }
 
-func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Model) ([]RemodelStep, error) {
-	validations, err := validationSetsFromModel(newModel, st)
+func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Model, extraVSets ...*asserts.ValidationSet) ([]RemodelStep, error) {
+	validations, err := validationSetsFromModel(newModel, st, extraVSets...)
 	if err != nil {
 		return nil, err
 	}
@@ -905,7 +909,7 @@ func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Mode
 		}
 	}
 
-	essentialSnapToAction := func(oldSnap, newSnap essentialSnap) (RemodelStep, error) {
+	essentialSnapToRemodelStepSnap := func(oldSnap, newSnap essentialSnap) (RemodelStep, error) {
 		remodelStepSnap := RemodelStepSnap{
 			Name:     newSnap.Name,
 			Type:     newSnap.Type,
@@ -971,7 +975,7 @@ func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Mode
 	for _, sn := range []essentialSnap{
 		newEssentialSnaps["kernel"], newEssentialSnaps["base"], newEssentialSnaps["gadget"],
 	} {
-		step, err := essentialSnapToAction(currentEssentialSnaps[sn.Type], sn)
+		step, err := essentialSnapToRemodelStepSnap(currentEssentialSnaps[sn.Type], sn)
 		if err != nil {
 			return nil, err
 		}
@@ -1123,12 +1127,12 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 
 	var tss []*state.TaskSet
 
-	essentialActions, err := EssentialRemodelSteps(st, current, new)
+	essentialSteps, err := EssentialRemodelSteps(st, current, new)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, a := range essentialActions {
+	for _, a := range essentialSteps {
 		pathSI := sideInfoAndPathFromID(localSnaps, paths, a.ID)
 
 		ts, err := remodelFromEssentialRemodelStep(ctx, st, a, pathSI, remodelVar, deviceCtx, fromChange)
@@ -1151,12 +1155,12 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		}
 	}
 
-	nonEssentialActions, err := NonEssentialRemodelSteps(st, new)
+	nonEssentialSteps, err := NonEssentialRemodelSteps(st, new)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, a := range nonEssentialActions {
+	for _, a := range nonEssentialSteps {
 		pathSI := sideInfoAndPathFromID(localSnaps, paths, a.ID)
 
 		ts, err := remodelFromNonEssentialRemodelStep(ctx, st, a, pathSI, remodelVar, deviceCtx, fromChange)
