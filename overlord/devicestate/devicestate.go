@@ -747,14 +747,14 @@ func checkForInvalidSnapsInModel(model *asserts.Model, vSets *snapasserts.Valida
 	return nil
 }
 
-type SnapAction struct {
-	SnapActionSnap
+type RemodelStep struct {
+	RemodelStepSnap
 	SameEssentialSnap bool
 	NeedsInstall      bool
 	NeedsUpdate       bool
 }
 
-type SnapActionSnap struct {
+type RemodelStepSnap struct {
 	Name             string
 	Type             string
 	Channel          string
@@ -763,7 +763,7 @@ type SnapActionSnap struct {
 	PresenceOptional bool
 }
 
-func NonEssentialSnapActions(st *state.State, newModel *asserts.Model) ([]SnapAction, error) {
+func NonEssentialRemodelSteps(st *state.State, newModel *asserts.Model) ([]RemodelStep, error) {
 	validations, err := validationSetsFromModel(newModel, st)
 	if err != nil {
 		return nil, err
@@ -774,13 +774,13 @@ func NonEssentialSnapActions(st *state.State, newModel *asserts.Model) ([]SnapAc
 		return nil, err
 	}
 
-	modelSnapToSnapAction := func(modelSnap *asserts.ModelSnap) (SnapAction, error) {
+	modelSnapToSnapAction := func(modelSnap *asserts.ModelSnap) (RemodelStep, error) {
 		newModelSnapChannel, err := modelSnapChannelFromDefaultOrPinnedTrack(newModel, modelSnap)
 		if err != nil {
-			return SnapAction{}, err
+			return RemodelStep{}, err
 		}
 
-		actionSnap := SnapActionSnap{
+		remodelStep := RemodelStepSnap{
 			Name:             modelSnap.Name,
 			Type:             modelSnap.SnapType,
 			Channel:          newModelSnapChannel,
@@ -789,52 +789,52 @@ func NonEssentialSnapActions(st *state.State, newModel *asserts.Model) ([]SnapAc
 			PresenceOptional: modelSnap.Presence == "optional",
 		}
 
-		needsInstall, err := notInstalled(st, actionSnap.Name)
+		needsInstall, err := notInstalled(st, remodelStep.Name)
 		if err != nil {
-			return SnapAction{}, err
+			return RemodelStep{}, err
 		}
 
 		if needsInstall {
-			return SnapAction{
-				SnapActionSnap: actionSnap,
-				NeedsInstall:   !actionSnap.PresenceOptional,
+			return RemodelStep{
+				RemodelStepSnap: remodelStep,
+				NeedsInstall:    !remodelStep.PresenceOptional,
 			}, nil
 		}
 
-		channelChanged, err := installedSnapChannelChanged(st, actionSnap.Name, newModelSnapChannel)
+		channelChanged, err := installedSnapChannelChanged(st, remodelStep.Name, newModelSnapChannel)
 		if err != nil {
-			return SnapAction{}, err
+			return RemodelStep{}, err
 		}
 
-		revisionChanged, err := installedSnapRevisionChanged(st, actionSnap.Name, actionSnap.Revision)
+		revisionChanged, err := installedSnapRevisionChanged(st, remodelStep.Name, remodelStep.Revision)
 		if err != nil {
-			return SnapAction{}, err
+			return RemodelStep{}, err
 		}
 
 		if channelChanged || revisionChanged {
-			return SnapAction{
-				SnapActionSnap: actionSnap,
-				NeedsUpdate:    true,
+			return RemodelStep{
+				RemodelStepSnap: remodelStep,
+				NeedsUpdate:     true,
 			}, nil
 		}
 
-		return SnapAction{
-			SnapActionSnap: actionSnap,
+		return RemodelStep{
+			RemodelStepSnap: remodelStep,
 		}, nil
 	}
 
-	var actions []SnapAction
+	var steps []RemodelStep
 	for _, sn := range newModel.SnapsWithoutEssential() {
-		action, err := modelSnapToSnapAction(sn)
+		step, err := modelSnapToSnapAction(sn)
 		if err != nil {
 			return nil, err
 		}
-		actions = append(actions, action)
+		steps = append(steps, step)
 	}
-	return actions, nil
+	return steps, nil
 }
 
-func EssentialSnapActions(st *state.State, currentModel, newModel *asserts.Model) ([]SnapAction, error) {
+func EssentialRemodelSteps(st *state.State, currentModel, newModel *asserts.Model) ([]RemodelStep, error) {
 	validations, err := validationSetsFromModel(newModel, st)
 	if err != nil {
 		return nil, err
@@ -869,12 +869,12 @@ func EssentialSnapActions(st *state.State, currentModel, newModel *asserts.Model
 	essentialSnapMap := func(model *asserts.Model) (map[string]essentialSnap, error) {
 		snaps := make(map[string]essentialSnap)
 		for _, sn := range model.EssentialSnaps() {
-			actionSnap, err := modelSnapToEssentialSnap(model, sn)
+			remodelStepSnap, err := modelSnapToEssentialSnap(model, sn)
 			if err != nil {
 				return nil, err
 			}
 
-			snaps[sn.SnapType] = actionSnap
+			snaps[sn.SnapType] = remodelStepSnap
 		}
 		return snaps, nil
 	}
@@ -905,8 +905,8 @@ func EssentialSnapActions(st *state.State, currentModel, newModel *asserts.Model
 		}
 	}
 
-	essentialSnapToAction := func(oldSnap, newSnap essentialSnap) (SnapAction, error) {
-		actionSnap := SnapActionSnap{
+	essentialSnapToAction := func(oldSnap, newSnap essentialSnap) (RemodelStep, error) {
+		remodelStepSnap := RemodelStepSnap{
 			Name:     newSnap.Name,
 			Type:     newSnap.Type,
 			Channel:  newSnap.Channel,
@@ -920,83 +920,83 @@ func EssentialSnapActions(st *state.State, currentModel, newModel *asserts.Model
 		// models for an essential snap, then it won't be checked if it needs to be
 		// installed. i'm not sure if this is ever relevant, outside of tests.
 		if !sameSnap {
-			needsInstall, err := notInstalled(st, actionSnap.Name)
+			needsInstall, err := notInstalled(st, remodelStepSnap.Name)
 			if err != nil {
-				return SnapAction{}, err
+				return RemodelStep{}, err
 			}
 
 			if needsInstall {
-				return SnapAction{
+				return RemodelStep{
 					NeedsInstall:      true,
 					SameEssentialSnap: sameSnap,
-					SnapActionSnap:    actionSnap,
+					RemodelStepSnap:   remodelStepSnap,
 				}, nil
 			}
 		}
 
-		newRevision, err := installedSnapRevisionChanged(st, actionSnap.Name, actionSnap.Revision)
+		newRevision, err := installedSnapRevisionChanged(st, remodelStepSnap.Name, remodelStepSnap.Revision)
 		if err != nil {
-			return SnapAction{}, err
+			return RemodelStep{}, err
 		}
 
 		channelChanged := false
 		if newModel.Grade() != asserts.ModelGradeUnset {
 			// UC20 models can specify default channel for all snaps
 			// including base, kernel and gadget
-			channelChanged, err = installedSnapChannelChanged(st, actionSnap.Name, actionSnap.Channel)
+			channelChanged, err = installedSnapChannelChanged(st, remodelStepSnap.Name, remodelStepSnap.Channel)
 			if err != nil {
-				return SnapAction{}, err
+				return RemodelStep{}, err
 			}
-		} else if actionSnap.Type == "kernel" || actionSnap.Type == "gadget" {
+		} else if remodelStepSnap.Type == "kernel" || remodelStepSnap.Type == "gadget" {
 			// UC18 models could only specify track for the kernel
 			// and gadget snaps
 			channelChanged = oldSnap.Channel != newSnap.Channel
 		}
 
 		if newRevision || channelChanged {
-			return SnapAction{
+			return RemodelStep{
 				NeedsUpdate:       true,
 				SameEssentialSnap: sameSnap,
-				SnapActionSnap:    actionSnap,
+				RemodelStepSnap:   remodelStepSnap,
 			}, nil
 		}
 
-		return SnapAction{
-			SnapActionSnap:    actionSnap,
+		return RemodelStep{
+			RemodelStepSnap:   remodelStepSnap,
 			SameEssentialSnap: sameSnap,
 		}, nil
 	}
 
-	var actions []SnapAction
+	var steps []RemodelStep
 	for _, sn := range []essentialSnap{
 		newEssentialSnaps["kernel"], newEssentialSnaps["base"], newEssentialSnaps["gadget"],
 	} {
-		action, err := essentialSnapToAction(currentEssentialSnaps[sn.Type], sn)
+		step, err := essentialSnapToAction(currentEssentialSnaps[sn.Type], sn)
 		if err != nil {
 			return nil, err
 		}
-		actions = append(actions, action)
+		steps = append(steps, step)
 	}
 
-	return actions, nil
+	return steps, nil
 }
 
-func remodelFromNonEssentialSnapAction(
-	ctx context.Context, st *state.State, action SnapAction, pathSI *pathSideInfo,
+func remodelFromNonEssentialRemodelStep(
+	ctx context.Context, st *state.State, remodelStep RemodelStep, pathSI *pathSideInfo,
 	variant remodelVariant, deviceCtx snapstate.DeviceContext, fromChange string,
 ) (*state.TaskSet, error) {
 	const userID = 0
-	if action.NeedsInstall {
+	if remodelStep.NeedsInstall {
 		return variant.InstallWithDeviceContext(ctx, st,
-			pathSI, action.Name, action.Channel, action.Revision,
+			pathSI, remodelStep.Name, remodelStep.Channel, remodelStep.Revision,
 			userID, snapstate.Flags{Required: true}, deviceCtx,
 			fromChange,
 		)
 	}
 
-	if action.NeedsUpdate {
-		return variant.UpdateWithDeviceContext(st, pathSI, action.Name,
-			action.Channel, action.Revision, userID, snapstate.Flags{NoReRefresh: true},
+	if remodelStep.NeedsUpdate {
+		return variant.UpdateWithDeviceContext(st, pathSI, remodelStep.Name,
+			remodelStep.Channel, remodelStep.Revision, userID, snapstate.Flags{NoReRefresh: true},
 			deviceCtx, fromChange,
 		)
 	}
@@ -1004,40 +1004,40 @@ func remodelFromNonEssentialSnapAction(
 	return nil, nil
 }
 
-func remodelFromEssentialSnapAction(
-	ctx context.Context, st *state.State, action SnapAction, pathSI *pathSideInfo,
+func remodelFromEssentialRemodelStep(
+	ctx context.Context, st *state.State, remodelStep RemodelStep, pathSI *pathSideInfo,
 	variant remodelVariant, deviceCtx snapstate.DeviceContext, fromChange string,
 ) (*state.TaskSet, error) {
 	// we already have the snap on the system, but we're not currently using it
 	// for the base/kernel/gadget snap
-	if !action.SameEssentialSnap && !action.NeedsInstall && !action.NeedsUpdate {
-		switch action.Type {
+	if !remodelStep.SameEssentialSnap && !remodelStep.NeedsInstall && !remodelStep.NeedsUpdate {
+		switch remodelStep.Type {
 		case "gadget":
-			return snapstate.SwitchToNewGadget(st, action.Name, fromChange)
+			return snapstate.SwitchToNewGadget(st, remodelStep.Name, fromChange)
 		case "base", "kernel":
-			return snapstate.LinkNewBaseOrKernel(st, action.Name, fromChange)
+			return snapstate.LinkNewBaseOrKernel(st, remodelStep.Name, fromChange)
 		default:
 			panic("todo!")
 		}
 	}
 
 	// nothing to do if the snap is the same and it doesn't need an update
-	if action.SameEssentialSnap && !action.NeedsUpdate {
+	if remodelStep.SameEssentialSnap && !remodelStep.NeedsUpdate {
 		return nil, nil
 	}
 
 	const userID = 0
 
-	if action.NeedsInstall {
+	if remodelStep.NeedsInstall {
 		return variant.InstallWithDeviceContext(ctx, st,
-			pathSI, action.Name, action.Channel, action.Revision, userID,
+			pathSI, remodelStep.Name, remodelStep.Channel, remodelStep.Revision, userID,
 			snapstate.Flags{}, deviceCtx, fromChange,
 		)
 	}
 
-	if action.NeedsUpdate {
+	if remodelStep.NeedsUpdate {
 		ts, err := variant.UpdateWithDeviceContext(st,
-			pathSI, action.Name, action.Channel, action.Revision, userID,
+			pathSI, remodelStep.Name, remodelStep.Channel, remodelStep.Revision, userID,
 			snapstate.Flags{NoReRefresh: true}, deviceCtx, fromChange,
 		)
 		if err != nil {
@@ -1046,7 +1046,7 @@ func remodelFromEssentialSnapAction(
 
 		// if we're just updating the snap that we're already using, then we
 		// don't need to do anything else
-		if action.SameEssentialSnap {
+		if remodelStep.SameEssentialSnap {
 			return ts, nil
 		}
 
@@ -1057,7 +1057,7 @@ func remodelFromEssentialSnapAction(
 			return ts, nil
 		}
 
-		switch action.Type {
+		switch remodelStep.Type {
 		case "kernel", "base":
 			// make sure that the kernel or base is linked and available, and
 			// that kernel updates boot assets if needed
@@ -1123,7 +1123,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 
 	var tss []*state.TaskSet
 
-	essentialActions, err := EssentialSnapActions(st, current, new)
+	essentialActions, err := EssentialRemodelSteps(st, current, new)
 	if err != nil {
 		return nil, err
 	}
@@ -1131,7 +1131,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 	for _, a := range essentialActions {
 		pathSI := sideInfoAndPathFromID(localSnaps, paths, a.ID)
 
-		ts, err := remodelFromEssentialSnapAction(ctx, st, a, pathSI, remodelVar, deviceCtx, fromChange)
+		ts, err := remodelFromEssentialRemodelStep(ctx, st, a, pathSI, remodelVar, deviceCtx, fromChange)
 		if err != nil {
 			return nil, err
 		}
@@ -1151,7 +1151,7 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		}
 	}
 
-	nonEssentialActions, err := NonEssentialSnapActions(st, new)
+	nonEssentialActions, err := NonEssentialRemodelSteps(st, new)
 	if err != nil {
 		return nil, err
 	}
@@ -1159,39 +1159,42 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 	for _, a := range nonEssentialActions {
 		pathSI := sideInfoAndPathFromID(localSnaps, paths, a.ID)
 
-		ts, err := remodelFromNonEssentialSnapAction(ctx, st, a, pathSI, remodelVar, deviceCtx, fromChange)
+		ts, err := remodelFromNonEssentialRemodelStep(ctx, st, a, pathSI, remodelVar, deviceCtx, fromChange)
 		if err != nil {
 			return nil, err
 		}
 
 		snapsAccountedFor[a.Name] = true
 
-		// ts will be nil if we don't need to do anything
 		if ts != nil {
 			tss = append(tss, ts)
 
+			// if this isn't just a simple channel switch, then we need to get
+			// the prerequisites from the task set. otherwise, treat it as an
+			// unchanged snap.
 			if ts.MaybeEdge(snapstate.LastBeforeLocalModificationsEdge) != nil {
 				if err := updateNeededSnapsFromTs(ts); err != nil {
 					return nil, err
 				}
+				continue
 			}
-		} else {
-			info, err := snapstate.CurrentInfo(st, a.Name)
-			if err != nil {
-				if isNotInstalled(err) && a.PresenceOptional {
-					continue
-				}
+		}
 
-				return nil, err
+		info, err := snapstate.CurrentInfo(st, a.Name)
+		if err != nil {
+			if isNotInstalled(err) && a.PresenceOptional {
+				continue
 			}
 
-			if info.Base != "" {
-				neededSnaps[info.Base] = true
-			}
-			// deal with content providers
-			for defProvider := range snap.NeededDefaultProviders(info) {
-				neededSnaps[defProvider] = true
-			}
+			return nil, err
+		}
+
+		if info.Base != "" {
+			neededSnaps[info.Base] = true
+		}
+		// deal with content providers
+		for defProvider := range snap.NeededDefaultProviders(info) {
+			neededSnaps[defProvider] = true
 		}
 	}
 
