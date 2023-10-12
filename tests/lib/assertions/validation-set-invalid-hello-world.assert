@@ -1,0 +1,24 @@
+type: validation-set
+authority-id: BhgbYoDtThegqVkEU7oiZP8GQwCoUIxz
+series: 16
+account-id: BhgbYoDtThegqVkEU7oiZP8GQwCoUIxz
+name: test-snapd-invalid-hello-world
+sequence: 1
+snaps:
+  -
+    id: buPKUD3TKqCOgLEjjHx5kSiCpIs5cMuQ
+    name: hello-world
+    presence: invalid
+timestamp: 2023-10-12T15:13:21+00:00
+sign-key-sha3-384: 7qWG-Uwck6Dji43a3Z8ZZrm7rAziZAch3xf76iFvqe4GaD0LI7U9lYPWMSJAsEgu
+
+AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlKA2GAAoJEEMdJKf2hr9A/YwP/2dp
+9apeN7qgsd+ObJxJt/uWc9BalDz0rprqyxsdqH5bAMVhBF1KGHL7UWRm1D+Tmx9LRIbjEYTjsUPs
+xjs0GEkBfWpI/tRMi9OUNdW+RGlE3Wa/vLjNcF/OeR36K0P9oY7dpMTxOjCSJjBEySFTIA/967iz
+ZqzSTIWnnJPy+5+R9ig6yPfvFMcLn+BPFm3xTzHhB8/RoOKzvww3O5IcY1vojk8Z7+YLQ49mhIXa
+5iAJkNwTtW6OvIS8cblCMJuyWDYh1Ohef3MQ+MftmX6WOcYNcGOQFGWJmjZ+UXqJXLPi754t6ZcU
+wOxjklFYBH68jQKBWT0WFBOLURv6BStlbd5uhwZRRTMhuLs4KvhZr9Zxet8HKcBvBRDNkuIZj0nb
+eUfe9a94BSjzkW9asp6sB8OtKY3oxXjE+vQKCszfr5Vb6wXl66lbcacnHfspwTcKs7LJGQ9qSda3
+ZMftsdiwK9P/bp97U7OZKFcm7EFwtluKaXqjGSS3kPb3ghX2W59XByMBK4syFcwLv1T5lQdmhHpM
+n1kgsXcJ/4uyzLVPApwf4Wi9lOZOa3CvH3dhLEEsBLMdzr5Eba3AYelO/+ZEkG3/QHUcJ5PoZe7S
+ACuh5Ztg+t80QBfhe4ZhWZAWEjPjgP02KmPZjr6Vw24QpI8Fik1Ha9LHfMcKYhSwETms2wyl
