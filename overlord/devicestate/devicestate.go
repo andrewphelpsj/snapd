@@ -688,7 +688,11 @@ func resolveValidationSetAssertion(seq *asserts.AtSequence, db asserts.RODatabas
 }
 
 func validationSetsFromModel(model *asserts.Model, st *state.State, store snapstate.StoreService, offline bool) (*snapasserts.ValidationSets, error) {
+	var sets []*asserts.ValidationSet
 	save := func(a asserts.Assertion) error {
+		if vs, ok := a.(*asserts.ValidationSet); ok {
+			sets = append(sets, vs)
+		}
 		return assertstate.Add(st, a)
 	}
 
@@ -718,15 +722,8 @@ func validationSetsFromModel(model *asserts.Model, st *state.State, store snapst
 		}
 	}
 
-	// TODO: is am confident that none of this is right, as it is clobbered
-	// together from other parts of the codebase.
-	validationSets, err := modelValidationSetsToAsserts(model, db)
-	if err != nil {
-		return nil, err
-	}
-
 	vSets := snapasserts.NewValidationSets()
-	for _, vs := range validationSets {
+	for _, vs := range sets {
 		vSets.Add(vs)
 	}
 
