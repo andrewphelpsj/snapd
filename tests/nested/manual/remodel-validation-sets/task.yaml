@@ -5,7 +5,7 @@ summary: |
 systems: [ubuntu-22.04-64]
 
 environment:
-  NESTED_CUSTOM_MODEL: $TESTSLIB/assertions/valid-for-testing-pc-{VERSION}.model
+  NESTED_CUSTOM_MODEL: $TESTSLIB/assertions/test-snapd-remodel-without-vset-pc-{VERSION}.model
   NESTED_ENABLE_TPM: true
   NESTED_ENABLE_SECURE_BOOT: true
   NESTED_BUILD_SNAPD_FROM_CURRENT: true
@@ -17,13 +17,7 @@ prepare: |
 execute: |
     # shellcheck source=tests/lib/nested.sh
     . "$TESTSLIB/nested.sh"
-    # boot_id="$(tests.nested boot-id)"
     remote.exec snap model | MATCH 'model +my-model$'
-
-    # XXX: recovery system label is based on a date; we may end up with a
-    # different label if the remodel runs around midnight; the label will
-    # conflict with an existing system label
-    # label_base=$(remote.exec "date '+%Y%m%d'")
 
     # wait until device is initialized and has a serial
     remote.wait-for device-initialized
@@ -34,4 +28,4 @@ execute: |
     echo "Refresh model assertion to revision 2"
     
     remote.push "$TESTSLIB/assertions/test-snapd-remodel-invalid-vset-pc-$VERSION.model"
-    remote.exec sudo snap remodel "test-snapd-remodel-invalid-vset-pc-$VERSION.model"
+    not remote.exec sudo snap remodel "test-snapd-remodel-invalid-vset-pc-$VERSION.model"
