@@ -693,26 +693,40 @@ func validationSetsFromModel(model *asserts.Model, st *state.State, store snapst
 		if vs, ok := a.(*asserts.ValidationSet); ok {
 			sets = append(sets, vs)
 		}
-		return assertstate.Add(st, a)
+
+		if err := assertstate.Add(st, a); err != nil {
+			if _, ok := err.(*asserts.RevisionError); ok {
+				return nil
+			}
+			return err
+		}
+
+		return nil
 	}
 
-	errOfflineRemodel := errors.New("cannot fetch assertions during offline remodel")
+	db := assertstate.DB(st)
 
 	retrieve := func(ref *asserts.Ref) (asserts.Assertion, error) {
+		st.Unlock()
+		defer st.Lock()
+
 		if offline {
-			return nil, errOfflineRemodel
+			return ref.Resolve(db.Find)
 		}
+
 		return store.Assertion(ref.Type, ref.PrimaryKey, nil)
 	}
 
 	retrieveSeq := func(ref *asserts.AtSequence) (asserts.Assertion, error) {
+		st.Unlock()
+		defer st.Lock()
+
 		if offline {
-			return nil, errOfflineRemodel
+			return resolveValidationSetAssertion(ref, db)
 		}
+
 		return store.SeqFormingAssertion(ref.Type, ref.SequenceKey, ref.Sequence, nil)
 	}
-
-	db := assertstate.DB(st)
 
 	fetcher := asserts.NewSequenceFormingFetcher(db, retrieve, retrieveSeq, save)
 
