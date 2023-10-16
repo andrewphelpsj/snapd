@@ -613,7 +613,7 @@ func (v *ValidationSets) CheckPresenceRequired(snapRef naming.SnapRef) ([]Valida
 func (v *ValidationSets) CanBePresent(snapRef naming.SnapRef) bool {
 	cstrs := v.constraintsForSnap(snapRef)
 	if cstrs == nil {
-		return false
+		return true
 	}
 	return cstrs.presence != asserts.PresenceInvalid
 }
