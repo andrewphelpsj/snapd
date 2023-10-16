@@ -4,7 +4,7 @@
     "series": "16",
     "brand-id": "test-snapd",
     "model": "my-model",
-    "revision": "1",
+    "revision": "2",
     "architecture": "amd64",
     "timestamp": "2023-10-10T22:08:34+00:00",
     "grade": "dangerous",
@@ -12,7 +12,7 @@
     "serial-authority": ["generic"],
     "validation-sets": [
         {
-            "name": "test-snapd-invalid-hello-world",
+            "name": "test-snapd-invalid-snap",
             "mode": "enforce"
         }
     ],
