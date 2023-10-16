@@ -775,29 +775,19 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		return nil
 	}
 
-	vSets, err := validationSetsFromModel(new, st, snapstate.Store(st, deviceCtx), len(localSnaps) > 0)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := vSets.Conflict(); err != nil {
-		return nil, err
-	}
-
-	if err := checkForInvalidSnapsInModel(new, vSets); err != nil {
-		return nil, err
-	}
-
-	// any snap that has a required revision will be in this map, if the snap's
-	// version is unconstrained, then we'll get a default-initialized revision
-	// from the map
-	snapRevisions := vSets.Revisions()
-
 	// If local snaps are provided, all needed snaps must be locally
 	// provided. We check this flag whenever a snap installation/update is
 	// found needed for the remodel.
 	localSnapsRequired := len(localSnaps) > 0
 	remodelVar := remodelVariant{localSnapsRequired: localSnapsRequired}
+
+	// any snap that has a required revision will be in this map, if the snap's
+	// version is unconstrained, then we'll get a default-initialized revision
+	// from the map
+	snapRevisions, err := verifyModelValidationSets(new, st, deviceCtx, localSnapsRequired)
+	if err != nil {
+		return nil, err
+	}
 
 	// kernel
 	kms := modelSnapsForRemodel{
@@ -1122,6 +1112,23 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 		return nil, err
 	}
 	return tss, nil
+}
+
+func verifyModelValidationSets(newModel *asserts.Model, st *state.State, deviceCtx snapstate.DeviceContext, offline bool) (map[string]snap.Revision, error) {
+	vSets, err := validationSetsFromModel(newModel, st, snapstate.Store(st, deviceCtx), offline)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := vSets.Conflict(); err != nil {
+		return nil, err
+	}
+
+	if err := checkForInvalidSnapsInModel(newModel, vSets); err != nil {
+		return nil, err
+	}
+
+	return vSets.Revisions(), nil
 }
 
 // Remodel takes a new model assertion and generates a change that
