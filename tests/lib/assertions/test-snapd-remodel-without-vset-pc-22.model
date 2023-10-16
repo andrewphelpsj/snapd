@@ -1,6 +1,5 @@
 type: model
 authority-id: test-snapd
-revision: 1
 series: 16
 brand-id: test-snapd
 model: my-model
@@ -41,19 +40,15 @@ snaps:
     name: hello-world
     type: app
 timestamp: 2023-10-10T22:08:34+00:00
-validation-sets:
-  -
-    mode: enforce
-    name: test-snapd-invalid-hello-world
 sign-key-sha3-384: 7qWG-Uwck6Dji43a3Z8ZZrm7rAziZAch3xf76iFvqe4GaD0LI7U9lYPWMSJAsEgu
 
-AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlLVObAAoJEEMdJKf2hr9AqoEQAKt1
-ovCcqzrFgZmb3KHaRZQLN74tfJk78Zshod7BraEUgDhJbcEX8T18FQoO6MHiAN8rijdvu5ZFPndV
-NZDXHunfUWhyfl28ubbOfAobYJkNIfnwB9GyKdnXqjzO3FztFumDlflGYWuJfjLxOXyn4s8KDeLW
-r3wyS5JFmIlfwEA3+6+99by6E0daF0D4KApcRN9tHC2lbGTF0CNqavmDJTyi/mG57qA1NYOtIr9d
-h7aR2AVCNcWtlEC7ikrXj3Oyy8C25npT4EkUxH+7gnI90DYIv4APOr5G6fFjiDh///D6t9jhbzCD
-QPP2n6L7oCR6DALfwqiEX4NGCwti1pq97ZzH4DTv5zaqbfxlMGlwFToXhA1THIHh+qUkUWntjKkh
-V4mz38Qz0iikxSl1om+bLJo1bV0fJdpH4JJvaf7LmJaxmPc31b4FFR0yaeA09Bxx6224438zCRbw
-1ezz2OBwYUFe39ncdolvNnEprudSfW1XNigqW6HcbmB9ZcdASR8C5vdxq+wMW/b+kwF7pn3lN7nc
-tnf5eDfVirhsUKs7QPg61ZWjLFLLcvddnk4ghAPosOjUqy1ed9Xb7h5iJCKqDyT67ZLYMV3wgNdo
-ZKRIAHE8H9V082zm5fj4C+PT6Sq7EwoyycPXztiDTAyYfoEvG1b2XLHGELrF/UH6xmdtpIGJ
+AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlLVOrAAoJEEMdJKf2hr9A50QP/0gL
+Zhk7L/igcvYQme2dXPfbrTL24ZuLQcGtPJTZrjIuj+eJGUQUI3XCDW8QBWKOQZQLe591eQb23+EF
+ifYenPbk/shHe3nSad7UQQe+iHzdmQOuTa/hMWyVqi6OiF/H/f3EG3KlBmTW16AAisPOhqn7/sqm
+Wkn72L/AJIyIOsl75VJXO9KTcfHZ+9THJQyceW/Q8k17LiuwCVRug4nufvXoAoCKZiSXRM3L6OrO
+DhcAEIx4Vq5ivVGLg2lhy93kyVTIq0+hpwba4UG8m3FszGnTvcrTiXRdE6wzTLgMnQLbN/ZT6k7L
+LyBdE6bmAwWbEI586ij2FCYY2jYFqzynAnHwWXRpKAFPbmX1e+OV0vqYP/qQET39snTID3I3N0j1
+sbcDANjFYeF6Tf+8VGUUoDu0paKI85SAxAnMcVNi7TOxVV0eZa2kk3jrdRW4NuT5BANjl4uSa5lk
+kXq2dmH7Y9QA4E3IvSI4fIzkyn+OorUHgRQ/Obfao/WFwgGLxr3ToupNIXHflhKK9K13a+izBRlL
+QAQjNKzotCTsORuxS7sQrSkgfGD+8jZcLcYtHb07mEU9vRdin7+KjZFosV5iijpyVPNur0t+2bhA
+9T0FeG9Eh+B+wqSR96XSGWF+5zUGlYQkyTbUhjpFPZbWokvdrK0+7SRDYhRHwAliAyI1BNZ6

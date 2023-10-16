@@ -1,0 +1,16 @@
+{
+  "type": "validation-set",
+  "authority-id": "test-snapd",
+  "account-id": "test-snapd",
+  "name": "test-snapd-invalid-hello-world",
+  "series": "16",
+  "sequence": "1",
+  "timestamp": "2023-10-12T17:29:26+00:00",
+  "snaps": [
+    {
+      "id": "buPKUD3TKqCOgLEjjHx5kSiCpIs5cMuQ",
+      "name": "hello-world",
+      "presence": "invalid"
+    }
+  ]
+}

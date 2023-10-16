@@ -1,7 +1,7 @@
 type: validation-set
-authority-id: BhgbYoDtThegqVkEU7oiZP8GQwCoUIxz
+authority-id: test-snapd
 series: 16
-account-id: BhgbYoDtThegqVkEU7oiZP8GQwCoUIxz
+account-id: test-snapd
 name: test-snapd-invalid-hello-world
 sequence: 1
 snaps:
@@ -9,16 +9,16 @@ snaps:
     id: buPKUD3TKqCOgLEjjHx5kSiCpIs5cMuQ
     name: hello-world
     presence: invalid
-timestamp: 2023-10-12T15:13:21+00:00
+timestamp: 2023-10-12T17:29:26+00:00
 sign-key-sha3-384: 7qWG-Uwck6Dji43a3Z8ZZrm7rAziZAch3xf76iFvqe4GaD0LI7U9lYPWMSJAsEgu
 
-AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlKA2GAAoJEEMdJKf2hr9A/YwP/2dp
-9apeN7qgsd+ObJxJt/uWc9BalDz0rprqyxsdqH5bAMVhBF1KGHL7UWRm1D+Tmx9LRIbjEYTjsUPs
-xjs0GEkBfWpI/tRMi9OUNdW+RGlE3Wa/vLjNcF/OeR36K0P9oY7dpMTxOjCSJjBEySFTIA/967iz
-ZqzSTIWnnJPy+5+R9ig6yPfvFMcLn+BPFm3xTzHhB8/RoOKzvww3O5IcY1vojk8Z7+YLQ49mhIXa
-5iAJkNwTtW6OvIS8cblCMJuyWDYh1Ohef3MQ+MftmX6WOcYNcGOQFGWJmjZ+UXqJXLPi754t6ZcU
-wOxjklFYBH68jQKBWT0WFBOLURv6BStlbd5uhwZRRTMhuLs4KvhZr9Zxet8HKcBvBRDNkuIZj0nb
-eUfe9a94BSjzkW9asp6sB8OtKY3oxXjE+vQKCszfr5Vb6wXl66lbcacnHfspwTcKs7LJGQ9qSda3
-ZMftsdiwK9P/bp97U7OZKFcm7EFwtluKaXqjGSS3kPb3ghX2W59XByMBK4syFcwLv1T5lQdmhHpM
-n1kgsXcJ/4uyzLVPApwf4Wi9lOZOa3CvH3dhLEEsBLMdzr5Eba3AYelO/+ZEkG3/QHUcJ5PoZe7S
-ACuh5Ztg+t80QBfhe4ZhWZAWEjPjgP02KmPZjr6Vw24QpI8Fik1Ha9LHfMcKYhSwETms2wyl
+AcLBcwQAAQoAHRYhBGESvKlz1RXG1IBOC0MdJKf2hr9ABQJlLVL+AAoJEEMdJKf2hr9AMMkP/iio
+mggIJlqGzc9b/4Kw18ZjFJhDdvT7hbZRdEmRX50ydxw4/8qzX1jO7HxyvIna2uSDCbrYh4br22Uu
+AhWOAR0HyplNQgY3YX1eATQswsWsTGMG5DEYXFpee+EyNO7jRilciWexW0omh210pEOMFwKHOahF
+NF3XYtMU8ITRHgVZA8ScKVCzHrGLtsE/bJuQ8y9EqvYp7pSSppZqGcKSv1Vxjs4uliHl8Gbs9ATr
+o9Eqq/0V/bBEg+YuU9f+FCwhDkPT4gFnRcyAxGji9trLtJZTYkK365BwMj10Ab5nIEwbgO7WnMB2
+/2py4TuyMWfcjEquX8nxvYveHNyw19ZjCgaSKnXKfMoQnZ7z7NnMELv++cnYW+KfsLOUCcy2uHiT
+k/kdEVviUzPVOmX5NuZWsSNN9fp5zKYIUAu4Wh159YKgqonsxzqk4cv3PZnbi7NOzHWlbgV0VPIJ
+OKAyL0wQrSRgMSOZSgQTiL14vLVy73sCYw7atgruchJPkC/KqNTleVwrHHUXne0uv6OovF18yZX2
+f5GzCilsfEp/kQGTOMclJJXNQcGmK3Odh72oh5wrer4vjFaktiX7Vnvm8Jn0eWFCDY7OxSr+uCBc
+4DpVEM90p0nJ1qmoYJrLv6Cd0XQ/SV0Og0gr6JEmwlKmfQc2Ay5b/u58V0jIGkOMTOidFyKZ

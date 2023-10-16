@@ -4,18 +4,11 @@
     "series": "16",
     "brand-id": "test-snapd",
     "model": "my-model",
-    "revision": "1",
     "architecture": "amd64",
     "timestamp": "2023-10-10T22:08:34+00:00",
     "grade": "dangerous",
     "base": "core22",
     "serial-authority": ["generic"],
-    "validation-sets": [
-        {
-            "name": "test-snapd-invalid-hello-world",
-            "mode": "enforce"
-        }
-    ],
     "snaps": [
         {
             "default-channel": "22/stable",
