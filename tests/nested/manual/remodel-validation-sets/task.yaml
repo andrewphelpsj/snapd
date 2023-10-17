@@ -25,7 +25,11 @@ execute: |
     # Get the nested system version
     VERSION="$(tests.nested show version)"
 
-    echo "Refresh model assertion to revision 2"
-    
-    remote.push "$TESTSLIB/assertions/test-snapd-remodel-invalid-vset-pc-$VERSION.model"
-    not remote.exec sudo snap remodel "test-snapd-remodel-invalid-vset-pc-$VERSION.model" | MATCH 'snap presence is invalid: hello-world'
+    remote.push "${TESTSLIB}/assertions/validation-set-invalid-snap.assert"
+    remote.exec sudo snap ack validation-set-invalid-snap.assert
+
+    # remodel to model that contains a snap that conflicts with an invalid
+    # snap in a validation set
+    remote.push "${TESTSLIB}/assertions/test-snapd-remodel-invalid-vset-pc-${VERSION}.model"
+
+    not remote.exec sudo snap remodel "test-snapd-remodel-invalid-vset-pc-${VERSION}.model" 2>&1 | MATCH 'snap presence is invalid: hello-world'
