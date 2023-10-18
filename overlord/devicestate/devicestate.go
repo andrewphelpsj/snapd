@@ -661,21 +661,6 @@ func sideInfoAndPathFromID(sis []*snap.SideInfo, paths []string, id string) *pat
 	return nil
 }
 
-func modelValidationSetsToAsserts(m *asserts.Model, db asserts.RODatabase) ([]*asserts.ValidationSet, error) {
-	vsAsserts := make([]*asserts.ValidationSet, 0, len(m.ValidationSets()))
-	for _, vs := range m.ValidationSets() {
-		atSeq := vs.AtSequence()
-
-		a, err := resolveValidationSetAssertion(atSeq, db)
-		if err != nil {
-			return nil, fmt.Errorf("internal error: cannot resolve validation-set: %v", err)
-		}
-
-		vsAsserts = append(vsAsserts, a.(*asserts.ValidationSet))
-	}
-	return vsAsserts, nil
-}
-
 func resolveValidationSetAssertion(seq *asserts.AtSequence, db asserts.RODatabase) (asserts.Assertion, error) {
 	if seq.Sequence <= 0 {
 		hdrs, err := asserts.HeadersFromSequenceKey(seq.Type, seq.SequenceKey)
