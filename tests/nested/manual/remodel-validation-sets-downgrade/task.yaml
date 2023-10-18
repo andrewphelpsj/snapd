@@ -38,4 +38,4 @@ execute: |
     remote.exec sudo snap watch "${change_id}"
 
     # make sure that the remodel downgraded the snap
-    snap info hello-world | grep installed | awk '{print $3}' | MATCH '(28)'
+    remote.exec snap info hello-world | grep installed | awk '{print $3}' | MATCH '(28)'
