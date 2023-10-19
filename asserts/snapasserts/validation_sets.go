@@ -192,17 +192,23 @@ type ValidationSets struct {
 // Revisions returns the set of snap revisions that is enforced by the
 // validation sets that ValidationSets manages. ValidationSets.Conflict should
 // be checked before calling this method.
-func (v *ValidationSets) Revisions() map[string]snap.Revision {
+func (v *ValidationSets) Revisions() (map[string]snap.Revision, error) {
+	if err := v.Conflict(); err != nil {
+		return nil, fmt.Errorf("cannot get revisions when validation sets are in conflict: %w", err)
+	}
+
 	snapNameToRevision := make(map[string]snap.Revision, len(v.snaps))
 	for _, sn := range v.snaps {
 		for revision := range sn.revisions {
-			if revision == invalidPresRevision {
+			switch revision {
+			case invalidPresRevision, unspecifiedRevision:
 				continue
+			default:
+				snapNameToRevision[sn.name] = revision
 			}
-			snapNameToRevision[sn.name] = revision
 		}
 	}
-	return snapNameToRevision
+	return snapNameToRevision, nil
 }
 
 const presConflict asserts.Presence = "conflict"

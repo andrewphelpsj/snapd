@@ -1127,7 +1127,7 @@ func verifyModelValidationSets(newModel *asserts.Model, st *state.State, deviceC
 		return nil, err
 	}
 
-	return vSets.Revisions(), nil
+	return vSets.Revisions()
 }
 
 // Remodel takes a new model assertion and generates a change that

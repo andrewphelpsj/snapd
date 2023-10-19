@@ -32,6 +32,7 @@ import (
 	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/naming"
+	"github.com/snapcore/snapd/snap/snaptest"
 )
 
 type validationSetsSuite struct{}
@@ -1141,4 +1142,74 @@ func (s *validationSetsSuite) TestValidationSetKeyComponents(c *C) {
 		},
 	}).(*asserts.ValidationSet))
 	c.Assert(valsetKey.Components(), DeepEquals, []string{"a", "b", "c", "13"})
+}
+
+func (s *validationSetsSuite) TestRevisions(c *C) {
+	valset1 := assertstest.FakeAssertion(map[string]interface{}{
+		"type":         "validation-set",
+		"authority-id": "account-id",
+		"series":       "16",
+		"account-id":   "account-id",
+		"name":         "my-snap-ctl",
+		"sequence":     "1",
+		"snaps": []interface{}{
+			map[string]interface{}{
+				"name":     "my-snap",
+				"id":       snaptest.AssertedSnapID("my-snap"),
+				"presence": "optional",
+				"revision": "10",
+			},
+			map[string]interface{}{
+				"name":     "other-snap",
+				"id":       snaptest.AssertedSnapID("other-snap"),
+				"presence": "required",
+			},
+		},
+	}).(*asserts.ValidationSet)
+
+	valset2 := assertstest.FakeAssertion(map[string]interface{}{
+		"type":         "validation-set",
+		"authority-id": "account-id",
+		"series":       "16",
+		"account-id":   "account-id",
+		"name":         "my-snap-ctl2",
+		"sequence":     "2",
+		"snaps": []interface{}{
+			map[string]interface{}{
+				"name":     "other-snap",
+				"id":       snaptest.AssertedSnapID("other-snap"),
+				"presence": "optional",
+				"revision": "11",
+			},
+			map[string]interface{}{
+				"name":     "another-snap",
+				"id":       snaptest.AssertedSnapID("another-snap"),
+				"presence": "required",
+				"revision": "12",
+			},
+		},
+	}).(*asserts.ValidationSet)
+
+	valsets := snapasserts.NewValidationSets()
+
+	// no validation sets
+	revisions, err := valsets.Revisions()
+	c.Assert(err, IsNil)
+	c.Check(revisions, HasLen, 0)
+
+	c.Assert(valsets.Add(valset1), IsNil)
+	c.Assert(valsets.Add(valset2), IsNil)
+
+	// validity
+	c.Assert(valsets.Conflict(), IsNil)
+
+	revisions, err = valsets.Revisions()
+	c.Assert(err, IsNil)
+	c.Check(revisions, HasLen, 3)
+
+	c.Check(revisions, DeepEquals, map[string]snap.Revision{
+		"my-snap":      snap.R(10),
+		"other-snap":   snap.R(11),
+		"another-snap": snap.R(12),
+	})
 }
