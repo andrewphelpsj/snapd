@@ -12,7 +12,7 @@
     "serial-authority": ["generic"],
     "validation-sets": [
         {
-            "name": "test-snapd-invalid-snap",
+            "name": "test-snapd-invalid-hello-world",
             "mode": "enforce"
         }
     ],
