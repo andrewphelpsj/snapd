@@ -28,11 +28,12 @@ execute: |
     # Get the nested system version
     VERSION="$(tests.nested show version)"
 
-    remote.push "${TESTSLIB}/assertions/test-snapd-remodel-pinned-hello-world-pc-${VERSION}.model"
-
     # make sure it is installed, but it shouldn't be at the pinned revision, 28
     remote.exec snap info hello-world | grep installed | awk '{print $3}' | not MATCH '(28)'
 
+    # the validation set that this model points to is uploaded to the store
+    # under the account-id test-snapd and name test-snapd-pinned-hello-world
+    remote.push "${TESTSLIB}/assertions/test-snapd-remodel-pinned-hello-world-pc-${VERSION}.model"
     change_id="$(remote.exec sudo snap remodel --no-wait "test-snapd-remodel-pinned-hello-world-pc-${VERSION}.model")"
     remote.wait-for reboot "${boot_id}"
     remote.exec sudo snap watch "${change_id}"
