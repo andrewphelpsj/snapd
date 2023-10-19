@@ -211,6 +211,14 @@ func (v *ValidationSets) Revisions() (map[string]snap.Revision, error) {
 	return snapNameToRevision, nil
 }
 
+func (v *ValidationSets) Keys() []ValidationSetKey {
+	keys := make([]ValidationSetKey, 0, len(v.sets))
+	for _, vs := range v.sets {
+		keys = append(keys, NewValidationSetKey(vs))
+	}
+	return keys
+}
+
 const presConflict asserts.Presence = "conflict"
 
 var unspecifiedRevision = snap.R(0)
