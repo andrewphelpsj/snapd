@@ -25,11 +25,16 @@ import (
 	"os"
 
 	"github.com/snapcore/snapd/asserts"
+	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/client"
 	"github.com/snapcore/snapd/gadget"
+	"github.com/snapcore/snapd/overlord/assertstate"
 	"github.com/snapcore/snapd/overlord/auth"
 	"github.com/snapcore/snapd/overlord/devicestate"
 	"github.com/snapcore/snapd/overlord/install"
+	"github.com/snapcore/snapd/overlord/snapstate"
+	"github.com/snapcore/snapd/overlord/state"
+	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
 )
 
@@ -179,6 +184,7 @@ type systemActionRequest struct {
 
 	client.SystemAction
 	client.InstallSystemOptions
+	client.CreateSystemOptions
 }
 
 func postSystemsAction(c *Command, r *http.Request, user *auth.UserState) Response {
@@ -199,6 +205,8 @@ func postSystemsAction(c *Command, r *http.Request, user *auth.UserState) Respon
 		return postSystemActionReboot(c, systemLabel, &req)
 	case "install":
 		return postSystemActionInstall(c, systemLabel, &req)
+	case "create":
+		return postSystemActionCreate(c, systemLabel, &req)
 	default:
 		return BadRequest("unsupported action %q", req.Action)
 	}
@@ -270,4 +278,102 @@ func postSystemActionInstall(c *Command, systemLabel string, req *systemActionRe
 	default:
 		return BadRequest("unsupported install step %q", req.Step)
 	}
+}
+
+func parseValidationSets(validationSets []string) ([]asserts.AtSequence, error) {
+	sets := make([]asserts.AtSequence, 0, len(validationSets))
+	for _, vs := range validationSets {
+		account, name, seq, err := snapasserts.ParseValidationSet(vs)
+		if err != nil {
+			return nil, err
+		}
+
+		assertion := asserts.AtSequence{
+			Type:        asserts.ValidationSetType,
+			SequenceKey: []string{release.Series, account, name},
+			Pinned:      seq > 0,
+			Sequence:    seq,
+			Revision:    asserts.RevisionNotKnown,
+		}
+
+		sets = append(sets, assertion)
+	}
+
+	return sets, nil
+}
+
+func fetchValidationSets(st *state.State, store snapstate.StoreService, validationSets []asserts.AtSequence) ([]*asserts.ValidationSet, error) {
+	sets := make([]*asserts.ValidationSet, 0, len(validationSets))
+	save := func(a asserts.Assertion) error {
+		if vs, ok := a.(*asserts.ValidationSet); ok {
+			sets = append(sets, vs)
+		}
+
+		if err := assertstate.Add(st, a); err != nil {
+			if _, ok := err.(*asserts.RevisionError); ok {
+				return nil
+			}
+			return err
+		}
+
+		return nil
+	}
+
+	db := assertstate.DB(st)
+
+	retrieve := func(ref *asserts.Ref) (asserts.Assertion, error) {
+		st.Unlock()
+		defer st.Lock()
+
+		return store.Assertion(ref.Type, ref.PrimaryKey, nil)
+	}
+
+	retrieveSeq := func(ref *asserts.AtSequence) (asserts.Assertion, error) {
+		st.Unlock()
+		defer st.Lock()
+
+		return store.SeqFormingAssertion(ref.Type, ref.SequenceKey, ref.Sequence, nil)
+	}
+
+	fetcher := asserts.NewSequenceFormingFetcher(db, retrieve, retrieveSeq, save)
+
+	for _, vs := range validationSets {
+		if err := fetcher.FetchSequence(&vs); err != nil {
+			return nil, err
+		}
+	}
+
+	return sets, nil
+}
+
+func postSystemActionCreate(c *Command, systemLabel string, req *systemActionRequest) Response {
+	if systemLabel == "" {
+		return BadRequest("system action requires the system label to be provided")
+	}
+
+	st := c.d.overlord.State()
+	st.Lock()
+	defer st.Unlock()
+
+	sequences, err := parseValidationSets(req.ValidationSets)
+	if err != nil {
+		return BadRequest("cannot parse validation sets: %v", err)
+	}
+
+	store := snapstate.Store(st, nil)
+
+	// TODO: gonna have to make this work for the offline usecase too
+	validationSets, err := fetchValidationSets(c.d.state, store, sequences)
+	if err != nil {
+		return BadRequest("cannot fetch validation sets: %v", err)
+	}
+
+	chg, err := devicestate.CreateRecoverySystem(st, systemLabel, validationSets)
+	if err != nil {
+		return InternalError("cannot create recovery system %q: %v", systemLabel, err)
+	}
+
+	ensureStateSoon(st)
+
+	return AsyncResponse(nil, chg.ID())
 }
