@@ -148,35 +148,37 @@ func (m *DeviceManager) doCreateRecoverySystem(t *state.Task, _ *tomb.Tomb) (err
 	infoGetter := func(name string) (info *snap.Info, present bool, err error) {
 		// snaps are either being fetched or present in the system
 
-		if isRemodel {
-			// in a remodel scenario, the snaps may need to be
-			// fetched and thus their content can be different from
-			// what we have in already installed snaps, so we should
-			// first check the download tasks before consulting
-			// snapstate
-			logger.Debugf("requested info for snap %q being installed during remodel", name)
-			for _, tskID := range setup.SnapSetupTasks {
-				taskWithSnapSetup := st.Task(tskID)
-				snapsup, err := snapstate.TaskSnapSetup(taskWithSnapSetup)
-				if err != nil {
-					return nil, false, err
-				}
-				if snapsup.SnapName() != name {
-					continue
-				}
-				// by the time this task runs, the file has already been
-				// downloaded and validated
-				snapFile, err := snapfile.Open(snapsup.MountFile())
-				if err != nil {
-					return nil, false, err
-				}
-				info, err = snap.ReadInfoFromSnapFile(snapFile, snapsup.SideInfo)
-				if err != nil {
-					return nil, false, err
-				}
+		// TODO: i think we need to always run the code in this branch. really
+		// though, i don't think it matters since setup.SnapSetupTasks will be
+		// empty if we're not supposed to use it?
 
-				return info, true, nil
+		// in a remodel scenario, the snaps may need to be
+		// fetched and thus their content can be different from
+		// what we have in already installed snaps, so we should
+		// first check the download tasks before consulting
+		// snapstate
+		logger.Debugf("requested info for snap %q being installed during remodel", name)
+		for _, tskID := range setup.SnapSetupTasks {
+			taskWithSnapSetup := st.Task(tskID)
+			snapsup, err := snapstate.TaskSnapSetup(taskWithSnapSetup)
+			if err != nil {
+				return nil, false, err
 			}
+			if snapsup.SnapName() != name {
+				continue
+			}
+			// by the time this task runs, the file has already been
+			// downloaded and validated
+			snapFile, err := snapfile.Open(snapsup.MountFile())
+			if err != nil {
+				return nil, false, err
+			}
+			info, err = snap.ReadInfoFromSnapFile(snapFile, snapsup.SideInfo)
+			if err != nil {
+				return nil, false, err
+			}
+
+			return info, true, nil
 		}
 
 		// either a remodel scenario, in which case the snap is not

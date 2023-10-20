@@ -1319,7 +1319,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemTasks
 
 	s.state.Lock()
 	defer s.state.Unlock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234", nil)
 	c.Assert(err, IsNil)
 	c.Assert(chg, NotNil)
 	tsks := chg.Tasks()
@@ -1350,7 +1350,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemTasks
 
 	s.state.Lock()
 	defer s.state.Unlock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234", nil)
 	c.Assert(err, ErrorMatches, `recovery system "1234" already exists`)
 	c.Check(chg, IsNil)
 }
@@ -1362,7 +1362,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemNotSe
 	defer s.state.Unlock()
 	s.state.Set("seeded", nil)
 
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234", nil)
 	c.Assert(err, ErrorMatches, `cannot create new recovery systems until fully seeded`)
 	c.Check(chg, IsNil)
 }
@@ -1424,7 +1424,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemHappy
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	s.state.Lock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234", nil)
 	c.Assert(err, IsNil)
 	c.Assert(chg, NotNil)
 	tsks := chg.Tasks()
@@ -1800,7 +1800,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemUndo(
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	s.state.Lock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234undo")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234undo", nil)
 	c.Assert(err, IsNil)
 	c.Assert(chg, NotNil)
 	tsks := chg.Tasks()
@@ -1919,7 +1919,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemFinal
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	s.state.Lock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234", nil)
 	c.Assert(err, IsNil)
 	c.Assert(chg, NotNil)
 	tsks := chg.Tasks()
@@ -2021,7 +2021,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemErrCl
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	s.state.Lock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234error")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234error", nil)
 	c.Assert(err, IsNil)
 	c.Assert(chg, NotNil)
 	tsks := chg.Tasks()
@@ -2092,7 +2092,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemReboo
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	s.state.Lock()
-	chg, err := devicestate.CreateRecoverySystem(s.state, "1234reboot")
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234reboot", nil)
 	c.Assert(err, IsNil)
 	c.Assert(chg, NotNil)
 	tsks := chg.Tasks()

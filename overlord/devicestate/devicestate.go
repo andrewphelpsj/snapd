@@ -1451,7 +1451,7 @@ func createRecoverySystemTasks(st *state.State, label string, snapSetupTasks []s
 	return state.NewTaskSet(create, finalize), nil
 }
 
-func CreateRecoverySystem(st *state.State, label string) (*state.Change, error) {
+func CreateRecoverySystem(st *state.State, label string, validationSets []*asserts.ValidationSet) (*state.Change, error) {
 	var seeded bool
 	err := st.Get("seeded", &seeded)
 	if err != nil && !errors.Is(err, state.ErrNoState) {
@@ -1460,13 +1460,81 @@ func CreateRecoverySystem(st *state.State, label string) (*state.Change, error) 
 	if !seeded {
 		return nil, fmt.Errorf("cannot create new recovery systems until fully seeded")
 	}
+
+	valsets := snapasserts.NewValidationSets()
+	for _, vs := range validationSets {
+		if err := valsets.Add(vs); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := valsets.Conflict(); err != nil {
+		return nil, err
+	}
+
+	revisions, err := valsets.Revisions()
+	if err != nil {
+		return nil, err
+	}
+
+	model, err := findModel(st)
+	if err != nil {
+		return nil, err
+	}
+
+	allSnaps := append([]*asserts.ModelSnap{}, model.EssentialSnaps()...)
+	allSnaps = append(allSnaps, model.SnapsWithoutEssential()...)
+
+	var tss []*state.TaskSet
+	for _, sn := range allSnaps {
+		rev := revisions[sn.Name]
+		changed, err := installedSnapRevisionChanged(st, sn.Name, rev)
+		if err != nil {
+			return nil, err
+		}
+
+		if !changed {
+			continue
+		}
+
+		const userID = 0
+		ts, err := snapstate.Download(context.Background(), st, sn.Name, &snapstate.RevisionOptions{
+			Channel:        sn.DefaultChannel,
+			Revision:       revisions[sn.Name],
+			ValidationSets: valsets.Keys(),
+		}, userID, snapstate.Flags{}, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		tss = append(tss, ts)
+	}
+
+	snapSetupTasks, err := extractSnapSetupTasks(tss)
+	if err != nil {
+		return nil, err
+	}
+
 	chg := st.NewChange("create-recovery-system", fmt.Sprintf("Create new recovery system with label %q", label))
-	ts, err := createRecoverySystemTasks(st, label, nil)
+	ts, err := createRecoverySystemTasks(st, label, snapSetupTasks)
 	if err != nil {
 		return nil, err
 	}
 	chg.AddAll(ts)
 	return chg, nil
+}
+
+func extractSnapSetupTasks(tss []*state.TaskSet) ([]string, error) {
+	var snapSetupTasks []string
+	for _, ts := range tss {
+		tasks := ts.Tasks()
+		if len(tasks) == 0 {
+			return nil, errors.New("internal error: snap setup task missing from task set")
+		}
+
+		snapSetupTasks = append(snapSetupTasks, tasks[len(tasks)-1].ID())
+	}
+	return snapSetupTasks, nil
 }
 
 // InstallFinish creates a change that will finish the install for the given
