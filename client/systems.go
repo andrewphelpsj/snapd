@@ -221,6 +221,10 @@ type InstallSystemOptions struct {
 	OnVolumes map[string]*gadget.Volume `json:"on-volumes,omitempty"`
 }
 
+type CreateSystemOptions struct {
+	ValidationSets []string `json:"validation-sets,omitempty"`
+}
+
 // InstallSystem will perform the given install step for the given volumes
 func (client *Client) InstallSystem(systemLabel string, opts *InstallSystemOptions) (changeID string, err error) {
 	if systemLabel == "" {
