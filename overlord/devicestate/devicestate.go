@@ -1515,12 +1515,16 @@ func CreateRecoverySystem(st *state.State, label string, validationSets []*asser
 		return nil, err
 	}
 
+	// TODO: need to validate that all snaps that are being installed are
+	// self-contained to snaps that are declared in the model
+
 	chg := st.NewChange("create-recovery-system", fmt.Sprintf("Create new recovery system with label %q", label))
 	ts, err := createRecoverySystemTasks(st, label, snapSetupTasks)
 	if err != nil {
 		return nil, err
 	}
 	chg.AddAll(ts)
+
 	return chg, nil
 }
 
@@ -1532,6 +1536,7 @@ func extractSnapSetupTasks(tss []*state.TaskSet) ([]string, error) {
 			return nil, errors.New("internal error: snap setup task missing from task set")
 		}
 
+		// snap-setup-task is always last
 		snapSetupTasks = append(snapSetupTasks, tasks[len(tasks)-1].ID())
 	}
 	return snapSetupTasks, nil
