@@ -51,6 +51,11 @@ execute: |
       remodel_options="$remodel_options --snap ${sn_name}.snap --assertion ${sn_name}.assert"
   done
 
+  remote.exec "snap download --basename=core core"
+  remodel_options="$remodel_options --snap core.snap --assertion core.assert"
+
+  remote.push "$TESTSLIB/assertions/test-snapd-core22-required-vset.assert"
+  remodel_options="$remodel_options --assertion test-snapd-core22-required-vset.assert"
 
   # Make sure we cannot access the store
   netplan_cfg=50-bad-gw.yaml
@@ -94,3 +99,4 @@ execute: |
   remote.exec "snap model --assertion" | MATCH "brand-id: $SNAPD_TEST_BRAND\$"
   # new model revision
   remote.exec "snap model --assertion" | MATCH '^revision: 1$'
+  remote.exec "snap validate" | MATCH '^test-snapd/test-snapd-core22-required-vset +enforce +1 +valid'

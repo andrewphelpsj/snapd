@@ -111,6 +111,10 @@ func (m *DeviceManager) doSetModel(t *state.Task, _ *tomb.Tomb) (err error) {
 		return injectedSetModelError
 	}
 
+	if err := enforceValidationSetsForRemodel(st, new.ValidationSets()); err != nil {
+		return err
+	}
+
 	// add the assertion only after everything else was successful
 	err = assertstate.Add(st, new)
 	if err != nil && !isSameAssertsRevision(err) {
@@ -148,6 +152,48 @@ func (m *DeviceManager) doSetModel(t *state.Task, _ *tomb.Tomb) (err error) {
 
 	t.SetStatus(state.DoneStatus)
 
+	return nil
+}
+
+func resolveValidationSetAssertion(seq *asserts.AtSequence, db asserts.RODatabase) (asserts.Assertion, error) {
+	if seq.Sequence <= 0 {
+		hdrs, err := asserts.HeadersFromSequenceKey(seq.Type, seq.SequenceKey)
+		if err != nil {
+			return nil, err
+		}
+		return db.FindSequence(seq.Type, hdrs, -1, seq.Type.MaxSupportedFormat())
+	}
+	return seq.Resolve(db.Find)
+}
+
+func enforceValidationSetsForRemodel(st *state.State, sets []*asserts.ModelValidationSet) error {
+	validationSetKeys := make(map[string][]string, len(sets))
+	db := assertstate.DB(st)
+	for _, vs := range sets {
+		a, err := resolveValidationSetAssertion(vs.AtSequence(), db)
+		if err != nil {
+			return err
+		}
+		validationSetKeys[vs.Key()] = a.At().PrimaryKey
+	}
+
+	pinnedValidationSeqs := make(map[string]int, len(sets))
+	for _, vs := range sets {
+		if vs.Sequence > 0 {
+			pinnedValidationSeqs[vs.Key()] = vs.Sequence
+		}
+	}
+
+	snaps, ignoreValidation, err := snapstate.InstalledSnaps(st)
+	if err != nil {
+		return fmt.Errorf("cannot list installed snaps for validation: %w", err)
+	}
+
+	// validation sets should already be downloaded, so we can use the local
+	// version of this function
+	if err := assertstate.ApplyLocalEnforcedValidationSets(st, validationSetKeys, pinnedValidationSeqs, snaps, ignoreValidation); err != nil {
+		return fmt.Errorf("cannot enforce validation sets: %v", err)
+	}
 	return nil
 }
 
