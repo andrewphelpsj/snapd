@@ -61,6 +61,7 @@ var (
 	snapstateInstallPathWithDeviceContext = snapstate.InstallPathWithDeviceContext
 	snapstateUpdateWithDeviceContext      = snapstate.UpdateWithDeviceContext
 	snapstateUpdatePathWithDeviceContext  = snapstate.UpdatePathWithDeviceContext
+	snapstateDownload                     = snapstate.Download
 )
 
 // findModel returns the device model assertion.
@@ -1483,9 +1484,9 @@ type CreateRecoverySystemOptions struct {
 
 var ErrNoRecoverySystem = errors.New("recovery system does not exist")
 
-func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySystemOptions) (*state.Change, error) {
+func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySystemOptions) (chg *state.Change, err error) {
 	var seeded bool
-	err := st.Get("seeded", &seeded)
+	err = st.Get("seeded", &seeded)
 	if err != nil && !errors.Is(err, state.ErrNoState) {
 		return nil, err
 	}
@@ -1517,11 +1518,8 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 	// check that all snaps from the model are constained by a validation set
 	// and check that all snaps from the model are valid in the validation sets.
 	if err := checkAllSnapsFromModelInValidationSets(model, valsets); err != nil {
-		fmt.Println("err", err)
 		return nil, err
 	}
-
-	fmt.Println("here?")
 
 	// for now, required snaps must be in the model
 	if err := checkForRequiredSnapsNotRequiredInModel(model, valsets); err != nil {
@@ -1540,43 +1538,23 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 
 	allRequiredSnapNames := make(map[string]bool)
 
-	var tss []*state.TaskSet
+	var downloadTSS []*state.TaskSet
 	for _, sn := range modelSnaps {
 		modelSnapNames[sn.Name] = true
 		allRequiredSnapNames[sn.Name] = true
 
 		rev := revisions[sn.Name]
 
-		changed, err := installedSnapRevisionChanged(st, sn.Name, rev)
+		needsInstall, err := snapNeedsInstall(st, sn.Name, rev)
 		if err != nil {
 			return nil, err
 		}
 
-		if !changed {
+		if !needsInstall {
 			continue
 		}
 
-		if !offline {
-			const userID = 0
-			ts, err := snapstate.Download(context.Background(), st, sn.Name, blobDir, &snapstate.RevisionOptions{
-				Channel:        sn.DefaultChannel,
-				Revision:       rev,
-				ValidationSets: valsets.Keys(),
-			}, userID, snapstate.Flags{}, nil)
-			if err != nil {
-				return nil, err
-			}
-			tss = append(tss, ts)
-
-			prereqs, err := extractPrereqsFromTaskSet(ts)
-			if err != nil {
-				return nil, err
-			}
-
-			for _, pr := range prereqs {
-				allRequiredSnapNames[pr] = true
-			}
-		} else {
+		if offline {
 			index := -1
 			for i, si := range opts.LocalSnapSideInfos {
 				if sn.ID() == si.SnapID {
@@ -1607,6 +1585,26 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 			for _, pr := range prereqs {
 				allRequiredSnapNames[pr] = true
 			}
+		} else {
+			const userID = 0
+			ts, err := snapstateDownload(context.Background(), st, sn.Name, blobDir, &snapstate.RevisionOptions{
+				Channel:        sn.DefaultChannel,
+				Revision:       rev,
+				ValidationSets: valsets.Keys(),
+			}, userID, snapstate.Flags{}, nil)
+			if err != nil {
+				return nil, err
+			}
+			downloadTSS = append(downloadTSS, ts)
+
+			prereqs, err := extractPrereqsFromTaskSet(ts)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, pr := range prereqs {
+				allRequiredSnapNames[pr] = true
+			}
 		}
 	}
 
@@ -1616,13 +1614,13 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 
 	var snapsupTaskIDs []string
 	if !offline {
-		snapsupTaskIDs, err = extractSnapSetupTaskIDs(tss)
+		snapsupTaskIDs, err = extractSnapSetupTaskIDs(downloadTSS)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	chg := st.NewChange("create-recovery-system", fmt.Sprintf("Create new recovery system with label %q", label))
+	chg = st.NewChange("create-recovery-system", fmt.Sprintf("Create new recovery system with label %q", label))
 	createTS, err := createRecoverySystemTasks(st, label, snapsupTaskIDs, opts.SkipSystemVerification)
 	if err != nil {
 		return nil, err
@@ -1630,15 +1628,29 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 
 	chg.AddAll(createTS)
 
-	for _, ts := range tss {
-		// TODO: remodeling uses some complicated logic to download/install
-		// snaps in a specific order. i'm not sure why, but i do not think it
-		// needs to happen here since we are just downloading.
+	for _, ts := range downloadTSS {
 		createTS.WaitAll(ts)
 		chg.AddAll(ts)
 	}
 
 	return chg, nil
+}
+
+func snapNeedsInstall(st *state.State, name string, rev snap.Revision) (bool, error) {
+	_, err := snapstate.CurrentInfo(st, name)
+	if err != nil {
+		if isNotInstalled(err) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	changed, err := installedSnapRevisionChanged(st, name, rev)
+	if err != nil {
+		return false, err
+	}
+
+	return changed, nil
 }
 
 func stringSetsEqual(left, right map[string]bool) bool {
