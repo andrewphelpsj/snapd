@@ -152,7 +152,7 @@ func (m *DeviceManager) doCreateRecoverySystem(t *state.Task, _ *tomb.Tomb) (err
 	systemDirectory := setup.Directory
 
 	// get all infos
-	infoGetter := func(name string) (info *snap.Info, present bool, err error) {
+	infoGetter := func(name string) (info *snap.Info, path string, present bool, err error) {
 		// snaps will come from one of these places:
 		//   * passed into the task via a list of side infos (these would have
 		//     come from a user posting snaps via the API)
@@ -164,13 +164,15 @@ func (m *DeviceManager) doCreateRecoverySystem(t *state.Task, _ *tomb.Tomb) (err
 				continue
 			}
 
+			path := setup.LocalSnapPaths[i]
+
 			// TODO: need to verify the snaps at some point?
-			info, _, err := backend.OpenSnapFile(setup.LocalSnapPaths[i], si)
+			info, _, err := backend.OpenSnapFile(path, si)
 			if err != nil {
-				return nil, false, err
+				return nil, "", false, err
 			}
 
-			return info, true, nil
+			return info, path, true, nil
 		}
 
 		// in a remodel scenario, the snaps may need to be fetched and thus
@@ -182,7 +184,7 @@ func (m *DeviceManager) doCreateRecoverySystem(t *state.Task, _ *tomb.Tomb) (err
 			taskWithSnapSetup := st.Task(tskID)
 			snapsup, err := snapstate.TaskSnapSetup(taskWithSnapSetup)
 			if err != nil {
-				return nil, false, err
+				return nil, "", false, err
 			}
 			if snapsup.SnapName() != name {
 				continue
@@ -191,14 +193,14 @@ func (m *DeviceManager) doCreateRecoverySystem(t *state.Task, _ *tomb.Tomb) (err
 			// downloaded and validated
 			snapFile, err := snapfile.Open(snapsup.MountFile())
 			if err != nil {
-				return nil, false, err
+				return nil, "", false, err
 			}
 			info, err = snap.ReadInfoFromSnapFile(snapFile, snapsup.SideInfo)
 			if err != nil {
-				return nil, false, err
+				return nil, "", false, err
 			}
 
-			return info, true, nil
+			return info, info.MountFile(), true, nil
 		}
 
 		// either a remodel scenario, in which case the snap is not
@@ -210,15 +212,15 @@ func (m *DeviceManager) doCreateRecoverySystem(t *state.Task, _ *tomb.Tomb) (err
 		if err == nil {
 			hash, _, err := asserts.SnapFileSHA3_384(info.MountFile())
 			if err != nil {
-				return nil, true, fmt.Errorf("cannot compute SHA3 of snap file: %v", err)
+				return nil, "", true, fmt.Errorf("cannot compute SHA3 of snap file: %v", err)
 			}
 			info.Sha3_384 = hash
-			return info, true, nil
+			return info, info.MountFile(), true, nil
 		}
 		if _, ok := err.(*snap.NotInstalledError); !ok {
-			return nil, false, err
+			return nil, "", false, err
 		}
-		return nil, false, nil
+		return nil, "", false, nil
 	}
 
 	observeSnapFileWrite := func(recoverySystemDir, where string) error {

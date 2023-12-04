@@ -1109,7 +1109,9 @@ func remodelTasks(ctx context.Context, st *state.State, current, new *asserts.Mo
 			return nil, fmt.Errorf("cannot select non-conflicting label for recovery system %q: %v", labelBase, err)
 		}
 		const skipSystemVerification = false
-		createRecoveryTasks, err := createRecoverySystemTasks(st, label, snapSetupTasks, skipSystemVerification)
+		// we don't pass in the list of local snaps here because they are
+		// already represented by snapSetupTasks
+		createRecoveryTasks, err := createRecoverySystemTasks(st, label, snapSetupTasks, nil, nil, skipSystemVerification)
 		if err != nil {
 			return nil, err
 		}
@@ -1425,7 +1427,15 @@ func pickRecoverySystemLabel(labelBase string) (string, error) {
 	return fmt.Sprintf("%s-%d", labelBase, maxExistingNumber+1), nil
 }
 
-func createRecoverySystemTasks(st *state.State, label string, snapSetupTasks []string, skipSystemVerification bool) (*state.TaskSet, error) {
+func createRecoverySystemTasks(st *state.State, label string, snapSetupTasks []string, localSideInfos []*snap.SideInfo, localPaths []string, skipSystemVerification bool) (*state.TaskSet, error) {
+	if len(localSideInfos) != len(localPaths) {
+		return nil, fmt.Errorf("internal error: list of side infos must be same length as list of paths")
+	}
+
+	if len(localSideInfos) > 0 && len(snapSetupTasks) > 0 {
+		return nil, fmt.Errorf("internal error: cannot create recovery system with both local snaps and snap setup tasks")
+	}
+
 	// precondition check, the directory should not exist yet
 	systemDirectory := filepath.Join(boot.InitramfsUbuntuSeedDir, "systems", label)
 	exists, _, err := osutil.DirExists(systemDirectory)
@@ -1443,6 +1453,8 @@ func createRecoverySystemTasks(st *state.State, label string, snapSetupTasks []s
 		Directory: systemDirectory,
 		// IDs of the tasks carrying snap-setup
 		SnapSetupTasks:         snapSetupTasks,
+		LocalSnaps:             localSideInfos,
+		LocalSnapPaths:         localPaths,
 		SkipSystemVerification: skipSystemVerification,
 	})
 
@@ -1621,7 +1633,7 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 	}
 
 	chg = st.NewChange("create-recovery-system", fmt.Sprintf("Create new recovery system with label %q", label))
-	createTS, err := createRecoverySystemTasks(st, label, snapsupTaskIDs, opts.SkipSystemVerification)
+	createTS, err := createRecoverySystemTasks(st, label, snapsupTaskIDs, opts.LocalSnapSideInfos, opts.LocalSnapPaths, opts.SkipSystemVerification)
 	if err != nil {
 		return nil, err
 	}
@@ -1683,7 +1695,10 @@ func extractPrereqsAndSideInfoAndPath(si *snap.SideInfo, path string) ([]string,
 	// prereqs + base
 	prereqs := make([]string, 0, len(providers)+1)
 
-	prereqs = append(prereqs, info.Base)
+	if info.Base != "" {
+		prereqs = append(prereqs, info.Base)
+	}
+
 	for p := range providers {
 		prereqs = append(prereqs, p)
 	}
@@ -1705,10 +1720,11 @@ func extractPrereqsFromTaskSet(ts *state.TaskSet) ([]string, error) {
 	// prereqs + base
 	prereqs := make([]string, 0, len(snapsup.Prereq)+1)
 
-	prereqs = append(prereqs, snapsup.Base)
-	for _, prereq := range snapsup.Prereq {
-		prereqs = append(prereqs, prereq)
+	if snapsup.Base != "" {
+		prereqs = append(prereqs, snapsup.Base)
 	}
+
+	prereqs = append(prereqs, snapsup.Prereq...)
 
 	return prereqs, nil
 }
