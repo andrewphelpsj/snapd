@@ -1576,7 +1576,7 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 			}
 			if index == -1 {
 				return nil, fmt.Errorf(
-					"missing snap (%q, rev %v) from local snaps provided for offline creation of recovery system", sn.Name, rev,
+					"missing snap from local snaps provided for offline creation of recovery system: %q, rev %v", sn.Name, rev,
 				)
 			}
 
