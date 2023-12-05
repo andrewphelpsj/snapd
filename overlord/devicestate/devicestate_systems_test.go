@@ -2709,7 +2709,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 				"presence": "required",
 			},
 			map[string]interface{}{
-				"name":     "core22",
+				"name":     "core20",
 				"id":       fakeSnapID("core20"),
 				"revision": "12",
 				"presence": "required",
@@ -2889,6 +2889,80 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 	vSetErr := &snapasserts.ValidationSetsConflictError{}
 	c.Check(errors.As(err, &vSetErr), Equals, true)
 	c.Check(vSetErr.Snaps[fakeSnapID("pc")].Error(), Equals, `cannot constrain snap "pc" at different revisions 12 (canonical/vset-1), 13 (canonical/vset-2)`)
+}
+
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemSkipSystemVerification(c *C) {
+	devicestate.SetBootOkRan(s.mgr, true)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	s.state.Set("refresh-privacy-key", "some-privacy-key")
+	s.mockStandardSnapsModeenvAndBootloaderState(c)
+
+	chg, err := devicestate.CreateRecoverySystem(s.state, "1234", devicestate.CreateRecoverySystemOptions{
+		SkipSystemVerification: true,
+	})
+	c.Assert(err, IsNil)
+	c.Assert(chg, NotNil)
+
+	tsks := chg.Tasks()
+	// should be just the create system task
+	c.Check(tsks, HasLen, 1)
+	tskCreate := tsks[0]
+	c.Assert(tskCreate.Summary(), Matches, `Create recovery system with label "1234"`)
+
+	s.state.Unlock()
+	s.settle(c)
+	s.state.Lock()
+
+	c.Assert(chg.Err(), IsNil)
+	c.Assert(tskCreate.Status(), Equals, state.DoneStatus)
+
+	// a reboot is NOT expected
+	c.Check(s.restartRequests, HasLen, 0)
+
+	validateCore20Seed(c, "1234", s.model, s.storeSigning.Trusted)
+	m, err := s.bootloader.GetBootVars("try_recovery_system", "recovery_system_status")
+	c.Assert(err, IsNil)
+
+	// these values should not be set, since we're not actually going to try
+	// anything
+	c.Check(m, DeepEquals, map[string]string{
+		"try_recovery_system":    "",
+		"recovery_system_status": "",
+	})
+
+	modeenvAfterFinalize, err := boot.ReadModeenv("")
+	c.Assert(err, IsNil)
+	c.Check(modeenvAfterFinalize, testutil.JsonEquals, boot.Modeenv{
+		Mode:                   "run",
+		Base:                   "core20_3.snap",
+		CurrentKernels:         []string{"pc-kernel_2.snap"},
+		CurrentRecoverySystems: []string{"othersystem", "1234"},
+		GoodRecoverySystems:    []string{"othersystem", "1234"},
+
+		Model:          s.model.Model(),
+		BrandID:        s.model.BrandID(),
+		Grade:          string(s.model.Grade()),
+		ModelSignKeyID: s.model.SignKeyID(),
+	})
+
+	// expect 1 more call to SetBootVars when system is marked recovery capable
+	c.Check(s.bootloader.SetBootVarsCalls, Equals, 2)
+
+	// this file should be removed in the create-recovery's-system's cleanup
+	// handler
+	c.Check(filepath.Join(boot.InitramfsUbuntuSeedDir, "systems", "1234", "snapd-new-file-log"), testutil.FileAbsent)
+
+	checkForSnapsInSeed(c, "snapd_4.snap", "pc-kernel_2.snap", "core20_3.snap", "pc_1.snap")
+}
+
+func checkForSnapsInSeed(c *C, snaps ...string) {
+	snapsDir := filepath.Join(boot.InitramfsUbuntuSeedDir, "snaps")
+	for _, snap := range snaps {
+		c.Check(filepath.Join(snapsDir, snap), testutil.FilePresent)
+	}
 }
 
 func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsHappy(c *C) {

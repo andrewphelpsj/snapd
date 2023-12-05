@@ -480,6 +480,14 @@ func (m *DeviceManager) cleanupRecoverySystem(t *state.Task, _ *tomb.Tomb) error
 	if err != nil {
 		return err
 	}
+
+	// if we're not skipping system verification and this is run after
+	// create-recovery-system, then we can defer running cleanup until after
+	// finalize-recovery-system
+	if !setup.SkipSystemVerification && t.Kind() == "create-recovery-system" {
+		return nil
+	}
+
 	if err := os.Remove(filepath.Join(setup.Directory, "snapd-new-file-log")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
