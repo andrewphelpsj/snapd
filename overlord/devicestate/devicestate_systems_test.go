@@ -2691,6 +2691,61 @@ func fakeSnapID(name string) string {
 	return snaptest.AssertedSnapID(name)
 }
 
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationModelMissingRequired(c *C) {
+	devicestate.SetBootOkRan(s.mgr, true)
+
+	vset1, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
+		"type":         "validation-set",
+		"authority-id": "canonical",
+		"series":       "16",
+		"account-id":   "canonical",
+		"name":         "vset-1",
+		"sequence":     "1",
+		"snaps": []interface{}{
+			map[string]interface{}{
+				"name":     "snapd",
+				"id":       fakeSnapID("snapd"),
+				"revision": "12",
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "core22",
+				"id":       fakeSnapID("core20"),
+				"revision": "12",
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "pc",
+				"id":       fakeSnapID("pc"),
+				"revision": "12",
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "pc-kernel",
+				"id":       fakeSnapID("pc-kernel"),
+				"revision": "12",
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "snap-1",
+				"id":       fakeSnapID("snap-1"),
+				"revision": "12",
+				"presence": "required",
+			},
+		},
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}, nil, "")
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	_, err = devicestate.CreateRecoverySystem(s.state, "1234", devicestate.CreateRecoverySystemOptions{
+		ValidationSets: []*asserts.ValidationSet{vset1.(*asserts.ValidationSet)},
+	})
+	c.Assert(err, ErrorMatches, "cannot have required snap in validation set that is not present in the model: snap-1")
+}
+
 func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSnapInvalid(c *C) {
 	devicestate.SetBootOkRan(s.mgr, true)
 
