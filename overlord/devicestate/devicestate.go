@@ -1599,7 +1599,8 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 			}
 		} else {
 			const userID = 0
-			ts, err := snapstateDownload(context.Background(), st, sn.Name, blobDir, &snapstate.RevisionOptions{
+			// TODO: should this context be the http request context?
+			ts, err := snapstateDownload(context.TODO(), st, sn.Name, blobDir, &snapstate.RevisionOptions{
 				Channel:        sn.DefaultChannel,
 				Revision:       rev,
 				ValidationSets: valsets.Keys(),
