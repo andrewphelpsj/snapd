@@ -3408,3 +3408,92 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 	c.Check(s.bootloader.SetBootVarsCalls, Equals, 1)
 	c.Check(filepath.Join(boot.InitramfsUbuntuSeedDir, "systems", "1234", "snapd-new-file-log"), testutil.FileAbsent)
 }
+
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsOfflineWrongRevisionSnap(c *C) {
+	devicestate.SetBootOkRan(s.mgr, true)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	// note that the revision for "pc" is different than the expected revisions
+	providedRevisions := map[string]snap.Revision{
+		"pc":        snap.R(100),
+		"pc-kernel": snap.R(11),
+		"core20":    snap.R(12),
+		"snapd":     snap.R(13),
+	}
+
+	expectedRevisions := map[string]snap.Revision{
+		"pc":        snap.R(10),
+		"pc-kernel": snap.R(11),
+		"core20":    snap.R(12),
+		"snapd":     snap.R(13),
+	}
+
+	snapTypes := map[string]snap.Type{
+		"pc":        snap.TypeGadget,
+		"pc-kernel": snap.TypeKernel,
+		"core20":    snap.TypeBase,
+		"snapd":     snap.TypeSnapd,
+	}
+
+	vsetAssert, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
+		"type":         "validation-set",
+		"authority-id": "canonical",
+		"series":       "16",
+		"account-id":   "canonical",
+		"name":         "vset-1",
+		"sequence":     "1",
+		"snaps": []interface{}{
+			map[string]interface{}{
+				"name":     "pc",
+				"id":       fakeSnapID("pc"),
+				"revision": expectedRevisions["pc"].String(),
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "pc-kernel",
+				"id":       fakeSnapID("pc-kernel"),
+				"revision": expectedRevisions["pc-kernel"].String(),
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "core20",
+				"id":       fakeSnapID("core20"),
+				"revision": expectedRevisions["core20"].String(),
+				"presence": "required",
+			},
+			map[string]interface{}{
+				"name":     "snapd",
+				"id":       fakeSnapID("snapd"),
+				"revision": expectedRevisions["snapd"].String(),
+				"presence": "required",
+			},
+		},
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}, nil, "")
+	c.Assert(err, IsNil)
+
+	assertstatetest.AddMany(s.state, vsetAssert)
+
+	localSideInfos := make([]*snap.SideInfo, 0, len(providedRevisions))
+	localPaths := make([]string, 0, len(providedRevisions))
+	for name, rev := range providedRevisions {
+		si, path := createLocalSnap(c, name, fakeSnapID(name), rev.N, string(snapTypes[name]), "", nil)
+
+		localSideInfos = append(localSideInfos, si)
+		localPaths = append(localPaths, path)
+
+		s.setupSnapDeclForNameAndID(c, name, si.SnapID, "canonical")
+		s.setupSnapRevisionForFileAndID(c, path, si.SnapID, "canonical", rev)
+	}
+
+	s.mockStandardSnapsModeenvAndBootloaderState(c)
+
+	_, err = devicestate.CreateRecoverySystem(s.state, "1234", devicestate.CreateRecoverySystemOptions{
+		ValidationSets:     []*asserts.ValidationSet{vsetAssert.(*asserts.ValidationSet)},
+		LocalSnapPaths:     localPaths,
+		LocalSnapSideInfos: localSideInfos,
+	})
+	c.Assert(err, ErrorMatches, `snap "pc" with revision 100 does not match revision required by validation sets \(10\)`)
+}
