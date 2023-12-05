@@ -1193,7 +1193,7 @@ func checkAllSnapsFromModelInValidationSets(model *asserts.Model, vSets *snapass
 		}
 
 		if !vSets.CanBePresent(sn) {
-			return fmt.Errorf("snap presence is invalid: %s", sn.SnapName())
+			return fmt.Errorf("snap presence is marked invalid by validation set: %s", sn.SnapName())
 		}
 	}
 	return nil
