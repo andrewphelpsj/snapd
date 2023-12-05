@@ -1621,8 +1621,8 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 		}
 	}
 
-	if !stringSetsEqual(allRequiredSnapNames, modelSnapNames) {
-		return nil, errors.New("internal error: not all required snaps are accounted for")
+	if missing := stringsNotInSet(allRequiredSnapNames, modelSnapNames); len(missing) > 0 {
+		return nil, fmt.Errorf("cannot create recovery system from a model that does not contain all required snaps: missing snaps: %v", missing)
 	}
 
 	var snapsupTaskIDs []string
@@ -1666,18 +1666,18 @@ func snapNeedsInstall(st *state.State, name string, rev snap.Revision) (bool, er
 	return changed, nil
 }
 
-func stringSetsEqual(left, right map[string]bool) bool {
-	if len(right) != len(left) {
-		return false
-	}
-
-	for k := range left {
-		if right[k] != left[k] {
-			return false
+func stringsNotInSet(reference map[string]bool, target map[string]bool) []string {
+	var missing []string
+	for k := range reference {
+		if !target[k] {
+			missing = append(missing, k)
 		}
 	}
 
-	return true
+	// sort this for test consistency
+	sort.Strings(missing)
+
+	return missing
 }
 
 func extractPrereqsAndSideInfoAndPath(si *snap.SideInfo, path string) ([]string, error) {
@@ -1719,13 +1719,15 @@ func extractPrereqsFromTaskSet(ts *state.TaskSet) ([]string, error) {
 	}
 
 	// prereqs + base
-	prereqs := make([]string, 0, len(snapsup.Prereq)+1)
+	prereqs := make([]string, 0, len(snapsup.PrereqContentAttrs)+1)
 
 	if snapsup.Base != "" {
 		prereqs = append(prereqs, snapsup.Base)
 	}
 
-	prereqs = append(prereqs, snapsup.Prereq...)
+	for p := range snapsup.PrereqContentAttrs {
+		prereqs = append(prereqs, p)
+	}
 
 	return prereqs, nil
 }
