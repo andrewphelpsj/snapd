@@ -2683,6 +2683,13 @@ func (s *modelAndGadgetInfoSuite) TestSystemAndGadgetInfoBadClassicGadget(c *C) 
 	c.Assert(err, ErrorMatches, `cannot validate gadget.yaml: system-boot and system-data roles are needed on classic`)
 }
 
+func fakeSnapID(name string) string {
+	if id := naming.WellKnownSnapID(name); id != "" {
+		return id
+	}
+	return snaptest.AssertedSnapID(name)
+}
+
 func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsHappy(c *C) {
 	devicestate.SetBootOkRan(s.mgr, true)
 
@@ -2700,13 +2707,6 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 		"snapd":     snap.TypeSnapd,
 	}
 
-	snapID := func(name string) string {
-		if id := naming.WellKnownSnapID(name); id != "" {
-			return id
-		}
-		return snaptest.AssertedSnapID(name)
-	}
-
 	vsetAssert, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
 		"type":         "validation-set",
 		"authority-id": "canonical",
@@ -2717,25 +2717,25 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 		"snaps": []interface{}{
 			map[string]interface{}{
 				"name":     "pc",
-				"id":       snapID("pc"),
+				"id":       fakeSnapID("pc"),
 				"revision": snapRevisions["pc"].String(),
 				"presence": "required",
 			},
 			map[string]interface{}{
 				"name":     "pc-kernel",
-				"id":       snapID("pc-kernel"),
+				"id":       fakeSnapID("pc-kernel"),
 				"revision": snapRevisions["pc-kernel"].String(),
 				"presence": "required",
 			},
 			map[string]interface{}{
 				"name":     "core20",
-				"id":       snapID("core20"),
+				"id":       fakeSnapID("core20"),
 				"revision": snapRevisions["core20"].String(),
 				"presence": "required",
 			},
 			map[string]interface{}{
 				"name":     "snapd",
-				"id":       snapID("snapd"),
+				"id":       fakeSnapID("snapd"),
 				"revision": snapRevisions["snapd"].String(),
 				"presence": "required",
 			},
@@ -2818,7 +2818,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 			SideInfo: &snap.SideInfo{
 				RealName: name,
 				Revision: opts.Revision,
-				SnapID:   snapID(name),
+				SnapID:   fakeSnapID(name),
 			},
 			Base: "core20",
 			Type: snapTypes[name],
@@ -2956,13 +2956,6 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 		"snapd":     snap.TypeSnapd,
 	}
 
-	snapID := func(name string) string {
-		if id := naming.WellKnownSnapID(name); id != "" {
-			return id
-		}
-		return snaptest.AssertedSnapID(name)
-	}
-
 	vsetAssert, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
 		"type":         "validation-set",
 		"authority-id": "canonical",
@@ -2973,25 +2966,25 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 		"snaps": []interface{}{
 			map[string]interface{}{
 				"name":     "pc",
-				"id":       snapID("pc"),
+				"id":       fakeSnapID("pc"),
 				"revision": snapRevisions["pc"].String(),
 				"presence": "required",
 			},
 			map[string]interface{}{
 				"name":     "pc-kernel",
-				"id":       snapID("pc-kernel"),
+				"id":       fakeSnapID("pc-kernel"),
 				"revision": snapRevisions["pc-kernel"].String(),
 				"presence": "required",
 			},
 			map[string]interface{}{
 				"name":     "core20",
-				"id":       snapID("core20"),
+				"id":       fakeSnapID("core20"),
 				"revision": snapRevisions["core20"].String(),
 				"presence": "required",
 			},
 			map[string]interface{}{
 				"name":     "snapd",
-				"id":       snapID("snapd"),
+				"id":       fakeSnapID("snapd"),
 				"revision": snapRevisions["snapd"].String(),
 				"presence": "required",
 			},
@@ -3026,7 +3019,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 			}
 		}
 
-		si, path := createLocalSnap(c, name, snapID(name), rev.N, string(snapTypes[name]), base, files)
+		si, path := createLocalSnap(c, name, fakeSnapID(name), rev.N, string(snapTypes[name]), base, files)
 
 		localSideInfos = append(localSideInfos, si)
 		localPaths = append(localPaths, path)
