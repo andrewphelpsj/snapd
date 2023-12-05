@@ -2691,7 +2691,7 @@ func fakeSnapID(name string) string {
 	return snaptest.AssertedSnapID(name)
 }
 
-func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationModelMissingRequired(c *C) {
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsModelMissingRequired(c *C) {
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	vset1, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
@@ -2746,7 +2746,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 	c.Assert(err, ErrorMatches, "cannot have required snap in validation set that is not present in the model: snap-1")
 }
 
-func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSnapInvalid(c *C) {
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsSnapInvalid(c *C) {
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	vset1, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
@@ -2794,7 +2794,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 	c.Assert(err, ErrorMatches, "snap presence is marked invalid by validation set: pc-kernel")
 }
 
-func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSnapNotConstained(c *C) {
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsSnapNotConstained(c *C) {
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	vset1, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
@@ -2837,7 +2837,7 @@ func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValid
 	c.Assert(err, ErrorMatches, "snap presence is not constained by a validation set: pc-kernel")
 }
 
-func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationConflict(c *C) {
+func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemValidationSetsConflict(c *C) {
 	devicestate.SetBootOkRan(s.mgr, true)
 
 	vset1, err := s.brands.Signing("canonical").Sign(asserts.ValidationSetType, map[string]interface{}{
