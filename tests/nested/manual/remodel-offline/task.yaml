@@ -16,6 +16,9 @@ environment:
   GADGET_NAME: test-snapd-remodel-pc
   NEW_GADGET_NAME: test-snapd-remodel-pc-min-size
 
+  USE_PREINSTALLED_SNAPS/use_preinstalled_snap: true
+  USE_PREINSTALLED_SNAPS/provide_all_snaps_locally: false
+
 prepare: |
   export NESTED_CUSTOM_MODEL="$TESTSLIB/assertions/test-snapd-remodel-offline-rev0.model"
   tests.nested build-image core
@@ -47,8 +50,12 @@ execute: |
   done
 
   for sn_name in core22 core; do
-      remote.exec "snap download --basename=${sn_name} ${sn_name}"
-      remodel_options="$remodel_options --snap ${sn_name}.snap --assertion ${sn_name}.assert"
+      if [ "${USE_PREINSTALLED_SNAPS}" = 'true' ]; then
+          remote.exec "snap install ${sn_name}"
+      else
+          remote.exec "snap download --basename=${sn_name} ${sn_name}"
+          remodel_options="$remodel_options --snap ${sn_name}.snap --assertion ${sn_name}.assert"
+      fi
   done
 
   remote.exec "snap download --revision=28 --basename=hello-world hello-world"
