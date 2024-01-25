@@ -15,9 +15,13 @@ environment:
   SNAPD_TEST_BRAND: test-snapd
   GADGET_NAME: test-snapd-remodel-pc
   NEW_GADGET_NAME: test-snapd-remodel-pc-min-size
+  USE_PREINSTALLED_SNAPS: false
+  USE_PREVIOUS_REVISION: false
 
   USE_PREINSTALLED_SNAPS/use_preinstalled_snap: true
   USE_PREINSTALLED_SNAPS/provide_all_snaps_locally: false
+
+  USE_PREVIOUS_REVISION/use_previous_revision: true
 
 prepare: |
   export NESTED_CUSTOM_MODEL="$TESTSLIB/assertions/test-snapd-remodel-offline-rev0.model"
@@ -58,8 +62,14 @@ execute: |
       fi
   done
 
-  remote.exec "snap download --revision=28 --basename=hello-world hello-world"
-  remodel_options="$remodel_options --snap hello-world.snap --assertion hello-world.assert"
+  if [ "${USE_PREVIOUS_REVISION}" = 'true' ]; then
+      remote.exec "snap install --revision=28 hello-world"
+      remote.exec "snap refresh hello-world"
+      remote.exec "snap list hello-world" | awk 'NR != 1 { print $3 }' | NOMATCH 28
+  else
+      remote.exec "snap download --revision=28 --basename=hello-world hello-world"
+      remodel_options="$remodel_options --snap hello-world.snap --assertion hello-world.assert"
+  fi
 
   remote.push "$TESTSLIB/assertions/test-snapd-core22-required-vset.assert"
   remodel_options="$remodel_options --assertion test-snapd-core22-required-vset.assert"
