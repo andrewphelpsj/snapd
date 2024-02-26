@@ -52,6 +52,7 @@ import (
 	"github.com/snapcore/snapd/sandbox/cgroup"
 	"github.com/snapcore/snapd/sandbox/selinux"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/snapdir"
 	"github.com/snapcore/snapd/snap/snapenv"
 	"github.com/snapcore/snapd/strutil/shlex"
 	"github.com/snapcore/snapd/timeutil"
@@ -336,6 +337,12 @@ func getSnapInfo(snapName string, revision snap.Revision) (info *snap.Info, err 
 	return info, err
 }
 
+func getComponentInfo(name string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
+	mountDir := snap.ComponentMountDir(name, snapInfo.InstanceName(), snapInfo.Revision)
+	container := snapdir.New(mountDir)
+	return snap.ReadComponentInfoFromContainer(container, snapInfo)
+}
+
 func createOrUpdateUserDataSymlink(info *snap.Info, usr *user.User, opts *dirs.SnapDirOptions) error {
 	// 'current' symlink for user data (SNAP_USER_DATA)
 	userData := info.UserDataDir(usr.HomeDir, opts)
@@ -516,26 +523,46 @@ func (x *cmdRun) snapRunApp(snapApp string, args []string) error {
 		}
 	}
 
-	return x.runSnapConfine(info, app.SecurityTag(), snapApp, "", args)
+	return x.runSnapConfine(info, nil, app.SecurityTag(), snapApp, nil, args)
 }
 
-func (x *cmdRun) snapRunHook(snapName string) error {
+func (x *cmdRun) snapRunHook(snapTarget string) error {
+	snapInstance, componentName := snap.SplitSnapComponentInstanceName(snapTarget)
+
 	revision, err := snap.ParseRevision(x.Revision)
 	if err != nil {
 		return err
 	}
 
-	info, err := getSnapInfo(snapName, revision)
+	info, err := getSnapInfo(snapInstance, revision)
 	if err != nil {
 		return err
 	}
 
-	hook := info.Hooks[x.HookName]
-	if hook == nil {
-		return fmt.Errorf(i18n.G("cannot find hook %q in %q"), x.HookName, snapName)
+	var (
+		hook      *snap.HookInfo
+		component *snap.ComponentInfo
+	)
+	if componentName == "" {
+		hook = info.Hooks[x.HookName]
+	} else {
+		// TODO: we need to figure out how to get the component revision to set
+		// the environment variables that we provide to the hook
+		componentRevision := snap.Revision{}
+		_ = componentRevision
+
+		component, err = getComponentInfo(componentName, info)
+		if err != nil {
+			return err
+		}
+		hook = component.Hooks[x.HookName]
 	}
 
-	return x.runSnapConfine(info, hook.SecurityTag(), snapName, hook.Name, nil)
+	if hook == nil {
+		return fmt.Errorf(i18n.G("cannot find hook %q in %q"), x.HookName, snapTarget)
+	}
+
+	return x.runSnapConfine(info, component, hook.SecurityTag(), snapTarget, hook, nil)
 }
 
 func (x *cmdRun) snapRunTimer(snapApp, timer string, args []string) error {
@@ -716,7 +743,7 @@ func migrateXauthority(info *snap.Info) (string, error) {
 	return targetPath, nil
 }
 
-func activateXdgDocumentPortal(info *snap.Info, snapApp, hook string) error {
+func activateXdgDocumentPortal(info *snap.Info, snapApp string, hook *snap.HookInfo) error {
 	// Don't do anything for apps or hooks that don't plug the
 	// desktop interface
 	//
@@ -728,8 +755,8 @@ func activateXdgDocumentPortal(info *snap.Info, snapApp, hook string) error {
 	// just by snaps, so this is at most, pre-emptively using some
 	// extra memory.
 	var plugs map[string]*snap.PlugInfo
-	if hook != "" {
-		plugs = info.Hooks[hook].Plugs
+	if hook != nil {
+		plugs = hook.Plugs
 	} else {
 		_, appName := snap.SplitSnapApp(snapApp)
 		plugs = info.Apps[appName].Plugs
@@ -1047,14 +1074,14 @@ func (x *cmdRun) runCmdUnderStrace(origCmd []string, envForExec envForExecFunc) 
 	return err
 }
 
-func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook string, args []string) error {
+func (x *cmdRun) runSnapConfine(info *snap.Info, component *snap.ComponentInfo, securityTag, snapTarget string, hook *snap.HookInfo, args []string) error {
 	snapConfine, err := snapdHelperPath("snap-confine")
 	if err != nil {
 		return err
 	}
 	if !osutil.FileExists(snapConfine) {
-		if hook != "" {
-			logger.Noticef("WARNING: skipping running hook %q of snap %q: missing snap-confine", hook, info.InstanceName())
+		if hook != nil {
+			logger.Noticef("WARNING: skipping running hook %q of snap %q: missing snap-confine", hook.Name, info.InstanceName())
 			return nil
 		}
 		return fmt.Errorf(i18n.G("missing snap-confine: try updating your core/snapd package"))
@@ -1062,7 +1089,13 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook stri
 
 	logger.Debugf("executing snap-confine from %s", snapConfine)
 
-	snapName, _ := snap.SplitSnapApp(snapApp)
+	var snapName string
+	if hook != nil {
+		snapName, _ = snap.SplitSnapComponentInstanceName(snapTarget)
+	} else {
+		snapName, _ = snap.SplitSnapApp(snapTarget)
+	}
+
 	opts, err := getSnapDirOptions(snapName)
 	if err != nil {
 		return fmt.Errorf("cannot get snap dir options: %w", err)
@@ -1077,7 +1110,7 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook stri
 		logger.Noticef("WARNING: cannot copy user Xauthority file: %s", err)
 	}
 
-	if err := activateXdgDocumentPortal(info, snapApp, hook); err != nil {
+	if err := activateXdgDocumentPortal(info, snapTarget, hook); err != nil {
 		logger.Noticef("WARNING: cannot start document portal: %s", err)
 	}
 
@@ -1097,7 +1130,7 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook stri
 			// kernels have no explicit base, we use the boot base
 			modelAssertion, err := x.client.CurrentModelAssertion()
 			if err != nil {
-				if hook != "" {
+				if hook != nil {
 					return fmt.Errorf("cannot get model assertion to setup kernel hook run: %v", err)
 				} else {
 					return fmt.Errorf("cannot get model assertion to setup kernel app run: %v", err)
@@ -1137,19 +1170,19 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook stri
 		cmd = append(cmd, "--command="+x.Command)
 	}
 
-	if hook != "" {
-		cmd = append(cmd, "--hook="+hook)
+	if hook != nil {
+		cmd = append(cmd, "--hook="+hook.Name)
 	}
 
 	// snap-exec is POSIXly-- options must come before positionals.
-	cmd = append(cmd, snapApp)
+	cmd = append(cmd, snapTarget)
 	cmd = append(cmd, args...)
 
 	env, err := osutil.OSEnvironment()
 	if err != nil {
 		return err
 	}
-	snapenv.ExtendEnvForRun(env, info, nil, opts)
+	snapenv.ExtendEnvForRun(env, info, component, opts)
 
 	if len(xauthPath) > 0 {
 		// Environment is not nil here because it comes from
@@ -1210,9 +1243,9 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook stri
 	//
 	// For more information about systemd cgroups, including unit types, see:
 	// https://www.freedesktop.org/wiki/Software/systemd/ControlGroupInterface/
-	_, appName := snap.SplitSnapApp(snapApp)
+	_, appName := snap.SplitSnapApp(snapTarget)
 	needsTracking := true
-	if app := info.Apps[appName]; hook == "" && app != nil && app.IsService() {
+	if app := info.Apps[appName]; hook == nil && app != nil && app.IsService() {
 		// If we are running a service app then we do not need to use
 		// application tracking. Services, both in the system and user scope,
 		// do not need tracking because systemd already places them in a
@@ -1236,7 +1269,7 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, securityTag, snapApp, hook stri
 		}
 	}
 	// Allow using the session bus for all apps but not for hooks.
-	allowSessionBus := hook == ""
+	allowSessionBus := hook == nil
 	// Track, or confirm existing tracking from systemd.
 	if needsTracking {
 		opts := &cgroup.TrackingOptions{AllowSessionBus: allowSessionBus}
