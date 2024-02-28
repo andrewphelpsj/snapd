@@ -225,7 +225,7 @@ func postSystemsActionForm(c *Command, r *http.Request, contentTypeParams map[st
 
 	switch action[0] {
 	case "create":
-		return postSystemActionCreateOffline(c, form)
+		return postSystemActionCreateFromForm(c, form)
 	default:
 		return BadRequest("%s action is not supported for content type multipart/form-data", action[0])
 	}
@@ -371,7 +371,7 @@ func readValueFromFormWithDefault(form *Form, key string, defaultValue string) (
 	}
 }
 
-func postSystemActionCreateOffline(c *Command, form *Form) Response {
+func postSystemActionCreateFromForm(c *Command, form *Form) Response {
 	label, errRsp := readValueFromForm(form, "label")
 	if errRsp != nil {
 		return errRsp
@@ -457,6 +457,8 @@ func postSystemActionCreateOffline(c *Command, form *Form) Response {
 		LocalSnaps:     localSnaps,
 		TestSystem:     testSystem,
 		MarkDefault:    markDefault,
+		// using the form-based API implies that this should be an offline operation
+		Offline: true,
 	})
 	if err != nil {
 		return InternalError("cannot create recovery system %q: %v", label[0], err)
@@ -481,7 +483,9 @@ func postSystemActionCreate(c *Command, req *systemActionRequest) Response {
 		return BadRequest("cannot parse validation sets: %v", err)
 	}
 
-	validationSets, err := assertstate.FetchValidationSets(c.d.state, sequences, assertstate.FetchValidationSetsOptions{}, nil)
+	validationSets, err := assertstate.FetchValidationSets(c.d.state, sequences, assertstate.FetchValidationSetsOptions{
+		Offline: req.Offline,
+	}, nil)
 	if err != nil {
 		if errors.Is(err, &asserts.NotFoundError{}) {
 			return BadRequest("cannot fetch validation sets: %v", err)
@@ -493,6 +497,7 @@ func postSystemActionCreate(c *Command, req *systemActionRequest) Response {
 		ValidationSets: validationSets.Sets(),
 		TestSystem:     req.TestSystem,
 		MarkDefault:    req.MarkDefault,
+		Offline:        req.Offline,
 	})
 	if err != nil {
 		return InternalError("cannot create recovery system %q: %v", req.Label, err)

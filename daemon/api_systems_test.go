@@ -1506,6 +1506,98 @@ func (s *systemsCreateSuite) testCreateSystemAction(c *check.C, requestedValSetS
 	c.Check(st.Change(res.Change), check.NotNil)
 }
 
+func (s *systemsCreateSuite) TestCreateSystemActionOfflineJSON(c *check.C) {
+	snaps := []interface{}{
+		map[string]interface{}{
+			"name":     "pc-kernel",
+			"id":       snaptest.AssertedSnapID("pc-kernel"),
+			"revision": "10",
+			"presence": "required",
+		},
+		map[string]interface{}{
+			"name":     "pc",
+			"id":       snaptest.AssertedSnapID("pc"),
+			"revision": "10",
+			"presence": "required",
+		},
+		map[string]interface{}{
+			"name":     "core20",
+			"id":       snaptest.AssertedSnapID("core20"),
+			"revision": "10",
+			"presence": "required",
+		},
+	}
+
+	accountID := s.dev1acct.AccountID()
+
+	const validationSet = "validation-set-1"
+
+	vsetAssert := s.mockDevAssertion(c, asserts.ValidationSetType, map[string]interface{}{
+		"name":     validationSet,
+		"sequence": "1",
+		"snaps":    snaps,
+	})
+	_ = vsetAssert
+
+	st := s.d.Overlord().State()
+
+	assertstatetest.AddMany(st, s.dev1acct, s.acct1Key, vsetAssert)
+
+	s.mockAssertionFn = func(*asserts.AssertionType, []string, *auth.UserState) (asserts.Assertion, error) {
+		return nil, errors.New("unexpected store access")
+	}
+
+	s.mockSeqFormingAssertionFn = func(*asserts.AssertionType, []string, int, *auth.UserState) (asserts.Assertion, error) {
+		return nil, errors.New("unexpected store access")
+	}
+
+	const (
+		markDefault   = true
+		testSystem    = true
+		offline       = true
+		expectedLabel = "1234"
+	)
+
+	daemon.MockDevicestateCreateRecoverySystem(func(st *state.State, label string, opts devicestate.CreateRecoverySystemOptions) (*state.Change, error) {
+		c.Check(expectedLabel, check.Equals, label)
+		c.Check(markDefault, check.Equals, opts.MarkDefault)
+		c.Check(testSystem, check.Equals, opts.TestSystem)
+		c.Check(offline, check.Equals, opts.Offline)
+
+		c.Check(opts.ValidationSets, check.HasLen, 1)
+
+		for _, vs := range opts.ValidationSets {
+			c.Check(vs.AccountID(), check.Equals, accountID)
+		}
+
+		return st.NewChange("change", "..."), nil
+	})
+
+	valSetString := accountID + "/" + validationSet
+
+	body := map[string]interface{}{
+		"action":          "create",
+		"label":           expectedLabel,
+		"validation-sets": []string{valSetString},
+		"mark-default":    markDefault,
+		"test-system":     testSystem,
+		"offline":         offline,
+	}
+
+	b, err := json.Marshal(body)
+	c.Assert(err, check.IsNil)
+
+	req, err := http.NewRequest("POST", "/v2/systems", bytes.NewBuffer(b))
+	c.Assert(err, check.IsNil)
+
+	res := s.asyncReq(c, req, nil)
+
+	st.Lock()
+	defer st.Unlock()
+
+	c.Check(st.Change(res.Change), check.NotNil)
+}
+
 func createFormData(c *check.C, fields map[string][]string, snaps map[string]string) (bytes.Buffer, string) {
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
@@ -1582,7 +1674,7 @@ func (s *systemsCreateSuite) TestRemoveSystemActionNotFound(c *check.C) {
 	c.Check(res.Message, check.Equals, "recovery system does not exist")
 }
 
-func (s *systemsCreateSuite) TestCreateSystemActionOfflineBadRequests(c *check.C) {
+func (s *systemsCreateSuite) TestCreateSystemActionOfflineFormBadRequests(c *check.C) {
 	type test struct {
 		fields map[string][]string
 		result string
@@ -1660,7 +1752,7 @@ func (s *systemsCreateSuite) TestCreateSystemActionOfflineBadRequests(c *check.C
 	}
 }
 
-func (s *systemsCreateSuite) TestCreateSystemActionOffline(c *check.C) {
+func (s *systemsCreateSuite) TestCreateSystemActionOfflineForm(c *check.C) {
 	snaps := []interface{}{
 		map[string]interface{}{
 			"name":     "pc-kernel",
