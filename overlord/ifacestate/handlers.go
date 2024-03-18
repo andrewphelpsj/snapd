@@ -222,7 +222,8 @@ func componentSetupsForTask(t *state.Task) ([]*snapstate.ComponentSetup, error) 
 		}
 		return compsups, nil
 	default:
-		// task comes from a snap installation
+		// task comes from a snap installation, one day this might include
+		// components too
 		return nil, nil
 	}
 }
@@ -302,6 +303,11 @@ func (m *InterfaceManager) setupProfilesForSnap(task *state.Task, snapInfo *snap
 
 	snapName := snapInfo.InstanceName()
 
+	appSet, err := appSetForTask(task, snapInfo)
+	if err != nil {
+		return fmt.Errorf("building app set for snap %q: %v", snapName, err)
+	}
+
 	// The snap may have been updated so perform the following operation to
 	// ensure that we are always working on the correct state:
 	//
@@ -321,7 +327,7 @@ func (m *InterfaceManager) setupProfilesForSnap(task *state.Task, snapInfo *snap
 	if err := m.repo.RemoveSnap(snapName); err != nil {
 		return err
 	}
-	if err := m.repo.AddSnap(snapInfo); err != nil {
+	if err := m.repo.AddAppSet(appSet); err != nil {
 		return err
 	}
 	if len(snapInfo.BadInterfaces) > 0 {
@@ -362,11 +368,6 @@ func (m *InterfaceManager) setupProfilesForSnap(task *state.Task, snapInfo *snap
 	// cannot be found and compute the confinement options that apply to it.
 	affectedSnapSets := make([]*interfaces.SnapAppSet, 0, len(affectedSet))
 	confinementOpts := make([]interfaces.ConfinementOptions, 0, len(affectedSet))
-
-	appSet, err := appSetForTask(task, snapInfo)
-	if err != nil {
-		return err
-	}
 
 	// For the snap being setup we know exactly what was requested.
 	affectedSnapSets = append(affectedSnapSets, appSet)
@@ -835,8 +836,6 @@ func (m *InterfaceManager) doDisconnect(task *state.Task, _ *tomb.Tomb) error {
 			return err
 		}
 
-		// TODO: we do this a lot, would it be possible for something like a
-		// SnapState.CurrentAppSet()?
 		appSet, err := appSetForSnapRevision(st, snapInfo)
 		if err != nil {
 			return fmt.Errorf("building app set for snap %q: %v", snapInfo.InstanceName(), err)

@@ -4392,13 +4392,20 @@ version: @VERSION@`
 
 	repo := s.o.InterfaceManager().Repository()
 
+	snapAppSet, err := interfaces.NewSnapAppSet(snapInfo, nil)
+	c.Assert(err, IsNil)
+	otherAppSet, err := interfaces.NewSnapAppSet(otherInfo, nil)
+	c.Assert(err, IsNil)
+	coreAppSet, err := interfaces.NewSnapAppSet(coreInfo, nil)
+	c.Assert(err, IsNil)
+
 	// add snaps to the repo to have plugs/slots
-	c.Assert(repo.AddSnap(snapInfo), IsNil)
-	c.Assert(repo.AddSnap(otherInfo), IsNil)
-	c.Assert(repo.AddSnap(coreInfo), IsNil)
+	c.Assert(repo.AddAppSet(snapAppSet), IsNil)
+	c.Assert(repo.AddAppSet(otherAppSet), IsNil)
+	c.Assert(repo.AddAppSet(coreAppSet), IsNil)
 
 	// refresh all
-	err := assertstate.RefreshSnapDeclarations(st, 0, nil)
+	err = assertstate.RefreshSnapDeclarations(st, 0, nil)
 	c.Assert(err, IsNil)
 
 	updates, tts, err := snapstate.UpdateMany(context.TODO(), st, []string{"core", "some-snap", "other-snap"}, nil, 0, nil)
@@ -4495,12 +4502,17 @@ version: 1`
 
 	repo := s.o.InterfaceManager().Repository()
 
+	snapAppSet, err := interfaces.NewSnapAppSet(snapInfo, nil)
+	c.Assert(err, IsNil)
+	coreAppSet, err := interfaces.NewSnapAppSet(coreInfo, nil)
+	c.Assert(err, IsNil)
+
 	// add snaps to the repo to have plugs/slots
-	c.Assert(repo.AddSnap(snapInfo), IsNil)
-	c.Assert(repo.AddSnap(coreInfo), IsNil)
+	c.Assert(repo.AddAppSet(snapAppSet), IsNil)
+	c.Assert(repo.AddAppSet(coreAppSet), IsNil)
 
 	// refresh all
-	err := assertstate.RefreshSnapDeclarations(st, 0, nil)
+	err = assertstate.RefreshSnapDeclarations(st, 0, nil)
 	c.Assert(err, IsNil)
 
 	updates, tts, err := snapstate.UpdateMany(context.TODO(), st, []string{"some-snap"}, nil, 0, nil)
@@ -4668,12 +4680,17 @@ func (s *mgrsSuite) testUpdateWithAutoconnectRetry(c *C, updateSnapName, removeS
 
 	repo := s.o.InterfaceManager().Repository()
 
+	snapAppSet, err := interfaces.NewSnapAppSet(snapInfo, nil)
+	c.Assert(err, IsNil)
+	otherAppSet, err := interfaces.NewSnapAppSet(otherInfo, nil)
+	c.Assert(err, IsNil)
+
 	// add snaps to the repo to have plugs/slots
-	c.Assert(repo.AddSnap(snapInfo), IsNil)
-	c.Assert(repo.AddSnap(otherInfo), IsNil)
+	c.Assert(repo.AddAppSet(snapAppSet), IsNil)
+	c.Assert(repo.AddAppSet(otherAppSet), IsNil)
 
 	// refresh all
-	err := assertstate.RefreshSnapDeclarations(st, 0, nil)
+	err = assertstate.RefreshSnapDeclarations(st, 0, nil)
 	c.Assert(err, IsNil)
 
 	ts, err := snapstate.Update(st, updateSnapName, nil, 0, snapstate.Flags{})
@@ -4791,9 +4808,14 @@ hooks:
 
 	repo := s.o.InterfaceManager().Repository()
 
+	snapAppSet, err := interfaces.NewSnapAppSet(snapInfo, nil)
+	c.Assert(err, IsNil)
+	otherAppSet, err := interfaces.NewSnapAppSet(otherInfo, nil)
+	c.Assert(err, IsNil)
+
 	// add snaps to the repo to have plugs/slots
-	c.Assert(repo.AddSnap(snapInfo), IsNil)
-	c.Assert(repo.AddSnap(otherInfo), IsNil)
+	c.Assert(repo.AddAppSet(snapAppSet), IsNil)
+	c.Assert(repo.AddAppSet(otherAppSet), IsNil)
 	repo.Connect(&interfaces.ConnRef{
 		PlugRef: interfaces.PlugRef{Snap: "other-snap", Name: "media-hub"},
 		SlotRef: interfaces.SlotRef{Snap: "some-snap", Name: "media-hub"},
@@ -4880,9 +4902,14 @@ func (s *mgrsSuite) TestDisconnectOnUninstallRemovesAutoconnection(c *C) {
 
 	repo := s.o.InterfaceManager().Repository()
 
+	snapAppSet, err := interfaces.NewSnapAppSet(snapInfo, nil)
+	c.Assert(err, IsNil)
+	otherAppSet, err := interfaces.NewSnapAppSet(otherInfo, nil)
+	c.Assert(err, IsNil)
+
 	// add snaps to the repo to have plugs/slots
-	c.Assert(repo.AddSnap(snapInfo), IsNil)
-	c.Assert(repo.AddSnap(otherInfo), IsNil)
+	c.Assert(repo.AddAppSet(snapAppSet), IsNil)
+	c.Assert(repo.AddAppSet(otherAppSet), IsNil)
 	repo.Connect(&interfaces.ConnRef{
 		PlugRef: interfaces.PlugRef{Snap: "other-snap", Name: "media-hub"},
 		SlotRef: interfaces.SlotRef{Snap: "some-snap", Name: "media-hub"},
@@ -8797,11 +8824,16 @@ func (s *mgrsSuite) TestCheckRefreshFailureWithConcurrentRemoveOfConnectedSnap(c
 		SnapType: "app",
 	})
 
+	snapAppSet, err := interfaces.NewSnapAppSet(snapInfo, nil)
+	c.Assert(err, IsNil)
+	otherAppSet, err := interfaces.NewSnapAppSet(otherInfo, nil)
+	c.Assert(err, IsNil)
+
 	// add snaps to the repo and connect them
 	repo := s.o.InterfaceManager().Repository()
-	c.Assert(repo.AddSnap(snapInfo), IsNil)
-	c.Assert(repo.AddSnap(otherInfo), IsNil)
-	_, err := repo.Connect(&interfaces.ConnRef{
+	c.Assert(repo.AddAppSet(snapAppSet), IsNil)
+	c.Assert(repo.AddAppSet(otherAppSet), IsNil)
+	_, err = repo.Connect(&interfaces.ConnRef{
 		PlugRef: interfaces.PlugRef{Snap: "other-snap", Name: "media-hub"},
 		SlotRef: interfaces.SlotRef{Snap: "some-snap", Name: "media-hub"},
 	}, nil, nil, nil, nil, nil)
