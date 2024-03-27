@@ -206,6 +206,12 @@ func setPendingProfilesSideInfo(st *state.State, instanceName string, si *snap.S
 func componentSetupsForTask(t *state.Task) ([]*snapstate.ComponentSetup, error) {
 	switch {
 	case t.Has("component-setup") || t.Has("component-setup-task"):
+		// if the task isn't being done right now (we may be undoing it), then
+		// we shouldn't consider the new component when setting up profiles.
+		if t.Status() != state.DoingStatus {
+			return nil, nil
+		}
+
 		// task comes from a component installation
 		compsup, _, err := snapstate.TaskComponentSetup(t)
 		if err != nil {

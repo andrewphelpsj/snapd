@@ -2220,6 +2220,9 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeFromComponent(c *C, sn
 	s.state.Lock()
 	defer s.state.Unlock()
 
+	// TODO: we'll need to update this to handle refreshing components once that
+	// work is done
+
 	s.o.TaskRunner().AddHandler("mock-link-component-n-witness", func(task *state.Task, tomb *tomb.Tomb) error { // do handler
 		s.state.Lock()
 		defer s.state.Unlock()
@@ -2247,6 +2250,7 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeFromComponent(c *C, sn
 	}, func(task *state.Task, tomb *tomb.Tomb) error { // undo handler
 		s.state.Lock()
 		defer s.state.Unlock()
+
 		var snapst snapstate.SnapState
 		err := snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
 		if err != nil && !errors.Is(err, state.ErrNoState) {
@@ -2258,9 +2262,11 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeFromComponent(c *C, sn
 			return err
 		}
 
-		snapst.Sequence.RemoveComponentForRevision(
+		removed := snapst.Sequence.RemoveComponentForRevision(
 			info.Revision, compsup.CompSideInfo.Component,
 		)
+
+		c.Check(removed, NotNil)
 
 		snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
 
@@ -2274,21 +2280,21 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeFromComponent(c *C, sn
 
 	change := s.state.NewChange("test", "")
 
-	task1 := s.state.NewTask("setup-profiles", "")
-	task1.Set("snap-setup", snapsup)
-	task1.Set("component-setup", compsup)
-	change.AddTask(task1)
+	setupTask := s.state.NewTask("setup-profiles", "")
+	setupTask.Set("snap-setup", snapsup)
+	setupTask.Set("component-setup", compsup)
+	change.AddTask(setupTask)
 
-	task2 := s.state.NewTask("mock-link-component-n-witness", "")
-	task2.Set("snap-setup", snapsup)
-	task2.Set("component-setup", compsup)
-	task2.WaitFor(task1)
-	change.AddTask(task2)
+	linkTask := s.state.NewTask("mock-link-component-n-witness", "")
+	linkTask.Set("snap-setup", snapsup)
+	linkTask.Set("component-setup", compsup)
+	linkTask.WaitFor(setupTask)
+	change.AddTask(linkTask)
 
-	task3 := s.state.NewTask("auto-connect", "")
-	task3.Set("snap-setup", snapsup)
-	task3.WaitFor(task2)
-	change.AddTask(task3)
+	autoConnectTask := s.state.NewTask("auto-connect", "")
+	autoConnectTask.Set("snap-setup", snapsup)
+	autoConnectTask.WaitFor(linkTask)
+	change.AddTask(autoConnectTask)
 
 	return change
 }
@@ -2456,6 +2462,12 @@ plugs:
   interface: network
  unrelated:
   interface: unrelated
+`
+
+const sampleComponentYaml = `
+component: snap+comp1
+type: test
+version: 1.0
 `
 
 var sampleSnapWithComponentsYaml = sampleSnapYaml + `
@@ -4016,12 +4028,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesInstallComponent(c *C) {
 
 	snapInfo := s.mockSnap(c, sampleSnapWithComponentsYaml)
 
-	const compomentYaml = `
-component: snap+comp1
-type: test
-version: 1.0
-`
-	compInfo := snaptest.MockComponent(c, compomentYaml, snapInfo)
+	compInfo := snaptest.MockComponent(c, sampleComponentYaml, snapInfo)
 
 	// initialize the manager
 	_ = s.manager(c)
@@ -4095,12 +4102,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesInstallComponentSnapHasPreexist
 	snapInfo := s.mockSnap(c, sampleSnapWithComponentsYaml)
 	s.mockComponentForSnap(c, "comp2", "component: snap+comp2\ntype: test", snapInfo)
 
-	const compomentYaml = `
-component: snap+comp1
-type: test
-version: 1.0
-`
-	compInfo := snaptest.MockComponent(c, compomentYaml, snapInfo)
+	compInfo := snaptest.MockComponent(c, sampleComponentYaml, snapInfo)
 
 	// initialize the manager
 	_ = s.manager(c)
@@ -4159,12 +4161,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesUpdateSnapWithComponents(c *C) 
 
 	s.mockComponentForSnap(c, "comp2", "component: snap+comp2\ntype: test", snapInfo)
 
-	const compomentYaml = `
-component: snap+comp1
-type: test
-version: 1.0
-`
-	compInfo := snaptest.MockComponent(c, compomentYaml, snapInfo)
+	compInfo := snaptest.MockComponent(c, sampleComponentYaml, snapInfo)
 
 	// initialize the manager
 	_ = s.manager(c)
@@ -4258,12 +4255,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesOfAffectedSnapWithComponents(c 
 
 	s.state.Unlock()
 
-	const compomentYaml = `
-component: snap+comp1
-type: test
-version: 1.0
-`
-	compInfo := snaptest.MockComponent(c, compomentYaml, snapInfo)
+	compInfo := snaptest.MockComponent(c, sampleComponentYaml, snapInfo)
 
 	// initialize the manager
 	_ = s.manager(c)
@@ -5731,6 +5723,68 @@ func (s *interfaceManagerSuite) TestUndoSetupProfilesOnInstall(c *C) {
 	var snapst snapstate.SnapState
 	err := snapstate.Get(s.state, "snap", &snapst)
 	c.Assert(err, testutil.ErrorIs, state.ErrNoState)
+}
+
+func (s *interfaceManagerSuite) TestUndoSetupProfilesOnComponentInstall(c *C) {
+	s.MockModel(c, nil)
+
+	snapInfo := s.mockSnap(c, sampleSnapWithComponentsYaml)
+	s.manager(c)
+
+	compInfo := snaptest.MockComponent(c, sampleComponentYaml, snapInfo)
+
+	change := s.addSetupSnapSecurityChangeFromComponent(c, &snapstate.SnapSetup{
+		SideInfo: &snap.SideInfo{
+			RealName: snapInfo.SnapName(),
+			Revision: snapInfo.Revision,
+		},
+	}, &snapstate.ComponentSetup{
+		CompSideInfo: &snap.ComponentSideInfo{
+			Component: compInfo.Component,
+			Revision:  snap.R(1),
+		},
+	})
+
+	s.state.Lock()
+
+	c.Assert(change.Tasks(), HasLen, 3)
+	errorTask := s.state.NewTask("error-trigger", "...")
+	errorTask.WaitFor(change.Tasks()[2])
+	change.AddTask(errorTask)
+
+	s.state.Unlock()
+
+	s.settle(c)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	c.Assert(change.Err(), ErrorMatches, "(?s).*error out.*")
+	c.Check(change.Status(), Equals, state.ErrorStatus)
+
+	// since we didn't remove the snap, we're just removing the component, the
+	// profiles should be there, but the setup call shouldn't include anything
+	// pertaining to the components
+	c.Assert(s.secBackend.SetupCalls, HasLen, 2)
+	appSetAfterRemoval := s.secBackend.SetupCalls[1].AppSet
+	c.Check(appSetAfterRemoval.Runnables(), DeepEquals, []interfaces.Runnable{
+		{
+			CommandName: "app",
+			SecurityTag: "snap.snap.app",
+			Type:        interfaces.RunnableApp,
+		},
+	})
+	c.Assert(s.secBackend.RemoveCalls, HasLen, 0)
+
+	var snapst snapstate.SnapState
+	err := snapstate.Get(s.state, "snap", &snapst)
+	c.Assert(err, IsNil)
+
+	comps, err := snapst.CurrentComponentInfos()
+	c.Assert(err, IsNil)
+
+	// make sure that the component was removed
+	c.Check(comps, HasLen, 0)
 }
 
 // Test that setup-snap-security gets undone correctly when a snap is refreshed
