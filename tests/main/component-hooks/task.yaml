@@ -1,0 +1,27 @@
+summary: Test component hooks get run
+
+details: |
+  Verifies that component hooks run on install
+
+systems: [ubuntu-16.04-64, ubuntu-18.04-64, ubuntu-2*, ubuntu-core-*]
+
+debug: |
+  cat /var/snap/snap-with-comps/common/install-logs
+
+execute: |
+  snap pack snap-with-comps/
+  snap pack comp-with-install-hook/
+
+  snap install --dangerous snap-with-comps_1.0_all.snap
+  change_id=$(snap install --no-wait --dangerous snap-with-comps+comp-with-install-hook_1.0.comp)
+  snap watch "${change_id}"
+
+  # check component install change was as expected
+  snap change "${change_id}" | MATCH '^Done .*Prepare component'
+  snap change "${change_id}" | MATCH '^Done .*Mount component'
+  snap change "${change_id}" | MATCH '^Done .*Make component .* available to the system'
+  snap change "${change_id}" | MATCH '^Done .*Run install hook of "snap-with-comps\+comp-with-install-hook" component if present'
+
+  # the hook writes this file if it runs (and uses the network via the network
+  # plug) successfully
+  test -f /var/snap/snap-with-comps/common/install-done
