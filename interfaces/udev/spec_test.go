@@ -81,6 +81,7 @@ apps:
   command: bin/foo
 components:
  comp:
+  type: test
   hooks:
    install:
 hooks:

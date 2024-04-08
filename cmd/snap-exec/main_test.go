@@ -78,6 +78,7 @@ apps:
   command: nostop
 components:
  comp:
+  type: test
   hooks:
    install:
 `)
@@ -102,6 +103,7 @@ hooks:
   command-chain: [chain1, chain2]
 components:
  comp:
+  type: test
   hooks:
    install:
     command-chain: [chain3, chain4]

@@ -70,6 +70,7 @@ var mockYamlWithComponent = []byte(`name: snapname
 version: 1.0
 components:
   comp:
+    type: test
     hooks:
       install:
 hooks:
