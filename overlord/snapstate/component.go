@@ -39,6 +39,21 @@ import (
 // store.
 func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *snap.Info,
 	path string, flags Flags) (*state.TaskSet, error) {
+	componentInstallInfo := func() (*snap.ComponentInfo, string, error) {
+		// Read ComponentInfo and verify that the component is consistent with the
+		// data in the snap info
+		compInfo, _, err := backend.OpenComponentFile(path, info, csi)
+		if err != nil {
+			return nil, "", err
+		}
+
+		return compInfo, path, nil
+	}
+
+	return installComponent(st, info, flags, componentInstallInfo)
+}
+
+func installComponent(st *state.State, info *snap.Info, flags Flags, componentInstallInfo func() (*snap.ComponentInfo, string, error)) (*state.TaskSet, error) {
 	var snapst SnapState
 	// owner snap must be already installed
 	err := Get(st, info.InstanceName(), &snapst)
@@ -49,11 +64,9 @@ func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *sn
 		return nil, err
 	}
 
-	// Read ComponentInfo and verify that the component is consistent with the
-	// data in the snap info
-	compInfo, _, err := backend.OpenComponentFile(path, info, csi)
+	compInfo, compPath, err := componentInstallInfo()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot get component info: %w", err)
 	}
 
 	snapsup := &SnapSetup{
@@ -67,19 +80,16 @@ func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *sn
 		InstanceKey: info.InstanceKey,
 	}
 	compSetup := &ComponentSetup{
-		CompSideInfo: csi,
+		CompSideInfo: &compInfo.ComponentSideInfo,
 		CompType:     compInfo.Type,
-		CompPath:     path,
+		CompPath:     compPath,
 	}
-	// The file passed around is temporary, make sure it gets removed.
-	// TODO probably this should be part of a flags type in the future.
-	removeComponentPath := true
-	return doInstallComponent(st, &snapst, compSetup, snapsup, path, removeComponentPath, "")
+
+	return doInstallComponent(st, &snapst, compSetup, snapsup, "")
 }
 
 // doInstallComponent might be called with the owner snap installed or not.
-func doInstallComponent(st *state.State, snapst *SnapState, compSetup *ComponentSetup,
-	snapsup *SnapSetup, path string, removeComponentPath bool, fromChange string) (*state.TaskSet, error) {
+func doInstallComponent(st *state.State, snapst *SnapState, compSetup *ComponentSetup, snapsup *SnapSetup, fromChange string) (*state.TaskSet, error) {
 
 	// TODO check for experimental flag that will hide temporarily components
 
@@ -100,19 +110,21 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 
 	// Check if we already have the revision in the snaps folder (alters tasks).
 	// Note that this will search for all snap revisions in the system.
-	revisionIsPresent := snapst.IsComponentRevPresent(compSi) == true
+	revisionIsPresent := snapst.IsComponentRevPresent(compSi)
 	revisionStr := fmt.Sprintf(" (%s)", compSi.Revision)
 
 	var prepare, prev *state.Task
+
 	// if we have a local revision here we go back to that
-	if path != "" || revisionIsPresent {
+	if compSetup.CompPath != "" || revisionIsPresent {
 		prepare = st.NewTask("prepare-component",
 			fmt.Sprintf(i18n.G("Prepare component %q%s"),
-				path, revisionStr))
+				compSetup.CompPath, revisionStr))
 	} else {
 		// TODO implement download-component
 		return nil, fmt.Errorf("download-component not implemented yet")
 	}
+
 	prepare.Set("component-setup", compSetup)
 	prepare.Set("snap-setup", snapsup)
 
@@ -137,13 +149,13 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 				compSi.Component, revisionStr))
 		addTask(mount)
 	} else {
-		if removeComponentPath {
+		if compSetup.CompPath != "" {
 			// If the revision is local, we will not need the
 			// temporary snap. This can happen when e.g.
 			// side-loading a local revision again. The path is
 			// only needed in the "mount-snap" handler and that is
 			// skipped for local revisions.
-			if err := os.Remove(path); err != nil {
+			if err := os.Remove(compSetup.CompPath); err != nil {
 				return nil, err
 			}
 		}

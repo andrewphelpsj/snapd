@@ -256,8 +256,8 @@ func (s *snapmgrTestSuite) TestInstallComponentPathWrongType(c *C) {
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
 		snapstate.Flags{})
 	c.Assert(ts, IsNil)
-	c.Assert(err.Error(), Equals,
-		`inconsistent component type ("random-comp-type" in snap, "test" in component)`)
+	c.Assert(err, ErrorMatches,
+		`.*inconsistent component type \("random-comp-type" in snap, "test" in component\)`)
 }
 
 func (s *snapmgrTestSuite) TestInstallComponentPathForParallelInstall(c *C) {
@@ -321,7 +321,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathWrongSnap(c *C) {
 		snapstate.Flags{})
 	c.Assert(ts, IsNil)
 	c.Assert(err, ErrorMatches,
-		`component "mysnap\+mycomp" is not a component for snap "other-snap"`)
+		`.*component "mysnap\+mycomp" is not a component for snap "other-snap"`)
 }
 
 func (s *snapmgrTestSuite) TestInstallComponentPathCompRevisionPresent(c *C) {
