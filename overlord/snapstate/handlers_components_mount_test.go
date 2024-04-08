@@ -50,7 +50,7 @@ func (s *mountCompSnapSuite) TestDoMountComponent(c *C) {
 	ci, compPath := createTestComponent(c, snapName, compName, si)
 	ssu := createTestSnapSetup(si, snapstate.Flags{})
 	s.AddCleanup(snapstate.MockReadComponentInfo(func(
-		compMntDir string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
+		compMntDir string, snapInfo *snap.Info, csi *snap.ComponentSideInfo) (*snap.ComponentInfo, error) {
 		return ci, nil
 	}))
 
@@ -92,7 +92,7 @@ func (s *mountCompSnapSuite) TestDoUndoMountComponent(c *C) {
 	ci, compPath := createTestComponent(c, snapName, compName, si)
 	ssu := createTestSnapSetup(si, snapstate.Flags{})
 	s.AddCleanup(snapstate.MockReadComponentInfo(func(
-		compMntDir string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
+		compMntDir string, snapInfo *snap.Info, csi *snap.ComponentSideInfo) (*snap.ComponentInfo, error) {
 		return ci, nil
 	}))
 
@@ -148,7 +148,7 @@ func (s *mountCompSnapSuite) TestDoMountComponentSetupFails(c *C) {
 	ci, compPath := createTestComponent(c, snapName, compName, si)
 	ssu := createTestSnapSetup(si, snapstate.Flags{})
 	s.AddCleanup(snapstate.MockReadComponentInfo(func(
-		compMntDir string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
+		compMntDir string, snapInfo *snap.Info, csi *snap.ComponentSideInfo) (*snap.ComponentInfo, error) {
 		return ci, nil
 	}))
 
@@ -195,7 +195,7 @@ func (s *mountCompSnapSuite) TestDoUndoMountComponentFails(c *C) {
 	ci, compPath := createTestComponent(c, snapName, compName, si)
 	ssu := createTestSnapSetup(si, snapstate.Flags{})
 	s.AddCleanup(snapstate.MockReadComponentInfo(func(
-		compMntDir string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
+		compMntDir string, snapInfo *snap.Info, csi *snap.ComponentSideInfo) (*snap.ComponentInfo, error) {
 		return ci, nil
 	}))
 
@@ -248,7 +248,7 @@ func (s *mountCompSnapSuite) TestDoMountComponentMountFails(c *C) {
 	ci, compPath := createTestComponent(c, snapName, compName, si)
 	ssu := createTestSnapSetup(si, snapstate.Flags{})
 	s.AddCleanup(snapstate.MockReadComponentInfo(func(
-		compMntDir string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
+		compMntDir string, snapInfo *snap.Info, csi *snap.ComponentSideInfo) (*snap.ComponentInfo, error) {
 		return ci, fmt.Errorf("cannot read component")
 	}))
 

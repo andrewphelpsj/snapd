@@ -340,7 +340,11 @@ func getSnapInfo(snapName string, revision snap.Revision) (info *snap.Info, err 
 func getComponentInfo(name string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
 	mountDir := snap.ComponentMountDir(name, snapInfo.InstanceName(), snapInfo.Revision)
 	container := snapdir.New(mountDir)
-	return snap.ReadComponentInfoFromContainer(container, snapInfo)
+
+	// TODO: get the revision of the component from the structure of
+	// /snap/<snap>/components
+
+	return snap.ReadComponentInfoFromContainer(container, snapInfo, nil)
 }
 
 func createOrUpdateUserDataSymlink(info *snap.Info, usr *user.User, opts *dirs.SnapDirOptions) error {

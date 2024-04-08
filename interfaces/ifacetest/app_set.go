@@ -27,7 +27,9 @@ func MockSnapAndAppSet(c *check.C, yamlText string, componentYamls []string, sid
 func mockAppSet(c *check.C, componentYamls []string, info *snap.Info) *interfaces.SnapAppSet {
 	components := make([]*snap.ComponentInfo, 0, len(componentYamls))
 	for _, yaml := range componentYamls {
-		components = append(components, snaptest.MockComponent(c, yaml, info))
+		components = append(components, snaptest.MockComponent(c, yaml, info, &snap.ComponentSideInfo{
+			Revision: snap.R(1),
+		}))
 	}
 
 	set, err := interfaces.NewSnapAppSet(info, components)

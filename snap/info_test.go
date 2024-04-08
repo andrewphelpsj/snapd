@@ -774,7 +774,9 @@ type: test
 version: 1.0
     `
 
-	componentInfo := snaptest.MockComponent(c, componentYaml, info)
+	componentInfo := snaptest.MockComponent(c, componentYaml, info, &snap.ComponentSideInfo{
+		Revision: snap.R(1),
+	})
 
 	c.Check(componentInfo.Hooks["install"].Path(), Equals, filepath.Join(
 		dirs.SnapMountDir, "foo", "components", info.Revision.String(), "comp", "meta", "hooks", "install"),

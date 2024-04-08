@@ -1363,7 +1363,9 @@ components:
 `
 
 	snapInfo := snaptest.MockSnapInstance(c, instanceName, fmt.Sprintf(snapYaml, snapName, componentName, hookName), sideInfo)
-	snaptest.MockComponent(c, fmt.Sprintf(componentYaml, snapName, componentName), snapInfo)
+	snaptest.MockComponent(c, fmt.Sprintf(componentYaml, snapName, componentName), snapInfo, &snap.ComponentSideInfo{
+		Revision: snap.R(1),
+	})
 
 	snapstate.Set(s.state, instanceName, &snapstate.SnapState{
 		Active: true,

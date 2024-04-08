@@ -259,7 +259,11 @@ func execApp(snapApp, revision, command string, args []string) error {
 func getComponentInfo(name string, snapInfo *snap.Info) (*snap.ComponentInfo, error) {
 	mountDir := snap.ComponentMountDir(name, snapInfo.InstanceName(), snapInfo.Revision)
 	container := snapdir.New(mountDir)
-	return snap.ReadComponentInfoFromContainer(container, snapInfo)
+
+	// TODO: get the revision of the component from the structure of
+	// /snap/<snap>/components
+
+	return snap.ReadComponentInfoFromContainer(container, snapInfo, nil)
 }
 
 func execHook(snapName, componentName, revision, hookName string) error {

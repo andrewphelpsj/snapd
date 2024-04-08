@@ -87,7 +87,9 @@ func (s *snapAppSetSuite) TestLabelExpr(c *C) {
 
 	compInfos := make([]*snap.ComponentInfo, 0, len(compYamls))
 	for _, compYaml := range compYamls {
-		compInfos = append(compInfos, snaptest.MockComponent(c, compYaml, info))
+		compInfos = append(compInfos, snaptest.MockComponent(c, compYaml, info, &snap.ComponentSideInfo{
+			Revision: snap.R(1),
+		}))
 	}
 
 	appSet, err := interfaces.NewSnapAppSet(info, compInfos)
@@ -247,7 +249,9 @@ components:
 `
 	info := snaptest.MockInfo(c, yaml, nil)
 
-	compInfo := snaptest.MockComponent(c, "component: name+comp\ntype: test\nversion: 1.0", info)
+	compInfo := snaptest.MockComponent(c, "component: name+comp\ntype: test\nversion: 1.0", info, &snap.ComponentSideInfo{
+		Revision: snap.R(1),
+	})
 
 	set, err := interfaces.NewSnapAppSet(info, []*snap.ComponentInfo{compInfo})
 	c.Assert(err, IsNil)
@@ -313,7 +317,9 @@ func mockAppSetAndConnectedPlug(c *C, yaml string, compYamls []string, si *snap.
 
 	compInfos := make([]*snap.ComponentInfo, 0, len(compYamls))
 	for _, compYaml := range compYamls {
-		compInfos = append(compInfos, snaptest.MockComponent(c, compYaml, info))
+		compInfos = append(compInfos, snaptest.MockComponent(c, compYaml, info, &snap.ComponentSideInfo{
+			Revision: snap.R(1),
+		}))
 	}
 
 	appSet, err := interfaces.NewSnapAppSet(info, compInfos)
@@ -332,7 +338,9 @@ func mockAppSet(c *C, yaml string, compYamls []string, si *snap.SideInfo) *inter
 
 	compInfos := make([]*snap.ComponentInfo, 0, len(compYamls))
 	for _, compYaml := range compYamls {
-		compInfos = append(compInfos, snaptest.MockComponent(c, compYaml, info))
+		compInfos = append(compInfos, snaptest.MockComponent(c, compYaml, info, &snap.ComponentSideInfo{
+			Revision: snap.R(1),
+		}))
 	}
 
 	appSet, err := interfaces.NewSnapAppSet(info, compInfos)

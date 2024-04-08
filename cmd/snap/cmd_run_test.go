@@ -624,7 +624,9 @@ func (s *RunSuite) testSnapRunComponentHookIntegration(c *check.C, instanceKey s
 		})
 	}
 
-	snaptest.MockComponent(c, string(mockComponentYaml), snapInfo)
+	snaptest.MockComponent(c, string(mockComponentYaml), snapInfo, &snap.ComponentSideInfo{
+		Revision: snap.R(1),
+	})
 
 	// redirect exec
 	execArg0 := ""

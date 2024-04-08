@@ -685,7 +685,9 @@ func (s *snapExecSuite) TestSnapExecComponentHookIntegration(c *C) {
 	snapInfo := snaptest.MockSnap(c, string(mockYaml), &snap.SideInfo{
 		Revision: snap.R("42"),
 	})
-	snaptest.MockComponent(c, string(mockComponentYaml), snapInfo)
+	snaptest.MockComponent(c, string(mockComponentYaml), snapInfo, &snap.ComponentSideInfo{
+		Revision: snap.R(1),
+	})
 
 	execArgv0 := ""
 	execArgs := []string{}
@@ -709,7 +711,9 @@ func (s *snapExecSuite) TestSnapExecComponentHookCommandChainIntegration(c *C) {
 	snapInfo := snaptest.MockSnap(c, string(mockHookCommandChainYaml), &snap.SideInfo{
 		Revision: snap.R("42"),
 	})
-	snaptest.MockComponent(c, string(mockComponentYaml), snapInfo)
+	snaptest.MockComponent(c, string(mockComponentYaml), snapInfo, &snap.ComponentSideInfo{
+		Revision: snap.R(1),
+	})
 
 	execArgv0 := ""
 	execArgs := []string{}

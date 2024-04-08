@@ -243,7 +243,7 @@ func componentInfoFromComponentSetup(compsup *snapstate.ComponentSetup, info *sn
 	)
 
 	container := snapdir.New(cpi.MountDir())
-	return snap.ReadComponentInfoFromContainer(container, info)
+	return snap.ReadComponentInfoFromContainer(container, info, compsup.CompSideInfo)
 }
 
 func appSetForTask(t *state.Task, info *snap.Info) (*interfaces.SnapAppSet, error) {
