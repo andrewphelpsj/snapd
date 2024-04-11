@@ -625,14 +625,42 @@ func (f *fakeStore) SnapAction(ctx context.Context, currentSnaps []*store.Curren
 				revno:  info.Revision,
 				userID: userID,
 			})
+
+			// TODO: what do we do here if the user specified a channel and a
+			// revision?
 			if !a.Revision.Unset() {
 				info.Channel = ""
 			}
+
 			info.InstanceKey = instanceKey
 			sar := store.SnapActionResult{Info: info}
-			if strings.HasSuffix(snapName, "-with-default-track") && strutil.ListContains([]string{"stable", "candidate", "beta", "edge"}, a.Channel) {
-				sar.RedirectChannel = "2.0/" + a.Channel
+
+			isChannelRisk := strutil.ListContains([]string{"stable", "candidate", "beta", "edge"}, a.Channel)
+
+			if !a.Revision.Unset() {
+				// this switch mimics how the store handles setting a redirect channel
+				// when a revision is specified
+				switch {
+				case a.Channel == "":
+					// only revision specified
+					sar.RedirectChannel = "redirected/stable"
+				case isChannelRisk:
+					// only risk specified
+					sar.RedirectChannel = "redirected/" + a.Channel
+				case strings.ContainsRune(a.Channel, '/'):
+					// track and risk specified
+					fallthrough
+				default:
+					// only track specified
+					sar.RedirectChannel = ""
+				}
+			} else {
+				// this mimics the case where the snap publisher has set a default track
+				if strings.HasSuffix(snapName, "-with-default-track") && isChannelRisk {
+					sar.RedirectChannel = "2.0/" + a.Channel
+				}
 			}
+
 			res = append(res, sar)
 			continue
 		}

@@ -881,6 +881,56 @@ func (s *snapmgrTestSuite) TestInstallStrictIgnoresClassic(c *C) {
 	c.Check(snapst.Classic, Equals, false)
 }
 
+func (s *snapmgrTestSuite) TestInstallSnapWithRevisionAndDefaultTrack(c *C) {
+	restore := maybeMockClassicSupport(c)
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	opts := &snapstate.RevisionOptions{Revision: snap.R(2)}
+	ts, err := snapstate.Install(context.Background(), s.state, "some-snap", opts, s.user.ID, snapstate.Flags{})
+	c.Assert(err, IsNil)
+
+	chg := s.state.NewChange("install", "install snap")
+	chg.AddAll(ts)
+
+	s.settle(c)
+
+	c.Assert(chg.Err(), IsNil)
+	c.Assert(chg.IsReady(), Equals, true)
+
+	var snapst snapstate.SnapState
+	err = snapstate.Get(s.state, "some-snap", &snapst)
+	c.Assert(err, IsNil)
+	c.Check(snapst.TrackingChannel, Equals, "redirected/stable")
+}
+
+func (s *snapmgrTestSuite) TestInstallSnapWithRevAndRiskAndDefaultTrack(c *C) {
+	restore := maybeMockClassicSupport(c)
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	opts := &snapstate.RevisionOptions{Channel: "edge", Revision: snap.R(2)}
+	ts, err := snapstate.Install(context.Background(), s.state, "some-snap", opts, s.user.ID, snapstate.Flags{})
+	c.Assert(err, IsNil)
+
+	chg := s.state.NewChange("install", "install snap")
+	chg.AddAll(ts)
+
+	s.settle(c)
+
+	c.Assert(chg.Err(), IsNil)
+	c.Assert(chg.IsReady(), Equals, true)
+
+	var snapst snapstate.SnapState
+	err = snapstate.Get(s.state, "some-snap", &snapst)
+	c.Assert(err, IsNil)
+	c.Check(snapst.TrackingChannel, Equals, "redirected/edge")
+}
+
 func (s *snapmgrTestSuite) TestInstallSnapWithDefaultTrack(c *C) {
 	restore := maybeMockClassicSupport(c)
 	defer restore()
@@ -1917,6 +1967,7 @@ func (s *snapmgrTestSuite) TestInstallWithRevisionRunThrough(c *C) {
 				Action:       "install",
 				InstanceName: "some-snap",
 				Revision:     snap.R(42),
+				Channel:      "some-channel",
 			},
 			revno:  snap.R(42),
 			userID: 1,
@@ -2596,6 +2647,7 @@ func (s *snapmgrTestSuite) TestInstallWithoutCoreRunThrough1(c *C) {
 				Action:       "install",
 				InstanceName: "some-snap",
 				Revision:     snap.R(42),
+				Channel:      "some-channel",
 			},
 			revno:  snap.R(42),
 			userID: 1,
@@ -3067,6 +3119,7 @@ func (s *snapmgrTestSuite) TestInstallDefaultProviderRunThrough(c *C) {
 			Action:       "install",
 			InstanceName: "snap-content-plug",
 			Revision:     snap.R(42),
+			Channel:      "stable",
 		},
 		revno:  snap.R(42),
 		userID: 1,
@@ -4502,6 +4555,7 @@ func (s *validationSetsSuite) TestInstallManyRequiredRevisionForValidationSetOK(
 			Action:         "install",
 			InstanceName:   "one",
 			Revision:       snap.R(11),
+			Channel:        "stable",
 			ValidationSets: []snapasserts.ValidationSetKey{"16/foo/bar/1"},
 		},
 		revno: snap.R(11),
@@ -4511,6 +4565,7 @@ func (s *validationSetsSuite) TestInstallManyRequiredRevisionForValidationSetOK(
 			Action:         "install",
 			InstanceName:   "two",
 			Revision:       snap.R(2),
+			Channel:        "stable",
 			ValidationSets: []snapasserts.ValidationSetKey{"16/foo/bar/1"},
 		},
 		revno: snap.R(2),

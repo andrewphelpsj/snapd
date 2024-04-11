@@ -219,14 +219,9 @@ var installSize = func(st *state.State, snaps []minimalInstallInfo, userID int, 
 }
 
 func setActionValidationSetsAndRequiredRevision(action *store.SnapAction, valsets []snapasserts.ValidationSetKey, requiredRevision snap.Revision) {
-	for _, vs := range valsets {
-		action.ValidationSets = append(action.ValidationSets, vs)
-	}
+	action.ValidationSets = append(action.ValidationSets, valsets...)
 	if !requiredRevision.Unset() {
 		action.Revision = requiredRevision
-		// channel cannot be present if revision is set (store would
-		// respond with revision-conflict error).
-		action.Channel = ""
 	}
 }
 
@@ -252,9 +247,8 @@ func downloadInfo(ctx context.Context, st *state.State, name string, revOpts *Re
 	}
 
 	if revOpts != nil {
-		// cannot specify both with the API
-		if revOpts.Revision.Unset() {
-			action.Channel = revOpts.Channel
+		action.Channel = revOpts.Channel
+		if revOpts.CohortKey != "" {
 			action.CohortKey = revOpts.CohortKey
 		} else {
 			action.Revision = revOpts.Revision
@@ -337,11 +331,8 @@ func installInfo(ctx context.Context, st *state.State, name string, revOpts *Rev
 	}
 
 	if requiredRevision.Unset() {
-		// cannot specify both with the API
-		if revOpts.Revision.Unset() {
-			// the desired channel
-			action.Channel = revOpts.Channel
-			// the desired cohort key
+		action.Channel = revOpts.Channel
+		if revOpts.CohortKey != "" {
 			action.CohortKey = revOpts.CohortKey
 		} else {
 			action.Revision = revOpts.Revision

@@ -1406,7 +1406,10 @@ func installWithDeviceContext(st *state.State, name string, opts *RevisionOption
 		return nil, fmt.Errorf("transaction lane is unsupported in InstallWithDeviceContext")
 	}
 
-	if opts.Channel == "" {
+	// since we send both the channel and the revision to the store, we don't
+	// want to default to stable if the revision is set. the store should give
+	// us a redirect channel, which will end up being our tracked channel.
+	if opts.Channel == "" && opts.Revision.Unset() {
 		opts.Channel = "stable"
 	}
 
