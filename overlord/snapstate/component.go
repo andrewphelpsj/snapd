@@ -20,6 +20,7 @@
 package snapstate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +29,8 @@ import (
 	"github.com/snapcore/snapd/overlord/snapstate/backend"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
+	"github.com/snapcore/snapd/store"
 )
 
 // InstallComponentPath returns a set of tasks for installing a snap component
@@ -39,21 +42,89 @@ import (
 // store.
 func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *snap.Info,
 	path string, flags Flags) (*state.TaskSet, error) {
-	componentInstallInfo := func() (*snap.ComponentInfo, string, error) {
+	getComponentSetup := func(SnapState) (*ComponentSetup, error) {
 		// Read ComponentInfo and verify that the component is consistent with the
 		// data in the snap info
 		compInfo, _, err := backend.OpenComponentFile(path, info, csi)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 
-		return compInfo, path, nil
+		return &ComponentSetup{
+			CompSideInfo: csi,
+			CompType:     compInfo.Type,
+			CompPath:     path,
+		}, nil
 	}
 
-	return installComponent(st, info, flags, componentInstallInfo)
+	return installComponent(st, info, flags, getComponentSetup)
 }
 
-func installComponent(st *state.State, info *snap.Info, flags Flags, componentInstallInfo func() (*snap.ComponentInfo, string, error)) (*state.TaskSet, error) {
+func InstallComponent(st *state.State, name string, info *snap.Info, flags Flags) (*state.TaskSet, error) {
+	getComponentSetup := func(snapst SnapState) (*ComponentSetup, error) {
+		comp, ok := info.Components[name]
+		if !ok {
+			return nil, fmt.Errorf("cannot find component %q in snap %q", name, info.SnapName())
+		}
+
+		revOpts := &RevisionOptions{
+			Channel: snapst.TrackingChannel,
+		}
+
+		if snapst.CohortKey != "" {
+			revOpts.CohortKey = snapst.CohortKey
+		} else {
+			revOpts.Revision = snapst.Current
+		}
+
+		// get the install info from the store, this makes sure that we get the
+		// right revision and channel for the component, and that the component
+		// follows all validation-set rules.
+		action, err := installInfo(context.TODO(), st, info.SnapName(), revOpts, 0, flags, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(action.Resources) == 0 {
+			return nil, fmt.Errorf("no resources found for component %q in store response", name)
+		}
+
+		var resource *store.SnapResourceResult
+		for _, r := range action.Resources {
+			if r.Name == name {
+				if fmt.Sprintf("component/%s", comp.Type) != r.Type {
+					return nil, fmt.Errorf("resource %q for snap %q is not a component: %s", name, info.SnapName(), r.Type)
+				}
+				resource = &r
+				break
+			}
+		}
+
+		if resource == nil {
+			return nil, fmt.Errorf("cannot find resource for component %q for snap %q", name, info.SnapName())
+		}
+
+		if action.RedirectChannel != "" && action.RedirectChannel != snapst.TrackingChannel {
+			// TODO: what do i do here? it seems bad to have installing a
+			// component change which channel the snap is tracking
+		}
+
+		return &ComponentSetup{
+			CompSideInfo: &snap.ComponentSideInfo{
+				Component: naming.NewComponentRef(info.SnapName(), comp.Name),
+				Revision:  snap.R(resource.Revision),
+			},
+			CompType:     comp.Type,
+			DownloadInfo: &resource.DownloadInfo,
+		}, nil
+	}
+
+	return installComponent(st, info, flags, getComponentSetup)
+}
+
+type componentSetupFunc func(SnapState) (*ComponentSetup, error)
+
+func installComponent(st *state.State, info *snap.Info, flags Flags, getComponentSetup componentSetupFunc) (*state.TaskSet, error) {
 	var snapst SnapState
 	// owner snap must be already installed
 	err := Get(st, info.InstanceName(), &snapst)
@@ -64,9 +135,9 @@ func installComponent(st *state.State, info *snap.Info, flags Flags, componentIn
 		return nil, err
 	}
 
-	compInfo, compPath, err := componentInstallInfo()
+	compsup, err := getComponentSetup(snapst)
 	if err != nil {
-		return nil, fmt.Errorf("cannot get component info: %w", err)
+		return nil, fmt.Errorf("cannot get component setup: %w", err)
 	}
 
 	snapsup := &SnapSetup{
@@ -79,13 +150,8 @@ func installComponent(st *state.State, info *snap.Info, flags Flags, componentIn
 		PlugsOnly:   len(info.Slots) == 0,
 		InstanceKey: info.InstanceKey,
 	}
-	compSetup := &ComponentSetup{
-		CompSideInfo: &compInfo.ComponentSideInfo,
-		CompType:     compInfo.Type,
-		CompPath:     compPath,
-	}
 
-	return doInstallComponent(st, &snapst, compSetup, snapsup, "")
+	return doInstallComponent(st, &snapst, compsup, snapsup, "")
 }
 
 // doInstallComponent might be called with the owner snap installed or not.
@@ -121,8 +187,7 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 			fmt.Sprintf(i18n.G("Prepare component %q%s"),
 				compSetup.CompPath, revisionStr))
 	} else {
-		// TODO implement download-component
-		return nil, fmt.Errorf("download-component not implemented yet")
+		prepare = st.NewTask("download-component", fmt.Sprintf(i18n.G("Download component %q%s"), compSetup, revisionStr))
 	}
 
 	prepare.Set("component-setup", compSetup)

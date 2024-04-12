@@ -31,6 +31,7 @@ import (
 	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snapfile"
 	"github.com/snapcore/snapd/snap/snaptest"
+	"github.com/snapcore/snapd/store"
 	. "gopkg.in/check.v1"
 )
 
@@ -497,4 +498,121 @@ func (s *snapmgrTestSuite) TestInstallComponentUpdateConflict(c *C) {
 	c.Assert(ts, IsNil)
 	c.Assert(err.Error(), Equals,
 		`snap "some-snap" has "update" change in progress`)
+}
+
+func (s *snapmgrTestSuite) TestInstallComponent(c *C) {
+	const snapName = "mysnap"
+	const compName = "mycomp"
+	snapRev := snap.R(1)
+	info := createTestSnapInfoForComponent(c, snapName, snapRev, compName)
+
+	s.fakeStore.snapResources = func(info *snap.Info) []store.SnapResourceResult {
+		c.Assert(info.SnapName(), DeepEquals, snapName)
+
+		return []store.SnapResourceResult{
+			{
+				DownloadInfo: snap.DownloadInfo{
+					DownloadURL: "http://example.com/mycomp",
+				},
+				Name:      compName,
+				Revision:  1,
+				Type:      fmt.Sprintf("component/%s", snap.TestComponent),
+				Version:   "1.0",
+				CreatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+	}
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	setStateWithOneSnap(s.state, snapName, snapRev)
+
+	ts, err := snapstate.InstallComponent(s.state, "mycomp", info, snapstate.Flags{})
+	c.Assert(err, IsNil)
+
+	verifyComponentInstallTasks(c, 0, ts)
+	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
+}
+
+func (s *snapmgrTestSuite) TestInstallComponentNoResources(c *C) {
+	const snapName = "mysnap"
+	const compName = "mycomp"
+	snapRev := snap.R(1)
+	info := createTestSnapInfoForComponent(c, snapName, snapRev, compName)
+
+	s.fakeStore.snapResources = func(info *snap.Info) []store.SnapResourceResult {
+		c.Assert(info.SnapName(), DeepEquals, snapName)
+		return nil
+	}
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	setStateWithOneSnap(s.state, snapName, snapRev)
+
+	_, err := snapstate.InstallComponent(s.state, "mycomp", info, snapstate.Flags{})
+	c.Assert(err, ErrorMatches, `.*no resources found for component "mycomp" in store response`)
+}
+
+func (s *snapmgrTestSuite) TestInstallComponentMissing(c *C) {
+	const snapName = "mysnap"
+	const compName = "mycomp"
+	snapRev := snap.R(1)
+	info := createTestSnapInfoForComponent(c, snapName, snapRev, compName)
+
+	s.fakeStore.snapResources = func(info *snap.Info) []store.SnapResourceResult {
+		c.Assert(info.SnapName(), DeepEquals, snapName)
+		return []store.SnapResourceResult{
+			{
+				DownloadInfo: snap.DownloadInfo{
+					DownloadURL: "http://example.com/mycomp",
+				},
+				Name:      "other-name",
+				Revision:  1,
+				Type:      fmt.Sprintf("component/%s", snap.TestComponent),
+				Version:   "1.0",
+				CreatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+	}
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	setStateWithOneSnap(s.state, snapName, snapRev)
+
+	_, err := snapstate.InstallComponent(s.state, "mycomp", info, snapstate.Flags{})
+	c.Assert(err, ErrorMatches, `.*cannot find resource for component "mycomp" for snap "mysnap"`)
+}
+
+func (s *snapmgrTestSuite) TestInstallComponentWrongType(c *C) {
+	const snapName = "mysnap"
+	const compName = "mycomp"
+	snapRev := snap.R(1)
+	info := createTestSnapInfoForComponent(c, snapName, snapRev, compName)
+
+	s.fakeStore.snapResources = func(info *snap.Info) []store.SnapResourceResult {
+		c.Assert(info.SnapName(), DeepEquals, snapName)
+		return []store.SnapResourceResult{
+			{
+				DownloadInfo: snap.DownloadInfo{
+					DownloadURL: "http://example.com/mycomp",
+				},
+				Name:      compName,
+				Revision:  1,
+				Type:      "not-a-component/test",
+				Version:   "1.0",
+				CreatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+	}
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	setStateWithOneSnap(s.state, snapName, snapRev)
+
+	_, err := snapstate.InstallComponent(s.state, "mycomp", info, snapstate.Flags{})
+	c.Assert(err, ErrorMatches, `.*resource "mycomp" for snap "mysnap" is not a component: not\-a\-component/test`)
 }

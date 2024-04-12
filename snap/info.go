@@ -931,7 +931,7 @@ func (s *Info) DesktopPrefix() string {
 	return fmt.Sprintf("%s+%s", s.SnapName(), s.InstanceKey)
 }
 
-// DownloadInfo contains the information to download a snap.
+// DownloadInfo contains the information to download a snap or snap resource.
 // It can be marshalled.
 type DownloadInfo struct {
 	DownloadURL string `json:"download-url,omitempty"`
