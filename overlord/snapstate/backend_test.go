@@ -172,6 +172,10 @@ type fakeStore struct {
 	state           *state.State
 	seenPrivacyKeys map[string]bool
 
+	// snapResources is called for each snap that gets returned by SnapAction,
+	// it should return the resources that the snap should have.
+	snapResources func(*snap.Info) []store.SnapResourceResult
+
 	downloadCallback func()
 }
 
@@ -633,7 +637,10 @@ func (f *fakeStore) SnapAction(ctx context.Context, currentSnaps []*store.Curren
 			}
 
 			info.InstanceKey = instanceKey
-			sar := store.SnapActionResult{Info: info}
+			sar := store.SnapActionResult{
+				Info:      info,
+				Resources: f.snapResources(info),
+			}
 
 			isChannelRisk := strutil.ListContains([]string{"stable", "candidate", "beta", "edge"}, a.Channel)
 
@@ -714,7 +721,10 @@ func (f *fakeStore) SnapAction(ctx context.Context, currentSnaps []*store.Curren
 			info.Channel = ""
 		}
 		info.InstanceKey = instanceKey
-		res = append(res, store.SnapActionResult{Info: info})
+		res = append(res, store.SnapActionResult{
+			Info:      info,
+			Resources: f.snapResources(info),
+		})
 	}
 
 	if len(refreshErrors)+len(installErrors)+len(downloadErrors) > 0 || len(res) == 0 {
