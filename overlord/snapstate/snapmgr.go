@@ -195,6 +195,9 @@ type ComponentSetup struct {
 	CompSideInfo *snap.ComponentSideInfo `json:"comp-side-info,omitempty"`
 	// CompType is needed as some types need special handling
 	CompType snap.ComponentType
+
+	// The following fields are owned by the Target interface, and are set
+	// there.
 	// CompPath is the path to the file. Will be an empty string if the
 	// component should be downloaded from the store.
 	CompPath string `json:"comp-path,omitempty"`

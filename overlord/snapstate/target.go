@@ -30,6 +30,7 @@ import (
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/store"
+	"github.com/snapcore/snapd/strutil"
 )
 
 // Options contains optional parameters for the snapstate operations. All of
@@ -49,12 +50,18 @@ type Installable struct {
 	// Snap indicates how to find the snap to install.
 	Snap *SnapSetup
 	// Components indicates how to find the components to install.
-	Components []*ComponentSetup
+	Components []ComponentInstallable
 	// Info contains the snap.Info for the snap to be installed.
 	Info *snap.Info
 }
 
-// Target represents a single snap or a group of snaps to be installed.
+type ComponentInstallable struct {
+	Setup *ComponentSetup
+	Info  *snap.ComponentInfo
+}
+
+// Target is an interface that represents a single snap or a group of snaps that
+// are to be installed.
 type Target interface {
 	// Installables returns the data needed to setup the snaps for installation.
 	Installables(context.Context, *state.State, map[string]*SnapState, Options) ([]Installable, error)
@@ -100,6 +107,8 @@ func NewStoreTarget(snaps ...StoreSnap) *StoreTarget {
 		if sn.RevOpts.Channel == "" {
 			sn.RevOpts.Channel = "stable"
 		}
+
+		sn.Components = strutil.Deduplicate(sn.Components)
 
 		mapping[sn.Name] = sn
 	}
@@ -180,13 +189,16 @@ func (s *StoreTarget) Installables(ctx context.Context, st *state.State, install
 			return nil, fmt.Errorf("store returned unsolicited snap action: %s", r.InstanceName())
 		}
 
-		// TODO: extract components from resources
-
 		// TODO: is it safe to pull the channel from here? i'm not sure what
 		// this will actually look like as a response from the real store
 		channel := r.RedirectChannel
 		if r.RedirectChannel == "" {
 			channel = sn.RevOpts.Channel
+		}
+
+		comps, err := requestedComponentsFromActionResult(sn, r)
+		if err != nil {
+			return nil, fmt.Errorf("cannot extract components from snap resources: %w", err)
 		}
 
 		installs = append(installs, Installable{
@@ -195,11 +207,63 @@ func (s *StoreTarget) Installables(ctx context.Context, st *state.State, install
 				Channel:      channel,
 				CohortKey:    sn.RevOpts.CohortKey,
 			},
-			Info: r.Info,
+			Components: comps,
+			Info:       r.Info,
 		})
 	}
 
 	return installs, err
+}
+
+func requestedComponentsFromActionResult(sn StoreSnap, sar store.SnapActionResult) ([]ComponentInstallable, error) {
+	mapping := make(map[string]store.SnapResourceResult, len(sar.Resources))
+	for _, res := range sar.Resources {
+		mapping[res.Name] = res
+	}
+
+	installables := make([]ComponentInstallable, 0, len(sn.Components))
+	for _, comp := range sn.Components {
+		res, ok := mapping[comp]
+		if !ok {
+			return nil, fmt.Errorf("cannot find component %q in snap resources", comp)
+		}
+
+		installable, err := componentFromResource(comp, res, sar.Info)
+		if err != nil {
+			return nil, err
+		}
+
+		installables = append(installables, installable)
+	}
+	return installables, nil
+}
+
+func componentFromResource(name string, sar store.SnapResourceResult, info *snap.Info) (ComponentInstallable, error) {
+	comp, ok := info.Components[name]
+	if !ok {
+		return ComponentInstallable{}, fmt.Errorf("%q is not a component for snap %q", name, info.SnapName())
+	}
+
+	if fmt.Sprintf("component/%s", comp.Type) != sar.Type {
+		return ComponentInstallable{}, fmt.Errorf("inconsistent component type (%q in snap, %q in component)", comp.Type, sar.Type)
+	}
+
+	compName := naming.NewComponentRef(info.SnapName(), name)
+
+	return ComponentInstallable{
+		Setup: &ComponentSetup{
+			DownloadInfo: &sar.DownloadInfo,
+		},
+		Info: &snap.ComponentInfo{
+			Component: compName,
+			Type:      comp.Type,
+			Version:   sar.Version,
+			ComponentSideInfo: snap.ComponentSideInfo{
+				Component: compName,
+				Revision:  snap.R(sar.Revision),
+			},
+		},
+	}, nil
 }
 
 func installActionForStoreTarget(t StoreSnap, opts Options, enforcedSets func() (*snapasserts.ValidationSets, error)) (*store.SnapAction, error) {
@@ -403,12 +467,23 @@ func InstallTarget(ctx context.Context, st *state.State, target Target, opts Opt
 			ExpectedProvenance: info.SnapProvenance,
 		}
 
+		compsups := make([]*ComponentSetup, 0, len(inst.Components))
+		for _, comp := range inst.Components {
+			compsups = append(compsups, &ComponentSetup{
+				DownloadInfo: comp.Setup.DownloadInfo,
+				CompPath:     comp.Setup.CompPath,
+
+				CompSideInfo: &comp.Info.ComponentSideInfo,
+				CompType:     comp.Info.Type,
+			})
+		}
+
 		var instFlags int
 		if opts.Flags.SkipConfigure {
 			instFlags |= skipConfigure
 		}
 
-		ts, err := doInstall(st, snapst, snapsup, nil, instFlags, opts.FromChange, inUseFor(opts.DeviceCtx))
+		ts, err := doInstall(st, snapst, snapsup, compsups, instFlags, opts.FromChange, inUseFor(opts.DeviceCtx))
 		if err != nil {
 			return nil, nil, err
 		}
