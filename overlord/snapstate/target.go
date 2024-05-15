@@ -408,7 +408,7 @@ func InstallTarget(ctx context.Context, st *state.State, target Target, opts Opt
 			instFlags |= skipConfigure
 		}
 
-		ts, err := doInstall(st, snapst, snapsup, instFlags, opts.FromChange, inUseFor(opts.DeviceCtx))
+		ts, err := doInstall(st, snapst, snapsup, nil, instFlags, opts.FromChange, inUseFor(opts.DeviceCtx))
 		if err != nil {
 			return nil, nil, err
 		}
