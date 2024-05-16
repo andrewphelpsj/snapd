@@ -413,8 +413,35 @@ func modeFlags(devMode, jailMode, classic bool) (snapstate.Flags, error) {
 }
 
 func snapInstall(inst *snapInstruction, st *state.State) (string, []*state.TaskSet, error) {
-	if len(inst.Snaps[0]) == 0 {
+	sn := inst.Snaps[0]
+	if len(sn) == 0 {
 		return "", nil, fmt.Errorf(i18n.G("cannot install snap with empty name"))
+	}
+
+	if strings.Contains(sn, "+") {
+		fmt.Println("found a component")
+		name, comp, ok := strings.Cut(sn, "+")
+		if !ok {
+			return "", nil, fmt.Errorf(i18n.G("cannot install snap+components with invalid name %q"), sn)
+		}
+
+		fmt.Println("installing this component:", name, comp)
+		target := snapstate.NewStoreTarget(snapstate.StoreSnap{
+			Name:       name,
+			Components: []string{comp},
+		})
+
+		_, ts, err := snapstate.InstallOne(inst.ctx, st, target, snapstate.Options{
+			UserID: inst.userID,
+		})
+		if err != nil {
+			fmt.Println(err)
+			return "", nil, err
+		}
+
+		msg := fmt.Sprintf(i18n.G("Install %q snap and components"), sn)
+
+		return msg, []*state.TaskSet{ts}, nil
 	}
 
 	flags, err := inst.installFlags()
