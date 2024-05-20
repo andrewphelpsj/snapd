@@ -55,7 +55,9 @@ func installSeedSnap(st *state.State, sn *seed.Snap, flags snapstate.Flags, prqt
 		flags.DevMode = true
 	}
 
-	t := snapstate.PathInstallGoal("", sn.Path, sn.SideInfo, snapstate.RevisionOptions{})
+	// TODO: this will need to account for components in the future
+
+	t := snapstate.PathInstallGoal("", sn.Path, sn.SideInfo, nil, snapstate.RevisionOptions{})
 	info, ts, err := snapstate.InstallOne(context.Background(), st, t, snapstate.Options{
 		Flags:         flags,
 		PrereqTracker: prqt,
