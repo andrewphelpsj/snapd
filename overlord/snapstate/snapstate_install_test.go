@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -6186,6 +6187,9 @@ func undoInstallOps(snapName, instanceName string, snapRevision snap.Revision, c
 func (s *snapmgrTestSuite) testInstallComponentsRunThrough(c *C, snapName, instanceKey string, components []string, undo bool) {
 	s.state.Lock()
 	defer s.state.Unlock()
+
+	// sort these so that we can predict the order of the ops
+	sort.Strings(components)
 
 	if instanceKey != "" {
 		tr := config.NewTransaction(s.state)

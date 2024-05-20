@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/client"
@@ -410,6 +411,14 @@ func InstallTarget(ctx context.Context, st *state.State, target Target, opts Opt
 	installables, err := target.Installables(ctx, st, snaps, opts)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	for _, inst := range installables {
+		// sort the components by name to ensure we always install components in the
+		// same order
+		sort.Slice(inst.Components, func(i, j int) bool {
+			return inst.Components[i].Info.Component.String() < inst.Components[j].Info.Component.String()
+		})
 	}
 
 	// TODO: should this be a field on the targets?
