@@ -27,6 +27,7 @@ import (
 
 	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/client"
+	"github.com/snapcore/snapd/overlord/snapstate/backend"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/naming"
@@ -534,6 +535,9 @@ func setDefaultSnapstateOptions(st *state.State, opts *Options) error {
 type PathTarget struct {
 	// Path is the path to the snap on disk.
 	Path string
+	// Components is a mapping of component side infos to paths that should be
+	// installed alongside this snap
+	Components map[*snap.ComponentSideInfo]string
 	// InstanceName is the name of the snap to install.
 	InstanceName string
 	// RevOpts contains options that apply to the installation of this snap.
@@ -549,12 +553,13 @@ var (
 	_ OptionInitializer = &PathTarget{}
 )
 
-// NewPathTarget creates a new PathTarget from the given name, path, and side
-// info.
-func NewPathTarget(name, path string, si *snap.SideInfo, opts RevisionOptions) *PathTarget {
+// NewPathTarget creates a new PathTarget from the given name, path, set of
+// components to install, and side info.
+func NewPathTarget(name, path string, si *snap.SideInfo, components map[*snap.ComponentSideInfo]string, opts RevisionOptions) *PathTarget {
 	return &PathTarget{
 		InstanceName: name,
 		Path:         path,
+		Components:   components,
 		RevOpts:      opts,
 		SideInfo:     si,
 	}
@@ -623,14 +628,39 @@ func (p *PathTarget) Installables(ctx context.Context, st *state.State, installe
 		return nil, err
 	}
 
+	comps, err := installableComponentsFromPaths(info, p.Components)
+	if err != nil {
+		return nil, err
+	}
+
 	inst := Installable{
 		Snap: &SnapSetup{
 			SnapPath:  p.Path,
 			Channel:   channel,
 			CohortKey: p.RevOpts.CohortKey,
 		},
-		Info: info,
+		Components: comps,
+		Info:       info,
 	}
 
 	return []Installable{inst}, nil
+}
+
+func installableComponentsFromPaths(info *snap.Info, components map[*snap.ComponentSideInfo]string) ([]ComponentInstallable, error) {
+	installables := make([]ComponentInstallable, 0, len(components))
+	for csi, path := range components {
+		compInfo, _, err := backend.OpenComponentFile(path, info, csi)
+		if err != nil {
+			return nil, err
+		}
+
+		installables = append(installables, ComponentInstallable{
+			Setup: &ComponentSetup{
+				CompPath: path,
+			},
+			Info: compInfo,
+		})
+	}
+
+	return installables, nil
 }

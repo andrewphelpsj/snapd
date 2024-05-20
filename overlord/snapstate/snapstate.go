@@ -1277,7 +1277,7 @@ func addPrereq(prqt PrereqTracker, info *snap.Info) {
 // local revision and sideloading, or full metadata in which case it
 // the snap will appear as installed from the store.
 func InstallPath(st *state.State, si *snap.SideInfo, path, instanceName, channel string, flags Flags, prqt PrereqTracker) (*state.TaskSet, *snap.Info, error) {
-	target := NewPathTarget(instanceName, path, si, RevisionOptions{
+	target := NewPathTarget(instanceName, path, si, nil, RevisionOptions{
 		Channel: channel,
 	})
 	info, ts, err := InstallOne(context.Background(), st, target, Options{
@@ -1356,7 +1356,7 @@ func InstallPathWithDeviceContext(st *state.State, si *snap.SideInfo, path, name
 		opts = &RevisionOptions{}
 	}
 
-	target := NewPathTarget(name, path, si, *opts)
+	target := NewPathTarget(name, path, si, nil, *opts)
 
 	_, ts, err := InstallOne(context.Background(), st, target, Options{
 		Flags:         flags,
