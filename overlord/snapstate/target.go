@@ -27,6 +27,7 @@ import (
 
 	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/client"
+	"github.com/snapcore/snapd/overlord/snapstate/backend"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/naming"
@@ -625,16 +626,20 @@ type pathInstallGoal struct {
 	revOpts RevisionOptions
 	// sideInfo contains extra information about the snap.
 	sideInfo *snap.SideInfo
+	// components is a mapping of component side infos to paths that should be
+	// installed alongside this snap.
+	components map[*snap.ComponentSideInfo]string
 }
 
 // PathInstallGoal creates a new InstallGoal to install a snap from a given from
 // a path on disk. If instanceName is not provided, si.RealName will be used.
-func PathInstallGoal(instanceName, path string, si *snap.SideInfo, opts RevisionOptions) InstallGoal {
+func PathInstallGoal(instanceName, path string, si *snap.SideInfo, components map[*snap.ComponentSideInfo]string, opts RevisionOptions) InstallGoal {
 	return &pathInstallGoal{
 		instanceName: instanceName,
 		path:         path,
 		revOpts:      opts,
 		sideInfo:     si,
+		components:   components,
 	}
 }
 
@@ -694,15 +699,40 @@ func (p *pathInstallGoal) toInstall(ctx context.Context, st *state.State, opts O
 		return nil, err
 	}
 
+	comps, err := installableComponentsFromPaths(info, p.components)
+	if err != nil {
+		return nil, err
+	}
+
 	inst := target{
 		setup: &SnapSetup{
 			SnapPath:  p.path,
 			Channel:   channel,
 			CohortKey: p.revOpts.CohortKey,
 		},
-		info:   info,
-		snapst: snapst,
+		info:       info,
+		snapst:     snapst,
+		components: comps,
 	}
 
 	return []target{inst}, nil
+}
+
+func installableComponentsFromPaths(info *snap.Info, components map[*snap.ComponentSideInfo]string) ([]ComponentTarget, error) {
+	installables := make([]ComponentTarget, 0, len(components))
+	for csi, path := range components {
+		compInfo, _, err := backend.OpenComponentFile(path, info, csi)
+		if err != nil {
+			return nil, err
+		}
+
+		installables = append(installables, ComponentTarget{
+			Setup: &ComponentSetup{
+				CompPath: path,
+			},
+			Info: compInfo,
+		})
+	}
+
+	return installables, nil
 }
