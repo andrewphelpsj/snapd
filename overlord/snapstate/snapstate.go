@@ -1401,8 +1401,8 @@ func InstallWithDeviceContext(ctx context.Context, st *state.State, name string,
 	}
 
 	target := NewStoreTarget(StoreSnap{
-		Name:    name,
-		RevOpts: *opts,
+		InstanceName: name,
+		RevOpts:      *opts,
 	})
 
 	_, ts, err := InstallOne(ctx, st, target, Options{
@@ -1652,7 +1652,7 @@ func InstallMany(st *state.State, names []string, revOpts []*RevisionOptions, us
 	snaps := make([]StoreSnap, 0, len(names))
 	for i, name := range names {
 		sn := StoreSnap{
-			Name:          name,
+			InstanceName:  name,
 			SkipIfPresent: true,
 		}
 		if len(revOpts) > 0 && revOpts[i] != nil {
