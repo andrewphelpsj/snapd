@@ -6228,7 +6228,7 @@ func undoInstallOps(snapName, instanceName string, snapRevision snap.Revision, c
 			Revision:  snap.R(i + 1),
 		}
 
-		containerName := fmt.Sprintf("%s+%s", snapName, components[i])
+		containerName := fmt.Sprintf("%s+%s", instanceName, components[i])
 		filename := fmt.Sprintf("%s_%v.comp", containerName, csi.Revision)
 
 		if strings.HasPrefix(components[i], string(snap.KernelModulesComponent)) {
