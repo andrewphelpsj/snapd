@@ -1355,7 +1355,7 @@ func addPrereq(prqt PrereqTracker, info *snap.Info) {
 // local revision and sideloading, or full metadata in which case it
 // the snap will appear as installed from the store.
 func InstallPath(st *state.State, si *snap.SideInfo, path, instanceName, channel string, flags Flags, prqt PrereqTracker) (*state.TaskSet, *snap.Info, error) {
-	target := NewPathTarget(instanceName, path, si, RevisionOptions{
+	target := PathInstallGoal(instanceName, path, si, RevisionOptions{
 		Channel: channel,
 	})
 	info, ts, err := InstallOne(context.Background(), st, target, Options{
@@ -1400,7 +1400,7 @@ func InstallWithDeviceContext(ctx context.Context, st *state.State, name string,
 		opts = &RevisionOptions{}
 	}
 
-	target := NewStoreTarget(StoreSnap{
+	target := StoreGoal(StoreSnap{
 		InstanceName: name,
 		RevOpts:      *opts,
 	})
@@ -1434,7 +1434,7 @@ func InstallPathWithDeviceContext(st *state.State, si *snap.SideInfo, path, name
 		opts = &RevisionOptions{}
 	}
 
-	target := NewPathTarget(name, path, si, *opts)
+	target := PathInstallGoal(name, path, si, *opts)
 
 	_, ts, err := InstallOne(context.Background(), st, target, Options{
 		Flags:         flags,
@@ -1661,8 +1661,8 @@ func InstallMany(st *state.State, names []string, revOpts []*RevisionOptions, us
 		snaps = append(snaps, sn)
 	}
 
-	target := NewStoreTarget(snaps...)
-	infos, tss, err := InstallTarget(context.Background(), st, target, Options{
+	target := StoreGoal(snaps...)
+	infos, tss, err := InstallWithGoal(context.Background(), st, target, Options{
 		Flags:  *flags,
 		UserID: userID,
 	})
