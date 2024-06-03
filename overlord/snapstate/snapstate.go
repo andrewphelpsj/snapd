@@ -1400,7 +1400,7 @@ func InstallWithDeviceContext(ctx context.Context, st *state.State, name string,
 		opts = &RevisionOptions{}
 	}
 
-	target := StoreGoal(StoreSnap{
+	target := StoreInstallGoal(StoreSnap{
 		InstanceName: name,
 		RevOpts:      *opts,
 	})
@@ -1661,7 +1661,7 @@ func InstallMany(st *state.State, names []string, revOpts []*RevisionOptions, us
 		snaps = append(snaps, sn)
 	}
 
-	target := StoreGoal(snaps...)
+	target := StoreInstallGoal(snaps...)
 	infos, tss, err := InstallWithGoal(context.Background(), st, target, Options{
 		Flags:  *flags,
 		UserID: userID,
