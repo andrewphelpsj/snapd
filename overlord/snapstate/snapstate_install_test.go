@@ -6081,7 +6081,7 @@ func (s *snapmgrTestSuite) TestInstallFromStoreOneSnap(c *C) {
 	)
 
 	_, _, err := snapstate.InstallOne(context.Background(), s.state, t, snapstate.Options{
-		RequireOneSnap: true,
+		ExpectOneSnap: true,
 	})
 	c.Check(err, testutil.ErrorIs, snapstate.ErrExpectedOneSnap)
 
@@ -6101,7 +6101,7 @@ func (s *snapmgrTestSuite) TestInstallOneSnapMisbehavingGoal(c *C) {
 	}
 
 	_, _, err := snapstate.InstallOne(context.Background(), s.state, &goal, snapstate.Options{
-		RequireOneSnap: true,
+		ExpectOneSnap: true,
 	})
 	c.Check(err, testutil.ErrorIs, snapstate.ErrExpectedOneSnap)
 }
