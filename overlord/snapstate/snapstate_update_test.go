@@ -3282,6 +3282,7 @@ func (s *snapmgrTestSuite) TestUpdateIgnoreValidationSticky(c *C) {
 			Action:       "refresh",
 			InstanceName: "some-snap",
 			SnapID:       "some-snap-id",
+			Channel:      "latest/stable",
 			Flags:        0,
 		},
 		userID: 1,
@@ -12489,11 +12490,9 @@ type: snapd
 	updated, taskSets, err := snapstate.UpdateMany(context.Background(), s.state,
 		[]string{"snapd", "some-snap-with-new-base"},
 		[]*snapstate.RevisionOptions{{
-			Revision: snap.R(1),
-			Channel:  "latest/stable",
+			Channel: "latest/stable",
 		}, {
-			Revision: snap.R(1),
-			Channel:  "some-channel",
+			Channel: "some-channel",
 		}},
 		s.user.ID, &snapstate.Flags{
 			IgnoreRunning: true,

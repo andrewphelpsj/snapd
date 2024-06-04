@@ -548,8 +548,7 @@ func (s *storeInstallGoal) validateAndPrune(installedSnaps map[string]*SnapState
 // storeInstallGoal implements the Target interface and represents a group of
 // snaps that are to be installed from the store.
 type storeUpdateGoal struct {
-	snaps  map[string]StoreUpdate
-	filter updateFilter
+	snaps map[string]StoreUpdate
 }
 
 // StoreUpdate represents a snap that is to be updated from the store.
@@ -560,7 +559,7 @@ type StoreUpdate struct {
 	RevOpts RevisionOptions
 }
 
-func StoreUpdateGoal(filter updateFilter, snaps ...StoreUpdate) UpdateGoal {
+func StoreUpdateGoal(snaps ...StoreUpdate) UpdateGoal {
 	mapping := make(map[string]StoreUpdate, len(snaps))
 	for _, sn := range snaps {
 		if _, ok := mapping[sn.InstanceName]; ok {
@@ -571,26 +570,39 @@ func StoreUpdateGoal(filter updateFilter, snaps ...StoreUpdate) UpdateGoal {
 	}
 
 	return &storeUpdateGoal{
-		snaps:  mapping,
-		filter: filter,
+		snaps: mapping,
 	}
 }
 
 func (s *storeUpdateGoal) toUpdate(ctx context.Context, st *state.State, opts Options) (UpdateSummary, error) {
+	if err := validateAndInitStoreUpdates(st, s.snaps, opts); err != nil {
+		return UpdateSummary{}, err
+	}
+
 	user, err := userFromUserID(st, opts.UserID)
 	if err != nil {
 		return UpdateSummary{}, err
 	}
 
-	snaps, err := All(st)
+	refreshOpts := &store.RefreshOptions{Scheduled: opts.Flags.IsAutoRefresh}
+	summary, err := refreshCandidatesV2(ctx, st, s.snaps, user, refreshOpts, opts)
 	if err != nil {
 		return UpdateSummary{}, err
 	}
 
-	for _, sn := range s.snaps {
-		snapst, ok := snaps[sn.InstanceName]
+	return summary, nil
+}
+
+func validateAndInitStoreUpdates(st *state.State, updates map[string]StoreUpdate, opts Options) error {
+	snapstates, err := All(st)
+	if err != nil {
+		return err
+	}
+
+	for _, sn := range updates {
+		snapst, ok := snapstates[sn.InstanceName]
 		if !ok {
-			return UpdateSummary{}, snap.NotInstalledError{Snap: sn.InstanceName}
+			return snap.NotInstalledError{Snap: sn.InstanceName}
 		}
 
 		// default to existing cohort key if we don't have a provided one
@@ -600,7 +612,7 @@ func (s *storeUpdateGoal) toUpdate(ctx context.Context, st *state.State, opts Op
 
 		sn.RevOpts.Channel, err = resolveChannel(sn.InstanceName, snapst.TrackingChannel, sn.RevOpts.Channel, opts.DeviceCtx)
 		if err != nil {
-			return UpdateSummary{}, err
+			return err
 		}
 
 		// default to tracking the already tracked channel, if we don't have a
@@ -608,21 +620,11 @@ func (s *storeUpdateGoal) toUpdate(ctx context.Context, st *state.State, opts Op
 		if sn.RevOpts.Channel == "" {
 			sn.RevOpts.Channel = snapst.TrackingChannel
 		}
+
+		updates[sn.InstanceName] = sn
 	}
 
-	refreshOpts := &store.RefreshOptions{Scheduled: opts.Flags.IsAutoRefresh}
-	summary, err := refreshCandidatesV2(ctx, st, s.snaps, user, refreshOpts, opts)
-	if err != nil {
-		return UpdateSummary{}, err
-	}
-
-	if s.filter != nil {
-		summary.filter(func(t target) (bool, error) {
-			return s.filter(t.info, &t.snapst), nil
-		})
-	}
-
-	return summary, nil
+	return nil
 }
 
 func filterHeldSnapsInSummary(st *state.State, summary *UpdateSummary, isAutoRefresh bool) error {
@@ -687,17 +689,22 @@ func refreshCandidatesV2(ctx context.Context, st *state.State, requested map[str
 			continue
 		}
 
-		missing, ok := requested[name]
-
-		// this should never happen
+		req, ok := requested[name]
 		if !ok {
-			return UpdateSummary{}, fmt.Errorf("internal error: missing requested snap %q", name)
+			if !summary.RefreshAll {
+				continue
+			}
+			req = StoreUpdate{InstanceName: name}
 		}
 
-		missingRequests[name] = missing
+		missingRequests[name] = req
 	}
 
 	if len(missingRequests) > 0 {
+		if err := validateAndInitStoreUpdates(st, missingRequests, opts); err != nil {
+			return UpdateSummary{}, err
+		}
+
 		// mimic manual refresh to avoid throttling.
 		// context: snaps may be throttled by the store to balance load
 		// and therefore may not always receive an update (even if one was
@@ -762,6 +769,14 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 
 	refreshAll := len(requested) == 0
 
+	// some snaps might have been requested to be updated but didn't get
+	// updated, either because we detected that the requested/required revision
+	// is already installed, or the store reported that there was no update
+	// available. in either case, we need to keep track of these, since we still
+	// might need to change the channel, cohort key, or validation set
+	// enforcement.
+	notUpdated := make(map[string]RevisionOptions)
+
 	addCand := func(installed *store.CurrentSnap, snapst *SnapState) error {
 		// FIXME: snaps that are not active are skipped for now
 		//        until we know what we want to do
@@ -802,6 +817,7 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 		// if we already have the requested revision installed, we don't need to
 		// consider this snap
 		if !action.Revision.Unset() && action.Revision == installed.Revision {
+			notUpdated[installed.InstanceName] = req.RevOpts
 			return nil
 		}
 
@@ -940,12 +956,9 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 		})
 	}
 
-	notUpdated := make(map[string]RevisionOptions)
-	if !refreshAll {
-		for name, err := range refreshErrors {
-			if errors.Is(err, store.ErrNoUpdateAvailable) {
-				notUpdated[name] = requested[name].RevOpts
-			}
+	for name, err := range refreshErrors {
+		if errors.Is(err, store.ErrNoUpdateAvailable) {
+			notUpdated[name] = requested[name].RevOpts
 		}
 	}
 
@@ -957,34 +970,36 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 	}, nil
 }
 
-func doUpdateV2(st *state.State, summary UpdateSummary, opts Options) ([]string, *UpdateTaskSets, error) {
+func doUpdateV2(st *state.State, requested []string, snapsups []SnapSetup, snapstates map[string]SnapState, components map[string][]ComponentSetup, opts Options) ([]string, *UpdateTaskSets, error) {
 	var installTasksets []*state.TaskSet
 	var preDlTasksets []*state.TaskSet
 
+	refreshAll := len(requested) == 0
+
 	var nameSet map[string]bool
-	if len(summary.Requested) != 0 {
-		nameSet = make(map[string]bool, len(summary.Requested))
-		for _, name := range summary.Requested {
+	if len(requested) != 0 {
+		nameSet = make(map[string]bool, len(requested))
+		for _, name := range requested {
 			nameSet[name] = true
 		}
 	}
 
-	updateNames := make([]string, 0, len(summary.Targets))
-	for _, t := range summary.Targets {
-		updateNames = append(updateNames, t.info.InstanceName())
+	updateNames := make([]string, 0, len(snapsups))
+	for _, up := range snapsups {
+		updateNames = append(updateNames, up.InstanceName())
 	}
 
-	newAutoAliases, mustPruneAutoAliases, transferTargets, err := autoAliasesUpdateV2(st, summary.Requested, updateNames)
+	newAutoAliases, mustPruneAutoAliases, transferTargets, err := autoAliasesUpdateV2(st, requested, updateNames)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	reportUpdated := make(map[string]bool, len(summary.Targets))
+	reportUpdated := make(map[string]bool, len(snapsups))
 	var pruningAutoAliasesTs *state.TaskSet
 
 	if len(mustPruneAutoAliases) != 0 {
 		var err error
-		pruningAutoAliasesTs, err = applyAutoAliasesDelta(st, mustPruneAutoAliases, "prune", summary.RefreshAll, opts.FromChange, func(snapName string, _ *state.TaskSet) {
+		pruningAutoAliasesTs, err = applyAutoAliasesDelta(st, mustPruneAutoAliases, "prune", refreshAll, opts.FromChange, func(snapName string, _ *state.TaskSet) {
 			if nameSet[snapName] {
 				reportUpdated[snapName] = true
 			}
@@ -1004,8 +1019,8 @@ func doUpdateV2(st *state.State, summary UpdateSummary, opts Options) ([]string,
 	}
 
 	// first snapd, core, kernel, bases, then rest
-	sort.SliceStable(summary.Targets, func(i, j int) bool {
-		return summary.Targets[i].info.Type().SortsBefore(summary.Targets[j].info.Type())
+	sort.SliceStable(snapsups, func(i, j int) bool {
+		return snapsups[i].Type.SortsBefore(snapsups[j].Type)
 	})
 
 	if opts.Flags.Transaction == client.TransactionAllSnaps {
@@ -1016,40 +1031,17 @@ func doUpdateV2(st *state.State, summary UpdateSummary, opts Options) ([]string,
 
 	// updates is sorted by kind so this will process first core
 	// and bases and then other snaps
-	for _, t := range summary.Targets {
-		snapUserID, err := userIDForSnap(st, &t.snapst, opts.UserID)
-		if err != nil {
-			return nil, nil, err
+	for _, snapsup := range snapsups {
+		snapst, ok := snapstates[snapsup.InstanceName()]
+		if !ok {
+			return nil, nil, fmt.Errorf("internal error: missing snap state for %q", snapsup.InstanceName())
 		}
 
-		providerContentAttrs := defaultProviderContentAttrs(st, t.info, opts.PrereqTracker)
-		snapsup := SnapSetup{
-			DownloadInfo: t.setup.DownloadInfo,
-			Channel:      t.setup.Channel,
-			CohortKey:    t.setup.CohortKey,
-
-			// TODO: make sure that we're setting user ID correctly here
-			UserID:             snapUserID,
-			Base:               t.info.Base,
-			Prereq:             getKeys(providerContentAttrs),
-			PrereqContentAttrs: providerContentAttrs,
-			Flags:              opts.Flags.ForSnapSetup(),
-			SideInfo:           &t.info.SideInfo,
-			Type:               t.info.Type(),
-			Version:            t.info.Version,
-			PlugsOnly:          len(t.info.Slots) == 0,
-			InstanceKey:        t.info.InstanceKey,
-			auxStoreInfo: auxStoreInfo{
-				Media: t.info.Media,
-				// XXX we store this for the benefit of old snapd
-				Website: t.info.Website(),
-			},
-			ExpectedProvenance: t.info.SnapProvenance,
-		}
+		compsups := components[snapsup.InstanceName()]
 
 		// Do not set any default restart boundaries, we do it when we have access to all
 		// the task-sets in preparation for single-reboot.
-		ts, err := doInstall(st, &t.snapst, snapsup, nil, noRestartBoundaries, opts.FromChange, inUseFor(opts.DeviceCtx))
+		ts, err := doInstall(st, &snapst, snapsup, compsups, noRestartBoundaries, opts.FromChange, inUseFor(opts.DeviceCtx))
 		if err != nil {
 			if errors.Is(err, &timedBusySnapError{}) && ts != nil {
 				// snap is busy and pre-download tasks were made for it
@@ -1058,8 +1050,8 @@ func doUpdateV2(st *state.State, summary UpdateSummary, opts Options) ([]string,
 				continue
 			}
 
-			if summary.RefreshAll {
-				logger.Noticef("cannot refresh snap %q: %v", t.setup.InstanceName(), err)
+			if refreshAll {
+				logger.Noticef("cannot refresh snap %q: %v", snapsup.InstanceName(), err)
 				continue
 			}
 			return nil, nil, err
@@ -1067,7 +1059,7 @@ func doUpdateV2(st *state.State, summary UpdateSummary, opts Options) ([]string,
 
 		ts.JoinLane(generateLane(st, opts))
 
-		scheduleUpdate(t.setup.InstanceName(), ts)
+		scheduleUpdate(snapsup.InstanceName(), ts)
 		installTasksets = append(installTasksets, ts)
 	}
 
@@ -1078,7 +1070,7 @@ func doUpdateV2(st *state.State, summary UpdateSummary, opts Options) ([]string,
 	}
 
 	if len(newAutoAliases) != 0 {
-		addAutoAliasesTs, err := applyAutoAliasesDelta(st, newAutoAliases, "refresh", summary.RefreshAll, opts.FromChange, scheduleUpdate)
+		addAutoAliasesTs, err := applyAutoAliasesDelta(st, newAutoAliases, "refresh", refreshAll, opts.FromChange, scheduleUpdate)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1216,10 +1208,6 @@ func InstallOne(ctx context.Context, st *state.State, goal InstallGoal, opts Opt
 // TODO: rename this to Install once the API is settled, and we can rename or
 // remove the old Install function.
 func InstallWithGoal(ctx context.Context, st *state.State, goal InstallGoal, opts Options) ([]*snap.Info, []*state.TaskSet, error) {
-	if opts.PrereqTracker == nil {
-		opts.PrereqTracker = snap.SimplePrereqTracker{}
-	}
-
 	// can only specify a lane when running multiple operations transactionally
 	if opts.Flags.Transaction != client.TransactionAllSnaps && opts.Flags.Lane != 0 {
 		return nil, nil, errors.New("cannot specify a lane without setting transaction to \"all-snaps\"")
@@ -1300,14 +1288,25 @@ func InstallWithGoal(ctx context.Context, st *state.State, goal InstallGoal, opt
 	return infos, tasksets, nil
 }
 
-func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, opts Options) ([]string, []*state.TaskSet, error) {
+func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filter updateFilter, opts Options) ([]string, *UpdateTaskSets, error) {
 	if err := setDefaultSnapstateOptions(st, &opts); err != nil {
 		return nil, nil, err
+	}
+
+	// can only specify a lane when running multiple operations transactionally
+	if opts.Flags.Transaction != client.TransactionAllSnaps && opts.Flags.Lane != 0 {
+		return nil, nil, errors.New("cannot specify a lane without setting transaction to \"all-snaps\"")
 	}
 
 	summary, err := goal.toUpdate(ctx, st, opts)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if filter != nil {
+		summary.filter(func(t target) (bool, error) {
+			return filter(t.info, &t.snapst), nil
+		})
 	}
 
 	if err := filterHeldSnapsInSummary(st, &summary, opts.Flags.IsAutoRefresh); err != nil {
@@ -1342,8 +1341,27 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, opts 
 		return nil, nil, err
 	}
 
+	snapsups := make([]SnapSetup, 0, len(summary.Targets))
+	components := make(map[string][]ComponentSetup, len(summary.Targets))
+	snapstates := make(map[string]SnapState, len(summary.Targets))
+	for _, t := range summary.Targets {
+		snapsup, compsups, err := t.setups(st, opts)
+		if err != nil {
+			if !summary.RefreshAll {
+				return nil, nil, err
+			}
+
+			logger.Noticef("cannot refresh snap %q: %v", t.info.InstanceName(), err)
+			continue
+		}
+
+		snapsups = append(snapsups, snapsup)
+		components[t.snapst.InstanceName()] = compsups
+		snapstates[t.snapst.InstanceName()] = t.snapst
+	}
+
 	// TODO: ignore split refresh for now, come back later
-	updated, uts, err := doUpdateV2(st, summary, opts)
+	updated, uts, err := doUpdateV2(st, summary.Requested, snapsups, snapstates, components, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1355,7 +1373,7 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, opts 
 	// TODO: change track, chohort, validation set enforcement of snaps in
 	// summary.UpdateNotAvailable
 
-	return updated, uts.Refresh, nil
+	return updated, uts, nil
 }
 
 func validateAndFilterSummaryRefreshes(st *state.State, summary *UpdateSummary, opts Options) error {
@@ -1365,7 +1383,9 @@ func validateAndFilterSummaryRefreshes(st *state.State, summary *UpdateSummary, 
 
 	ignoreValidation := make(map[string]bool, len(summary.Targets))
 	for _, t := range summary.Targets {
-		ignoreValidation[t.info.InstanceName()] = t.snapst.IgnoreValidation
+		if t.snapst.IgnoreValidation {
+			ignoreValidation[t.info.InstanceName()] = true
+		}
 	}
 
 	validated, err := ValidateRefreshes(st, summary.targetInfos(), ignoreValidation, opts.UserID, opts.DeviceCtx)
@@ -1409,6 +1429,10 @@ func setDefaultSnapstateOptions(st *state.State, opts *Options) error {
 		opts.DeviceCtx, err = DeviceCtxFromState(st, opts.DeviceCtx)
 	} else {
 		opts.DeviceCtx, err = DevicePastSeeding(st, opts.DeviceCtx)
+	}
+
+	if opts.PrereqTracker == nil {
+		opts.PrereqTracker = snap.SimplePrereqTracker{}
 	}
 	return err
 }

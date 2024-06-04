@@ -158,7 +158,9 @@ func refreshHintsFromCandidates(st *state.State, summary UpdateSummary, deviceCt
 	if ValidateRefreshes != nil && len(summary.Targets) != 0 {
 		ignoreValidation := make(map[string]bool, len(summary.Targets))
 		for _, t := range summary.Targets {
-			ignoreValidation[t.info.InstanceName()] = t.snapst.IgnoreValidation
+			if t.setup.IgnoreValidation {
+				ignoreValidation[t.info.InstanceName()] = true
+			}
 		}
 
 		const userID = 0
