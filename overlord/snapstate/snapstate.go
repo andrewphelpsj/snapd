@@ -1713,8 +1713,8 @@ func InstallMany(st *state.State, names []string, revOpts []*RevisionOptions, us
 // RefreshCandidates gets a list of candidates for update
 // Note that the state must be locked by the caller.
 func RefreshCandidates(st *state.State, user *auth.UserState) ([]*snap.Info, error) {
-	updates, _, _, err := refreshCandidates(context.TODO(), st, nil, nil, user, nil)
-	return updates, err
+	summary, err := refreshCandidatesV2(context.TODO(), st, nil, user, nil, Options{})
+	return summary.targetInfos(), err
 }
 
 // ValidateRefreshes allows to hook validation into the handling of refresh candidates.
@@ -2880,7 +2880,7 @@ func autoRefreshPhase1(ctx context.Context, st *state.State, forGatingSnap strin
 
 	refreshOpts := &store.RefreshOptions{Scheduled: true}
 	// XXX: should we skip refreshCandidates if forGatingSnap isn't empty (meaning we're handling proceed from a snap)?
-	candidates, snapstateByInstance, ignoreValidationByInstanceName, err := refreshCandidates(ctx, st, nil, nil, user, refreshOpts)
+	summary, err := refreshCandidatesV2(ctx, st, nil, user, refreshOpts, Options{})
 	if err != nil {
 		// XXX: should we reset "refresh-candidates" to nil in state for some types
 		// of errors?
@@ -2890,7 +2890,8 @@ func autoRefreshPhase1(ctx context.Context, st *state.State, forGatingSnap strin
 	if err != nil {
 		return nil, nil, err
 	}
-	hints, err := refreshHintsFromCandidates(st, candidates, ignoreValidationByInstanceName, deviceCtx)
+
+	hints, err := refreshHintsFromCandidates(st, summary, deviceCtx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2905,17 +2906,17 @@ func autoRefreshPhase1(ctx context.Context, st *state.State, forGatingSnap strin
 
 	// check conflicts
 	fromChange := ""
-	for _, up := range candidates {
-		if _, ok := hints[up.InstanceName()]; !ok {
+	for _, t := range summary.Targets {
+		name := t.info.InstanceName()
+		if _, ok := hints[name]; !ok {
 			// filtered out by refreshHintsFromCandidates
 			continue
 		}
 
-		snapst := snapstateByInstance[up.InstanceName()]
-		if err := checkChangeConflictIgnoringOneChange(st, up.InstanceName(), snapst, fromChange); err != nil {
-			logger.Noticef("cannot refresh snap %q: %v", up.InstanceName(), err)
+		if err := checkChangeConflictIgnoringOneChange(st, name, &t.snapst, fromChange); err != nil {
+			logger.Noticef("cannot refresh snap %q: %v", name, err)
 		} else {
-			updates = append(updates, up.InstanceName())
+			updates = append(updates, name)
 		}
 	}
 
