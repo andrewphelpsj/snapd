@@ -590,7 +590,7 @@ func (s *snapmgrTestSuite) TestInstallFailsOnDisabledSnap(c *C) {
 		Current:         snap.R(2),
 		SnapType:        "app",
 	}
-	snapsup := &snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(1)}}
+	snapsup := snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(1)}}
 	_, err := snapstate.DoInstall(s.state, snapst, snapsup, nil, 0, "", nil)
 	c.Assert(err, ErrorMatches, `cannot update disabled snap "some-snap"`)
 }
@@ -643,7 +643,7 @@ func (s *snapmgrTestSuite) TestInstallFailsOnBusySnap(c *C) {
 	defer restore()
 
 	// Attempt to install revision 2 of the snap.
-	snapsup := &snapstate.SnapSetup{
+	snapsup := snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(2)},
 	}
 
@@ -707,7 +707,7 @@ func (s *snapmgrTestSuite) TestInstallWithIgnoreRunningProceedsOnBusySnap(c *C) 
 	defer restore()
 
 	// Attempt to install revision 2 of the snap, with the IgnoreRunning flag set.
-	snapsup := &snapstate.SnapSetup{
+	snapsup := snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{RealName: "pkg", SnapID: "pkg-id", Revision: snap.R(2)},
 		Flags:    snapstate.Flags{IgnoreRunning: true},
 		Type:     "app",
@@ -770,7 +770,7 @@ func (s *snapmgrTestSuite) TestInstallDespiteBusySnap(c *C) {
 	defer restore()
 
 	// Attempt to install revision 2 of the snap.
-	snapsup := &snapstate.SnapSetup{
+	snapsup := snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(2)},
 	}
 
@@ -783,7 +783,7 @@ func (s *snapmgrTestSuite) TestInstallFailsOnSystem(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	snapsup := &snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: "system", SnapID: "some-snap-id", Revision: snap.R(1)}}
+	snapsup := snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: "system", SnapID: "some-snap-id", Revision: snap.R(1)}}
 	_, err := snapstate.DoInstall(s.state, nil, snapsup, nil, 0, "", nil)
 	c.Assert(err, ErrorMatches, `cannot install reserved snap name 'system'`)
 }
@@ -868,7 +868,7 @@ func (s *snapmgrTestSuite) TestInstallNoRestartBoundaries(c *C) {
 	r := snapstatetest.MockDeviceModel(DefaultModel())
 	defer r()
 
-	snapsup := &snapstate.SnapSetup{
+	snapsup := snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
 			RealName: "brand-gadget",
 			SnapID:   "brand-gadget",
