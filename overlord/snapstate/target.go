@@ -70,7 +70,7 @@ type Options struct {
 type target struct {
 	// setup is a partially initialized SnapSetup that contains the data needed
 	// to find the snap file that will be installed.
-	setup *SnapSetup
+	setup SnapSetup
 	// info contains the snap.info for the snap to be installed.
 	info *snap.Info
 	// snapst is the current state of the target snap, prior to installation.
@@ -78,7 +78,7 @@ type target struct {
 	// example, talking to the store).
 	snapst SnapState
 	// components is a list of components to install with this snap.
-	components []ComponentTarget
+	components []componentTarget
 }
 
 // setups returns the completed SnapSetup and slice of ComponentSetup structs
@@ -96,12 +96,7 @@ func (t *target) setups(st *state.State, opts Options) (SnapSetup, []ComponentSe
 
 	compsups := make([]ComponentSetup, 0, len(t.components))
 	for _, comp := range t.components {
-		compsups = append(compsups, ComponentSetup{
-			DownloadInfo: comp.Setup.DownloadInfo,
-			CompPath:     comp.Setup.CompPath,
-			CompSideInfo: &comp.Info.ComponentSideInfo,
-			CompType:     comp.Info.Type,
-		})
+		compsups = append(compsups, comp.compsup())
 	}
 
 	providerContentAttrs := defaultProviderContentAttrs(st, t.info, opts.PrereqTracker)
@@ -125,19 +120,28 @@ func (t *target) setups(st *state.State, opts Options) (SnapSetup, []ComponentSe
 	}, compsups, nil
 }
 
+// componentTarget represents the data needed to setup a component for installation.
+type componentTarget struct {
+	// setup is a partially initialized ComponentSetup struct that contains the
+	// data needed to find the component that will be installed.
+	setup ComponentSetup
+	// info contains the snap.ComponentInfo for the component to be installed.
+	info *snap.ComponentInfo
+}
+
+func (c *componentTarget) compsup() ComponentSetup {
+	return ComponentSetup{
+		DownloadInfo: c.setup.DownloadInfo,
+		CompPath:     c.setup.CompPath,
+		CompSideInfo: &c.info.ComponentSideInfo,
+		CompType:     c.info.Type,
+	}
+}
+
 // InstallGoal represents a single snap or a group of snaps to be installed.
 type InstallGoal interface {
 	// toInstall returns the data needed to setup the snaps for installation.
 	toInstall(context.Context, *state.State, Options) ([]target, error)
-}
-
-// ComponentTarget represents the data needed to setup a component for installation.
-type ComponentTarget struct {
-	// Setup is a partially initialized ComponentSetup struct that contains the
-	// data needed to find the component that will be installed.
-	Setup *ComponentSetup
-	// Info contains the snap.ComponentInfo for the component to be installed.
-	Info *snap.ComponentInfo
 }
 
 // storeInstallGoal implements the InstallGoal interface and represents a group of
@@ -304,7 +308,7 @@ func (s *storeInstallGoal) toInstall(ctx context.Context, st *state.State, opts 
 		}
 
 		installs = append(installs, target{
-			setup: &SnapSetup{
+			setup: SnapSetup{
 				DownloadInfo: &r.DownloadInfo,
 				Channel:      channel,
 				CohortKey:    sn.RevOpts.CohortKey,
@@ -318,13 +322,13 @@ func (s *storeInstallGoal) toInstall(ctx context.Context, st *state.State, opts 
 	return installs, err
 }
 
-func requestedComponentsFromActionResult(sn StoreSnap, sar store.SnapActionResult) ([]ComponentTarget, error) {
+func requestedComponentsFromActionResult(sn StoreSnap, sar store.SnapActionResult) ([]componentTarget, error) {
 	mapping := make(map[string]store.SnapResourceResult, len(sar.Resources))
 	for _, res := range sar.Resources {
 		mapping[res.Name] = res
 	}
 
-	installables := make([]ComponentTarget, 0, len(sn.Components))
+	installables := make([]componentTarget, 0, len(sn.Components))
 	for _, comp := range sn.Components {
 		res, ok := mapping[comp]
 		if !ok {
@@ -341,23 +345,23 @@ func requestedComponentsFromActionResult(sn StoreSnap, sar store.SnapActionResul
 	return installables, nil
 }
 
-func componentFromResource(name string, sar store.SnapResourceResult, info *snap.Info) (ComponentTarget, error) {
+func componentFromResource(name string, sar store.SnapResourceResult, info *snap.Info) (componentTarget, error) {
 	comp, ok := info.Components[name]
 	if !ok {
-		return ComponentTarget{}, fmt.Errorf("%q is not a component for snap %q", name, info.SnapName())
+		return componentTarget{}, fmt.Errorf("%q is not a component for snap %q", name, info.SnapName())
 	}
 
 	if typ := fmt.Sprintf("component/%s", comp.Type); typ != sar.Type {
-		return ComponentTarget{}, fmt.Errorf("inconsistent component type (%q in snap, %q in component)", typ, sar.Type)
+		return componentTarget{}, fmt.Errorf("inconsistent component type (%q in snap, %q in component)", typ, sar.Type)
 	}
 
 	compName := naming.NewComponentRef(info.SnapName(), name)
 
-	return ComponentTarget{
-		Setup: &ComponentSetup{
+	return componentTarget{
+		setup: ComponentSetup{
 			DownloadInfo: &sar.DownloadInfo,
 		},
-		Info: &snap.ComponentInfo{
+		info: &snap.ComponentInfo{
 			Component: compName,
 			Type:      comp.Type,
 			Version:   sar.Version,
@@ -542,7 +546,7 @@ func InstallWithGoal(ctx context.Context, st *state.State, goal InstallGoal, opt
 		// sort the components by name to ensure we always install components in the
 		// same order
 		sort.Slice(t.components, func(i, j int) bool {
-			return t.components[i].Info.Component.String() < t.components[j].Info.Component.String()
+			return t.components[i].info.Component.String() < t.components[j].info.Component.String()
 		})
 	}
 
@@ -705,7 +709,7 @@ func (p *pathInstallGoal) toInstall(ctx context.Context, st *state.State, opts O
 	}
 
 	inst := target{
-		setup: &SnapSetup{
+		setup: SnapSetup{
 			SnapPath:  p.path,
 			Channel:   channel,
 			CohortKey: p.revOpts.CohortKey,
@@ -718,19 +722,19 @@ func (p *pathInstallGoal) toInstall(ctx context.Context, st *state.State, opts O
 	return []target{inst}, nil
 }
 
-func installableComponentsFromPaths(info *snap.Info, components map[*snap.ComponentSideInfo]string) ([]ComponentTarget, error) {
-	installables := make([]ComponentTarget, 0, len(components))
+func installableComponentsFromPaths(info *snap.Info, components map[*snap.ComponentSideInfo]string) ([]componentTarget, error) {
+	installables := make([]componentTarget, 0, len(components))
 	for csi, path := range components {
 		compInfo, _, err := backend.OpenComponentFile(path, info, csi)
 		if err != nil {
 			return nil, err
 		}
 
-		installables = append(installables, ComponentTarget{
-			Setup: &ComponentSetup{
+		installables = append(installables, componentTarget{
+			setup: ComponentSetup{
 				CompPath: path,
 			},
-			Info: compInfo,
+			info: compInfo,
 		})
 	}
 
