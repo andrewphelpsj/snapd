@@ -2940,7 +2940,7 @@ func autoRefreshPhase1(ctx context.Context, st *state.State, forGatingSnap strin
 }
 
 // autoRefreshPhase2 creates tasks for refreshing snaps from updates.
-func autoRefreshPhase2(ctx context.Context, st *state.State, updates []*refreshCandidate, flags *Flags, fromChange string) (*UpdateTaskSets, error) {
+func autoRefreshPhase2(st *state.State, updates []*refreshCandidate, flags *Flags, fromChange string) (*UpdateTaskSets, error) {
 	if flags == nil {
 		flags = &Flags{IsAutoRefresh: true}
 	}
@@ -2951,29 +2951,31 @@ func autoRefreshPhase2(ctx context.Context, st *state.State, updates []*refreshC
 		return nil, err
 	}
 
-	toUpdate := make([]minimalInstallInfo, len(updates))
-	for i, up := range updates {
-		toUpdate[i] = up
+	snapsups := make([]SnapSetup, 0, len(updates))
+	snapstates := make(map[string]SnapState, len(updates))
+	toUpdate := make([]minimalInstallInfo, 0, len(updates))
+	for _, up := range updates {
+		snapsup, snapst, err := up.SnapSetupForUpdate(st, nil, 0, flags, nil)
+		if err != nil {
+			logger.Noticef("cannot update %q: %v", up.InstanceName(), err)
+			continue
+		}
+
+		snapsups = append(snapsups, *snapsup)
+		snapstates[up.InstanceName()] = *snapst
+		toUpdate = append(toUpdate, up)
 	}
 
 	if err := checkDiskSpace(st, "refresh", toUpdate, 0, nil); err != nil {
 		return nil, err
 	}
 
-	var updateTss *UpdateTaskSets
-	var updated []string
-	if essential, nonEssential, ok := canSplitRefresh(deviceCtx, toUpdate); ok {
-		// if we're on classic with a kernel/gadget, split installs with essential
-		// snaps and apps so that the apps don't have to wait for a reboot
-		updateFunc := func(updates []minimalInstallInfo) ([]string, *UpdateTaskSets, error) {
-			// extra names are ignored so it's fine to passed all of them in each call
-			return doUpdate(ctx, st, nil, updates, nil, userID, flags, nil, deviceCtx, fromChange)
-		}
-		_, updateTss, err = splitRefresh(st, essential, nonEssential, userID, flags, updateFunc)
-		return updateTss, err
-	}
-
-	updated, updateTss, err = doUpdate(ctx, st, nil, toUpdate, nil, userID, flags, nil, deviceCtx, fromChange)
+	updated, updateTss, err := doUpdateV2(st, nil, snapsups, snapstates, nil, Options{
+		Flags:      *flags,
+		UserID:     userID,
+		FromChange: fromChange,
+		DeviceCtx:  deviceCtx,
+	})
 	if err != nil {
 		return nil, err
 	}

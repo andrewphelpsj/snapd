@@ -27,6 +27,7 @@ import (
 
 	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/client"
+	"github.com/snapcore/snapd/i18n"
 	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/overlord/auth"
 	"github.com/snapcore/snapd/overlord/snapstate/backend"
@@ -96,6 +97,13 @@ func (t *target) setups(st *state.State, opts Options) (SnapSetup, []ComponentSe
 		return SnapSetup{}, nil, err
 	}
 
+	// to match the behavior of the original Update and UpdateMany, we only
+	// allow updating ignoring validation sets if we are working with
+	// exactly one snap
+	if !opts.ExpectOneSnap {
+		flags.IgnoreValidation = t.snapst.IgnoreValidation
+	}
+
 	compsups := make([]ComponentSetup, 0, len(t.components))
 	for _, comp := range t.components {
 		compsups = append(compsups, comp.compsup())
@@ -155,10 +163,10 @@ type UpdateSummary struct {
 	// Targets is the list of snaps that are to be updated. Note that this list
 	// does not necessarily match the list of snaps in Requested.
 	Targets []target
-	// UpdateNotAvailable is a set of snaps that were requested to be updated but were
-	// did not have an update available. They still may require a channel
+	// UpdateNotAvailable is a set of snaps that were requested to be updated
+	// but did not have an update available. They still may require a channel
 	// switch, cohort change, or validation set enforcement change.
-	UpdateNotAvailable map[string]RevisionOptions
+	UpdateNotAvailable map[*SnapState]RevisionOptions
 }
 
 func (s *UpdateSummary) filter(f func(t target) (bool, error)) error {
@@ -268,7 +276,7 @@ func validateRevisionOpts(opts *RevisionOptions) error {
 	return nil
 }
 
-var ErrExpectedOneSnap = errors.New("expected exactly one snap to install")
+var ErrExpectedOneSnap = errors.New("expected exactly one snap to install/update")
 
 // toInstall returns the data needed to setup the snaps from the store for
 // installation.
@@ -575,6 +583,10 @@ func StoreUpdateGoal(snaps ...StoreUpdate) UpdateGoal {
 }
 
 func (s *storeUpdateGoal) toUpdate(ctx context.Context, st *state.State, opts Options) (UpdateSummary, error) {
+	if opts.ExpectOneSnap && len(s.snaps) != 1 {
+		return UpdateSummary{}, ErrExpectedOneSnap
+	}
+
 	if err := validateAndInitStoreUpdates(st, s.snaps, opts); err != nil {
 		return UpdateSummary{}, err
 	}
@@ -775,7 +787,7 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 	// available. in either case, we need to keep track of these, since we still
 	// might need to change the channel, cohort key, or validation set
 	// enforcement.
-	notUpdated := make(map[string]RevisionOptions)
+	notUpdated := make(map[*SnapState]RevisionOptions)
 
 	addCand := func(installed *store.CurrentSnap, snapst *SnapState) error {
 		// FIXME: snaps that are not active are skipped for now
@@ -810,14 +822,23 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 			InstanceName: installed.InstanceName,
 		}
 
-		if err := completeStoreAction(action, req.RevOpts, snapst.IgnoreValidation, enforcedSets); err != nil {
+		ignoreValidation := snapst.IgnoreValidation
+
+		// if we are expecting only one snap to be updated, we respect the flag
+		// that was passed in. this maintains the existing behavior of Update vs
+		// UpdateMany.
+		if opts.ExpectOneSnap {
+			ignoreValidation = opts.Flags.IgnoreValidation
+		}
+
+		if err := completeStoreAction(action, req.RevOpts, ignoreValidation, enforcedSets); err != nil {
 			return err
 		}
 
 		// if we already have the requested revision installed, we don't need to
 		// consider this snap
 		if !action.Revision.Unset() && action.Revision == installed.Revision {
-			notUpdated[installed.InstanceName] = req.RevOpts
+			notUpdated[snapst] = req.RevOpts
 			return nil
 		}
 
@@ -958,7 +979,7 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 
 	for name, err := range refreshErrors {
 		if errors.Is(err, store.ErrNoUpdateAvailable) {
-			notUpdated[name] = requested[name].RevOpts
+			notUpdated[stateByInstanceName[name]] = requested[name].RevOpts
 		}
 	}
 
@@ -970,7 +991,17 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 	}, nil
 }
 
+// TODO: would really like for this to take an UpdateSummary as a param, but it
+// doesn't quite work for all use cases
 func doUpdateV2(st *state.State, requested []string, snapsups []SnapSetup, snapstates map[string]SnapState, components map[string][]ComponentSetup, opts Options) ([]string, *UpdateTaskSets, error) {
+	if len(snapsups) != len(snapstates) {
+		return nil, nil, fmt.Errorf("internal error: snapstates and snapsups must have the same length")
+	}
+
+	if components == nil {
+		components = make(map[string][]ComponentSetup)
+	}
+
 	var installTasksets []*state.TaskSet
 	var preDlTasksets []*state.TaskSet
 
@@ -1303,6 +1334,10 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
+	if opts.ExpectOneSnap && len(summary.Targets)+len(summary.UpdateNotAvailable) != 1 {
+		return nil, nil, ErrExpectedOneSnap
+	}
+
 	if filter != nil {
 		summary.filter(func(t target) (bool, error) {
 			return filter(t.info, &t.snapst), nil
@@ -1370,10 +1405,89 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		uts.Refresh = finalizeUpdate(st, uts.Refresh, len(summary.Targets) > 0, updated, nil, opts.UserID, &opts.Flags)
 	}
 
-	// TODO: change track, chohort, validation set enforcement of snaps in
-	// summary.UpdateNotAvailable
+	// some snaps might not have had a revision available to update to, but we
+	// still need to update the channel, cohort key, or validation set
+	// enforcement
+	for snapst, up := range summary.UpdateNotAvailable {
+		tss, err := switchSnapMetadataTasks(st, snapst, up, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		for _, refreshTs := range uts.Refresh {
+			for _, ts := range tss {
+				ts.WaitAll(refreshTs)
+			}
+		}
+		uts.Refresh = append(uts.Refresh, tss...)
+	}
 
 	return updated, uts, nil
+}
+
+func switchSnapMetadataTasks(st *state.State, snapst *SnapState, revOpts RevisionOptions, opts Options) ([]*state.TaskSet, error) {
+	switchChannel := snapst.TrackingChannel != revOpts.Channel
+	switchCohortKey := snapst.CohortKey != revOpts.CohortKey
+
+	// we only toggle validation set enforcement if we are refreshing exactly
+	// one snap
+	toggleIgnoreValidation := (snapst.IgnoreValidation != opts.Flags.IgnoreValidation) && opts.ExpectOneSnap
+
+	var tss []*state.TaskSet
+	if switchChannel || switchCohortKey || toggleIgnoreValidation {
+		if err := checkChangeConflictIgnoringOneChange(st, snapst.InstanceName(), nil, opts.FromChange); err != nil {
+			return nil, err
+		}
+
+		snapsup := &SnapSetup{
+			SideInfo:    snapst.CurrentSideInfo(),
+			Flags:       snapst.Flags.ForSnapSetup(),
+			InstanceKey: snapst.InstanceKey,
+			Type:        snap.Type(snapst.SnapType),
+			// no version info needed
+			CohortKey: revOpts.CohortKey,
+		}
+
+		if switchChannel || switchCohortKey {
+			// update the tracked channel and cohort
+			snapsup.Channel = revOpts.Channel
+			snapsup.CohortKey = revOpts.CohortKey
+			// Update the current snap channel as well. This ensures that
+			// the UI displays the right values.
+			snapsup.SideInfo.Channel = revOpts.Channel
+
+			summary := switchSummary(snapsup.InstanceName(), snapst.TrackingChannel, revOpts.Channel, snapst.CohortKey, revOpts.CohortKey)
+			switchSnap := st.NewTask("switch-snap-channel", summary)
+			switchSnap.Set("snap-setup", &snapsup)
+
+			tss = append(tss, state.NewTaskSet(switchSnap))
+		}
+
+		if toggleIgnoreValidation {
+			snapsup.IgnoreValidation = opts.Flags.IgnoreValidation
+			toggle := st.NewTask("toggle-snap-flags", fmt.Sprintf(i18n.G("Toggle snap %q flags"), snapsup.InstanceName()))
+			toggle.Set("snap-setup", &snapsup)
+
+			toggleTs := state.NewTaskSet(toggle)
+			for _, ts := range tss {
+				toggleTs.WaitAll(ts)
+			}
+			tss = append(tss, toggleTs)
+		}
+
+		currentInfo, err := snapst.CurrentInfo()
+		if err != nil {
+			return nil, err
+		}
+
+		// if there isn't an update available, then we should still add the
+		// current info to the prereq tracker. this is because we will not
+		// return an error from this function, and the caller will assume
+		// everything worked.
+		addPrereq(opts.PrereqTracker, currentInfo)
+	}
+
+	return tss, nil
 }
 
 func validateAndFilterSummaryRefreshes(st *state.State, summary *UpdateSummary, opts Options) error {
