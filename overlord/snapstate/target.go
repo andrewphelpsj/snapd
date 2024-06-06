@@ -481,9 +481,16 @@ func completeStoreAction(action *store.SnapAction, revOpts RevisionOptions, igno
 		}
 
 		if len(invalidSets) > 0 {
+			verb := "install"
+			if action.Action == "refresh" {
+				verb = "update"
+			}
+
 			return fmt.Errorf(
-				"cannot install snap %q due to enforcing rules of validation set %s",
-				action.InstanceName, snapasserts.ValidationSetKeySlice(invalidSets).CommaSeparated(),
+				"cannot %s snap %q due to enforcing rules of validation set %s",
+				verb,
+				action.InstanceName,
+				snapasserts.ValidationSetKeySlice(invalidSets).CommaSeparated(),
 			)
 		}
 
@@ -495,10 +502,7 @@ func completeStoreAction(action *store.SnapAction, revOpts RevisionOptions, igno
 		// make sure that the caller-requested revision matches the revision
 		// required by the enforced validation sets
 		if !requiredRev.Unset() && !revOpts.Revision.Unset() && requiredRev != revOpts.Revision {
-			return fmt.Errorf(
-				"cannot install snap %q at requested revision %s without --ignore-validation, revision %s required by validation sets: %s",
-				action.InstanceName, revOpts.Revision, requiredRev, snapasserts.ValidationSetKeySlice(requiredSets).CommaSeparated(),
-			)
+			return invalidRevisionError(action, requiredSets, revOpts.Revision, requiredRev)
 		}
 
 		// TODO: handle validation sets and components here
@@ -524,6 +528,25 @@ func completeStoreAction(action *store.SnapAction, revOpts RevisionOptions, igno
 	}
 
 	return nil
+}
+
+func invalidRevisionError(a *store.SnapAction, sets []snapasserts.ValidationSetKey, requested, required snap.Revision) error {
+	verb := "install"
+	preposition := "at"
+	if a.Action == "refresh" {
+		verb = "update"
+		preposition = "to"
+	}
+
+	return fmt.Errorf(
+		"cannot %s snap %q %s revision %s without --ignore-validation, revision %s is required by validation sets: %s",
+		verb,
+		a.InstanceName,
+		preposition,
+		requested,
+		required,
+		snapasserts.ValidationSetKeySlice(sets).CommaSeparated(),
+	)
 }
 
 func (s *storeInstallGoal) validateAndPrune(installedSnaps map[string]*SnapState) error {
@@ -760,7 +783,6 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 	}
 
 	actionsByUserID := make(map[int][]*store.SnapAction)
-	stateByInstanceName := make(map[string]*SnapState, len(snapStates))
 
 	// create a closure that will lazily load the enforced validation sets if
 	// any of the targets require them
@@ -789,6 +811,11 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 	// enforcement.
 	notUpdated := make(map[*SnapState]RevisionOptions)
 
+	// some snaps will have a local revision that is the same as the requested
+	// revision, we don't need to reach out to the store for these. keep track
+	// of them so we can handle them differently.
+	hasLocalRevision := make(map[*SnapState]RevisionOptions)
+
 	addCand := func(installed *store.CurrentSnap, snapst *SnapState) error {
 		// FIXME: snaps that are not active are skipped for now
 		//        until we know what we want to do
@@ -816,19 +843,35 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 			req.RevOpts.CohortKey = snapst.CohortKey
 		}
 
+		if !req.RevOpts.Revision.Unset() && snapst.LastIndex(req.RevOpts.Revision) != -1 {
+			hasLocalRevision[snapst] = req.RevOpts
+			return nil
+		}
+
 		action := &store.SnapAction{
 			Action:       "refresh",
 			SnapID:       installed.SnapID,
 			InstanceName: installed.InstanceName,
 		}
 
-		ignoreValidation := snapst.IgnoreValidation
-
 		// if we are expecting only one snap to be updated, we respect the flag
 		// that was passed in. this maintains the existing behavior of Update vs
 		// UpdateMany.
+		ignoreValidation := snapst.IgnoreValidation
 		if opts.ExpectOneSnap {
 			ignoreValidation = opts.Flags.IgnoreValidation
+		}
+
+		// TODO: this is silly, but it matches how we currently send these flags
+		// now. we should probably just default to sending enforce, but that
+		// would require updating a good number of tests. good candidate for a
+		// follow-up PR.
+		if opts.ExpectOneSnap {
+			if opts.Flags.IgnoreValidation {
+				action.Flags = store.SnapActionIgnoreValidation
+			} else if req.RevOpts.Revision.Unset() {
+				action.Flags = store.SnapActionEnforceValidation
+			}
 		}
 
 		if err := completeStoreAction(action, req.RevOpts, ignoreValidation, enforcedSets); err != nil {
@@ -847,8 +890,6 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 			installed.CohortKey = ""
 		}
 
-		stateByInstanceName[installed.InstanceName] = snapst
-
 		// only enforce refresh block if we are refreshing everything
 		if refreshAll {
 			installed.Block = snapst.Block()
@@ -860,6 +901,61 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 		}
 		actionsByUserID[userID] = append(actionsByUserID[userID], action)
 		return nil
+	}
+
+	// we also need to consider local revisions if the caller requested we
+	// ammend existing installations
+	if opts.Flags.Amend {
+		for _, snapst := range snapStates {
+			req, ok := requested[snapst.InstanceName()]
+
+			// if we're not refreshing all snaps, ignore anything that wasn't in the
+			// refresh request
+			if !refreshAll && !ok {
+				continue
+			}
+
+			// default the channel and cohort key to the existing values, this will
+			// happen when refreshing all snaps
+			if !ok {
+				req.RevOpts.Channel = snapst.TrackingChannel
+				req.RevOpts.CohortKey = snapst.CohortKey
+			}
+
+			info, err := snapst.CurrentInfo()
+			if err != nil {
+				return UpdateSummary{}, err
+			}
+
+			if info.SnapID != "" {
+				continue
+			}
+
+			action := &store.SnapAction{
+				Action:       "install",
+				InstanceName: info.InstanceName(),
+				Epoch:        info.Epoch,
+
+				// TODO: updates default to enforcing validation sets, but i feel
+				// that this flag should default to being set during installs too?
+				Flags: store.SnapActionEnforceValidation,
+			}
+
+			ignoreValidation := snapst.IgnoreValidation
+			if opts.ExpectOneSnap {
+				ignoreValidation = opts.Flags.IgnoreValidation
+			}
+
+			if err := completeStoreAction(action, req.RevOpts, ignoreValidation, enforcedSets); err != nil {
+				return UpdateSummary{}, err
+			}
+
+			userID := snapst.UserID
+			if userID == 0 {
+				userID = fallbackID
+			}
+			actionsByUserID[userID] = append(actionsByUserID[userID], action)
+		}
 	}
 
 	names := make([]string, 0, len(requested))
@@ -938,7 +1034,7 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 		// if we are refreshing all snaps, then the caller cannot specify new a
 		// channel/cohort, so we must use the existing ones
 		if refreshAll {
-			snapst, ok := stateByInstanceName[instanceName]
+			snapst, ok := snapStates[instanceName]
 			if !ok {
 				return "", "", fmt.Errorf("internal error: missing snap state for %q", instanceName)
 			}
@@ -953,14 +1049,14 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 		return req.RevOpts.Channel, req.RevOpts.CohortKey, nil
 	}
 
-	targets := make([]target, 0, len(stateByInstanceName))
+	var targets []target
 	for _, sar := range sars {
 		channel, cohort, err := channelAndCohort(sar.InstanceName())
 		if err != nil {
 			return UpdateSummary{}, err
 		}
 
-		snapst, ok := stateByInstanceName[sar.InstanceName()]
+		snapst, ok := snapStates[sar.InstanceName()]
 		if !ok {
 			return UpdateSummary{}, fmt.Errorf("internal error: missing snap state for %q", sar.InstanceName())
 		}
@@ -977,9 +1073,27 @@ func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map
 		})
 	}
 
+	for snapst, revOpts := range hasLocalRevision {
+		info, err := readInfo(snapst.InstanceName(), snapst.CurrentSideInfo(), errorOnBroken)
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+
+		targets = append(targets, target{
+			info:   info,
+			snapst: *snapst,
+			setup: SnapSetup{
+				Channel:   revOpts.Channel,
+				CohortKey: revOpts.CohortKey,
+				SnapPath:  info.MountFile(),
+			},
+			components: nil,
+		})
+	}
+
 	for name, err := range refreshErrors {
 		if errors.Is(err, store.ErrNoUpdateAvailable) {
-			notUpdated[stateByInstanceName[name]] = requested[name].RevOpts
+			notUpdated[snapStates[name]] = requested[name].RevOpts
 		}
 	}
 
@@ -1054,10 +1168,8 @@ func doUpdateV2(st *state.State, requested []string, snapsups []SnapSetup, snaps
 		return snapsups[i].Type.SortsBefore(snapsups[j].Type)
 	})
 
-	if opts.Flags.Transaction == client.TransactionAllSnaps {
-		if opts.Flags.Lane == 0 {
-			opts.Flags.Lane = st.NewLane()
-		}
+	if opts.Flags.Transaction == client.TransactionAllSnaps && opts.Flags.Lane == 0 {
+		opts.Flags.Lane = st.NewLane()
 	}
 
 	// updates is sorted by kind so this will process first core
@@ -1319,14 +1431,37 @@ func InstallWithGoal(ctx context.Context, st *state.State, goal InstallGoal, opt
 	return infos, tasksets, nil
 }
 
+func UpdateOne(ctx context.Context, st *state.State, goal UpdateGoal, filter updateFilter, opts Options) (*state.TaskSet, error) {
+	opts.ExpectOneSnap = true
+
+	updated, uts, err := UpdateWithGoal(ctx, st, goal, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(updated) != 1 || len(uts.Refresh) != 1 {
+		return nil, errors.New("internal error: expected exactly one snap to be updated")
+	}
+
+	return uts.Refresh[0], nil
+}
+
 func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filter updateFilter, opts Options) ([]string, *UpdateTaskSets, error) {
 	if err := setDefaultSnapstateOptions(st, &opts); err != nil {
 		return nil, nil, err
 	}
 
+	if opts.ExpectOneSnap && opts.Flags.IsAutoRefresh {
+		return nil, nil, errors.New("internal error: auto-refresh is not supported when updating a single snap")
+	}
+
 	// can only specify a lane when running multiple operations transactionally
 	if opts.Flags.Transaction != client.TransactionAllSnaps && opts.Flags.Lane != 0 {
 		return nil, nil, errors.New("cannot specify a lane without setting transaction to \"all-snaps\"")
+	}
+
+	if opts.Flags.Transaction == "" {
+		opts.Flags.Lane = st.NewLane()
 	}
 
 	summary, err := goal.toUpdate(ctx, st, opts)
@@ -1401,10 +1536,6 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
-	if len(uts.Refresh) > 0 {
-		uts.Refresh = finalizeUpdate(st, uts.Refresh, len(summary.Targets) > 0, updated, nil, opts.UserID, &opts.Flags)
-	}
-
 	// some snaps might not have had a revision available to update to, but we
 	// still need to update the channel, cohort key, or validation set
 	// enforcement
@@ -1414,12 +1545,41 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 			return nil, nil, err
 		}
 
-		for _, refreshTs := range uts.Refresh {
-			for _, ts := range tss {
-				ts.WaitAll(refreshTs)
+		if len(tss) > 0 {
+			for _, refreshTs := range uts.Refresh {
+				for _, ts := range tss {
+					ts.WaitAll(refreshTs)
+				}
+			}
+			updated = append(updated, snapst.InstanceName())
+			uts.Refresh = append(uts.Refresh, tss...)
+		}
+	}
+
+	// ideally we wouldn't use this error type here, but the current
+	// implementations share this error type for both path and store
+	// installations
+	if opts.ExpectOneSnap && len(uts.Refresh) == 0 {
+		return nil, nil, store.ErrNoUpdateAvailable
+	}
+
+	// if there are only pre-downloads, don't add a check-rerefresh task
+	if len(uts.Refresh) > 0 {
+		uts.Refresh = finalizeUpdate(st, uts.Refresh, len(summary.Targets) > 0, updated, nil, opts.UserID, &opts.Flags)
+	}
+
+	// if we're only updating one snap, flatten everything into one task set
+	if opts.ExpectOneSnap {
+		flat := state.NewTaskSet()
+		for _, ts := range uts.Refresh {
+			// The tasksets we get from "doUpdate" contain important "TaskEdge"
+			// information that is needed for "Remodel". To preserve those we
+			// need to use "AddAllWithEdges()".
+			if err := flat.AddAllWithEdges(ts); err != nil {
+				return nil, nil, err
 			}
 		}
-		uts.Refresh = append(uts.Refresh, tss...)
+		uts.Refresh = []*state.TaskSet{flat}
 	}
 
 	return updated, uts, nil
@@ -1441,7 +1601,7 @@ func switchSnapMetadataTasks(st *state.State, snapst *SnapState, revOpts Revisio
 
 		snapsup := &SnapSetup{
 			SideInfo:    snapst.CurrentSideInfo(),
-			Flags:       snapst.Flags.ForSnapSetup(),
+			Flags:       snapst.ForSnapSetup(),
 			InstanceKey: snapst.InstanceKey,
 			Type:        snap.Type(snapst.SnapType),
 			// no version info needed
@@ -1472,6 +1632,7 @@ func switchSnapMetadataTasks(st *state.State, snapst *SnapState, revOpts Revisio
 			for _, ts := range tss {
 				toggleTs.WaitAll(ts)
 			}
+
 			tss = append(tss, toggleTs)
 		}
 
@@ -1487,11 +1648,16 @@ func switchSnapMetadataTasks(st *state.State, snapst *SnapState, revOpts Revisio
 		addPrereq(opts.PrereqTracker, currentInfo)
 	}
 
+	lane := generateLane(st, opts)
+	for _, ts := range tss {
+		ts.JoinLane(lane)
+	}
+
 	return tss, nil
 }
 
 func validateAndFilterSummaryRefreshes(st *state.State, summary *UpdateSummary, opts Options) error {
-	if ValidateRefreshes == nil || len(summary.Targets) == 0 {
+	if ValidateRefreshes == nil || len(summary.Targets) == 0 || opts.Flags.IgnoreValidation {
 		return nil
 	}
 
@@ -1534,7 +1700,7 @@ func generateLane(st *state.State, opts Options) int {
 	case client.TransactionPerSnap:
 		return st.NewLane()
 	}
-	return 0
+	return opts.Flags.Lane
 }
 
 func setDefaultSnapstateOptions(st *state.State, opts *Options) error {

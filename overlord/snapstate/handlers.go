@@ -1070,7 +1070,7 @@ func continueInhibitedAutoRefresh(st *state.State, snapName string) error {
 		return fmt.Errorf("cannot get refresh-candidates for %q: not found", snapName)
 	}
 
-	flags := &Flags{IsAutoRefresh: true, IsContinuedAutoRefresh: true}
+	flags := &Flags{IsAutoRefresh: true, IsContinuedAutoRefresh: true, Transaction: client.TransactionPerSnap}
 	tss, err := autoRefreshPhase2(st, []*refreshCandidate{hint}, flags, "")
 	if err != nil {
 		return err
@@ -4451,6 +4451,7 @@ func (m *SnapManager) doCheckReRefresh(t *state.Task, tomb *tomb.Tomb) error {
 	if err != nil {
 		return err
 	}
+
 	if len(snaps) > 0 {
 		if err := pruneRefreshCandidates(st, snaps...); err != nil {
 			return err

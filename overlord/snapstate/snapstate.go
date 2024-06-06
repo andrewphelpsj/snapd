@@ -2494,7 +2494,19 @@ type RevisionOptions struct {
 // modifications. If no such edge is set, then none of the tasks introduce
 // system modifications.
 func Update(st *state.State, name string, opts *RevisionOptions, userID int, flags Flags) (*state.TaskSet, error) {
-	return UpdateWithDeviceContext(st, name, opts, userID, flags, nil, nil, "")
+	if opts == nil {
+		opts = &RevisionOptions{}
+	}
+
+	goal := StoreUpdateGoal(StoreUpdate{
+		InstanceName: name,
+		RevOpts:      *opts,
+	})
+
+	return UpdateOne(context.Background(), st, goal, nil, Options{
+		Flags:  flags,
+		UserID: userID,
+	})
 }
 
 type snapInfoForUpdate func(dc DeviceContext, ro *RevisionOptions, fl Flags, snapst *SnapState) ([]minimalInstallInfo, error)
@@ -2942,8 +2954,12 @@ func autoRefreshPhase1(ctx context.Context, st *state.State, forGatingSnap strin
 // autoRefreshPhase2 creates tasks for refreshing snaps from updates.
 func autoRefreshPhase2(st *state.State, updates []*refreshCandidate, flags *Flags, fromChange string) (*UpdateTaskSets, error) {
 	if flags == nil {
-		flags = &Flags{IsAutoRefresh: true}
+		flags = &Flags{
+			IsAutoRefresh: true,
+			Transaction:   client.TransactionPerSnap,
+		}
 	}
+
 	userID := 0
 
 	deviceCtx, err := DeviceCtx(st, nil, nil)

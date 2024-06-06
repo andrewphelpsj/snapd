@@ -555,10 +555,10 @@ func (s *snapmgrTestSuite) testUpdateFailureSequence(c *C, opts *opSeqOpts) *sta
 	c.Check(snapst.Current.N, Equals, opts.current)
 
 	ops := s.fakeBackend.ops
-	c.Check(ops.Count("copy-data"), Equals, 1)
+	c.Assert(ops.Count("copy-data"), Equals, 1)
 	do := ops.First("copy-data")
 
-	c.Check(ops.Count("undo-copy-snap-data"), Equals, 1)
+	c.Assert(ops.Count("undo-copy-snap-data"), Equals, 1)
 	undo := ops.First("undo-copy-snap-data")
 
 	do.op = undo.op
