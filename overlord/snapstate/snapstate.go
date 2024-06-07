@@ -2494,19 +2494,7 @@ type RevisionOptions struct {
 // modifications. If no such edge is set, then none of the tasks introduce
 // system modifications.
 func Update(st *state.State, name string, opts *RevisionOptions, userID int, flags Flags) (*state.TaskSet, error) {
-	if opts == nil {
-		opts = &RevisionOptions{}
-	}
-
-	goal := StoreUpdateGoal(StoreUpdate{
-		InstanceName: name,
-		RevOpts:      *opts,
-	})
-
-	return UpdateOne(context.Background(), st, goal, nil, Options{
-		Flags:  flags,
-		UserID: userID,
-	})
+	return UpdateWithDeviceContext(st, name, opts, userID, flags, nil, nil, "")
 }
 
 type snapInfoForUpdate func(dc DeviceContext, ro *RevisionOptions, fl Flags, snapst *SnapState) ([]minimalInstallInfo, error)
@@ -2520,23 +2508,22 @@ type snapInfoForUpdate func(dc DeviceContext, ro *RevisionOptions, fl Flags, sna
 // modifications. If no such edge is set, then none of the tasks introduce
 // system modifications.
 func UpdateWithDeviceContext(st *state.State, name string, opts *RevisionOptions, userID int, flags Flags, prqt PrereqTracker, deviceCtx DeviceContext, fromChange string) (*state.TaskSet, error) {
-	snapUpdateInfo := func(dc DeviceContext, ro *RevisionOptions, fl Flags, snapst *SnapState) ([]minimalInstallInfo, error) {
-		toUpdate := []minimalInstallInfo{}
-		info, infoErr := infoForUpdate(st, snapst, name, ro, userID, fl, dc)
-		switch infoErr {
-		case nil:
-			addPrereq(prqt, info)
-			toUpdate = append(toUpdate, installSnapInfo{info})
-		case store.ErrNoUpdateAvailable:
-			// there may be some new auto-aliases
-			return toUpdate, infoErr
-		default:
-			return nil, infoErr
-		}
-		return toUpdate, infoErr
+	if opts == nil {
+		opts = &RevisionOptions{}
 	}
 
-	return updateWithDeviceContext(st, name, opts, userID, flags, prqt, deviceCtx, fromChange, snapUpdateInfo)
+	goal := StoreUpdateGoal(StoreUpdate{
+		InstanceName: name,
+		RevOpts:      *opts,
+	})
+
+	return UpdateOne(context.Background(), st, goal, nil, Options{
+		Flags:         flags,
+		UserID:        userID,
+		DeviceCtx:     deviceCtx,
+		FromChange:    fromChange,
+		PrereqTracker: prqt,
+	})
 }
 
 // UpdatePathWithDeviceContext initiates a change updating a snap from a local file.
