@@ -3283,7 +3283,7 @@ func (s *snapmgrTestSuite) TestUpdateIgnoreValidationSticky(c *C) {
 			InstanceName: "some-snap",
 			SnapID:       "some-snap-id",
 			Channel:      "latest/stable",
-			Flags:        0,
+			Flags:        1,
 		},
 		userID: 1,
 	})
@@ -3529,7 +3529,8 @@ func (s *snapmgrTestSuite) TestParallelInstanceUpdateIgnoreValidationSticky(c *C
 						Action:       "refresh",
 						InstanceName: "some-snap_instance",
 						SnapID:       "some-snap-id",
-						Flags:        0,
+						Channel:      "latest/stable",
+						Flags:        1,
 					},
 					userID: 1,
 				})
