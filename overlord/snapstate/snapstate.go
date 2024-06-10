@@ -1589,79 +1589,41 @@ func validatedInfoFromPathAndSideInfo(snapName, path string, si *snap.SideInfo) 
 // The provided SideInfos can contain just a name which results in a
 // local revision and sideloading, or full metadata in which case
 // the snaps will appear as installed from the store.
-//
-// TODO: rather than being implemeted via the the InstallTarget function, this
-// will be implemented with a variation of Update
 func InstallPathMany(ctx context.Context, st *state.State, sideInfos []*snap.SideInfo, paths []string, userID int, flags *Flags) ([]*state.TaskSet, error) {
+	if len(paths) != len(sideInfos) {
+		return nil, fmt.Errorf("internal error: number of paths and side infos must match: %d != %d", len(paths), len(sideInfos))
+	}
+
 	if flags == nil {
 		flags = &Flags{}
 	}
 
-	deviceCtx, err := DevicePastSeeding(st, nil)
-	if err != nil {
-		return nil, err
+	// this is to maintain backwards compatibility with the old behavior
+	if flags.Transaction == "" {
+		flags.Transaction = client.TransactionPerSnap
 	}
 
-	var updates []minimalInstallInfo
-	var names []string
-	stateByInstanceName := make(map[string]*SnapState, len(sideInfos))
-	flagsByInstanceName := make(map[string]Flags, len(sideInfos))
+	flags.NoReRefresh = true
 
+	updates := make([]PathUpdate, 0, len(sideInfos))
 	for i, si := range sideInfos {
-		name := si.RealName
-
-		info, err := validatedInfoFromPathAndSideInfo(name, paths[i], si)
-		if err != nil {
-			return nil, err
-		}
-
-		var snapst SnapState
-		if err = Get(st, name, &snapst); err != nil && !errors.Is(err, state.ErrNoState) {
-			return nil, err
-		}
-
-		flags, err := earlyChecks(st, &snapst, info, *flags)
-		if err != nil {
-			return nil, err
-		}
-
-		if !(flags.JailMode || flags.DevMode) {
-			flags.Classic = flags.Classic || snapst.Flags.Classic
-		}
-
-		updates = append(updates, pathInfo{Info: info, path: paths[i], sideInfo: si})
-		names = append(names, name)
-		stateByInstanceName[name] = &snapst
-		flagsByInstanceName[name] = flags
+		updates = append(updates, PathUpdate{
+			Path:     paths[i],
+			SideInfo: si,
+		})
 	}
 
-	if err := checkDiskSpace(st, "install", updates, userID, nil); err != nil {
-		return nil, err
-	}
-
-	params := func(update *snap.Info) (*RevisionOptions, Flags, *SnapState) {
-		name := update.InstanceName()
-		return nil, flagsByInstanceName[name], stateByInstanceName[name]
-	}
-
-	var updateTss *UpdateTaskSets
-	if essential, nonEssential, ok := canSplitRefresh(deviceCtx, updates); ok {
-		// if we're on classic with a kernel/gadget, split installs with essential
-		// snaps and apps so that the apps don't have to wait for a reboot
-		updateFunc := func(updates []minimalInstallInfo) ([]string, *UpdateTaskSets, error) {
-			// extra names are ignored so it's fine to passed all of them in each call
-			return doUpdate(ctx, st, names, updates, params, userID, flags, nil, deviceCtx, "")
-		}
-		_, updateTss, err = splitRefresh(st, essential, nonEssential, userID, flags, updateFunc)
-	} else {
-		_, updateTss, err = doUpdate(ctx, st, names, updates, params, userID, flags, nil, deviceCtx, "")
-	}
-
+	goal := PathUpdateGoal(updates...)
+	_, uts, err := UpdateWithGoal(ctx, st, goal, nil, Options{
+		Flags:     *flags,
+		UserID:    userID,
+		DeviceCtx: nil,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return updateTss.Refresh, nil
+	return uts.Refresh, nil
 }
 
 // InstallMany installs everything from the given list of names. When specifying

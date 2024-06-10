@@ -78,7 +78,8 @@ type target struct {
 	info *snap.Info
 	// snapst is the current state of the target snap, prior to installation.
 	// This must be retrieved prior to unlocking the state for any reason (for
-	// example, talking to the store).
+	// example, talking to the store). This field may not be complete, as it may
+	// represent a snap that is not yet installed.
 	snapst SnapState
 	// components is a list of components to install with this snap.
 	components []componentTarget
@@ -1209,14 +1210,19 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
+	changeKind := "refresh"
 	installInfos := make([]minimalInstallInfo, 0, len(summary.Targets))
 	for _, t := range summary.Targets {
 		installInfos = append(installInfos, installSnapInfo{t.info})
+
+		// if any of the snaps are not installed, then we should use the
+		// "install" change as the kind
+		if !t.snapst.IsInstalled() {
+			changeKind = "install"
+		}
 	}
 
-	// note: this has the potential to reach out to the store, depending on
-	// which prereq tracker is being used.
-	if err := checkDiskSpace(st, "refresh", installInfos, opts.UserID, opts.PrereqTracker); err != nil {
+	if err := checkDiskSpace(st, changeKind, installInfos, opts.UserID, opts.PrereqTracker); err != nil {
 		return nil, nil, err
 	}
 
@@ -1240,8 +1246,8 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		}
 
 		snapsups = append(snapsups, snapsup)
-		components[t.snapst.InstanceName()] = compsups
-		snapstates[t.snapst.InstanceName()] = t.snapst
+		components[t.info.InstanceName()] = compsups
+		snapstates[t.info.InstanceName()] = t.snapst
 	}
 
 	// TODO: ignore split refresh for now, come back later
@@ -1556,4 +1562,134 @@ func installableComponentsFromPaths(info *snap.Info, components map[*snap.Compon
 	}
 
 	return installables, nil
+}
+
+type PathUpdate struct {
+	// Path is the path to the snap on disk.
+	Path string
+	// InstanceName is the name of the snap to install.
+	InstanceName string
+	// RevOpts contains options that apply to the installation of this snap.
+	RevOpts RevisionOptions
+	// SideInfo contains extra information about the snap.
+	SideInfo *snap.SideInfo
+	// Components is a mapping of component side infos to paths that should be
+	// installed alongside this snap.
+	Components map[*snap.ComponentSideInfo]string
+}
+
+type pathUpdateGoal struct {
+	updates []PathUpdate
+}
+
+func PathUpdateGoal(snaps ...PathUpdate) UpdateGoal {
+	seen := make(map[string]bool)
+	filtered := make([]PathUpdate, 0, len(snaps))
+	for _, snap := range snaps {
+		if snap.InstanceName == "" {
+			snap.InstanceName = snap.SideInfo.RealName
+		}
+
+		if seen[snap.InstanceName] {
+			continue
+		}
+
+		seen[snap.InstanceName] = true
+		filtered = append(filtered, snap)
+	}
+
+	return &pathUpdateGoal{
+		updates: filtered,
+	}
+}
+
+func (p *pathUpdateGoal) toUpdate(_ context.Context, st *state.State, opts Options) (UpdateSummary, error) {
+	targets := make([]target, 0, len(p.updates))
+	names := make([]string, 0, len(p.updates))
+	for _, sn := range p.updates {
+		var snapst SnapState
+		if err := Get(st, sn.InstanceName, &snapst); err != nil && !errors.Is(err, state.ErrNoState) {
+			return UpdateSummary{}, err
+		}
+
+		t, err := targetForPathUpdate(sn, snapst, opts)
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+
+		targets = append(targets, t)
+		names = append(names, sn.InstanceName)
+	}
+
+	return UpdateSummary{
+		Targets:   targets,
+		Requested: names,
+	}, nil
+}
+
+func targetForPathUpdate(update PathUpdate, snapst SnapState, opts Options) (target, error) {
+	si := update.SideInfo
+
+	if si.RealName == "" {
+		return target{}, fmt.Errorf("internal error: snap name to install %q not provided", update.Path)
+	}
+
+	if si.SnapID != "" {
+		if si.Revision.Unset() {
+			return target{}, fmt.Errorf("internal error: snap id set to install %q but revision is unset", update.Path)
+		}
+	}
+
+	if update.InstanceName == "" {
+		update.InstanceName = si.RealName
+	}
+
+	if err := snap.ValidateInstanceName(update.InstanceName); err != nil {
+		return target{}, fmt.Errorf("invalid instance name: %v", err)
+	}
+
+	if err := validateRevisionOpts(&update.RevOpts); err != nil {
+		return target{}, fmt.Errorf("invalid revision options for snap %q: %w", update.InstanceName, err)
+	}
+
+	if !update.RevOpts.Revision.Unset() && update.RevOpts.Revision != si.Revision {
+		return target{}, fmt.Errorf("cannot install local snap %q: %v != %v (revision mismatch)", update.InstanceName, update.RevOpts.Revision, si.Revision)
+	}
+
+	info, err := validatedInfoFromPathAndSideInfo(update.InstanceName, update.Path, si)
+	if err != nil {
+		return target{}, err
+	}
+
+	snapName, instanceKey := snap.SplitInstanceName(update.InstanceName)
+	if info.SnapName() != snapName {
+		return target{}, fmt.Errorf("cannot install snap %q, the name does not match the metadata %q", update.InstanceName, info.SnapName())
+	}
+	info.InstanceKey = instanceKey
+
+	var trackingChannel string
+	if snapst.IsInstalled() {
+		trackingChannel = snapst.TrackingChannel
+	}
+
+	channel, err := resolveChannel(update.InstanceName, trackingChannel, update.RevOpts.Channel, opts.DeviceCtx)
+	if err != nil {
+		return target{}, err
+	}
+
+	comps, err := installableComponentsFromPaths(info, update.Components)
+	if err != nil {
+		return target{}, err
+	}
+
+	return target{
+		setup: SnapSetup{
+			SnapPath:  update.Path,
+			Channel:   channel,
+			CohortKey: update.RevOpts.CohortKey,
+		},
+		info:       info,
+		snapst:     snapst,
+		components: comps,
+	}, nil
 }
