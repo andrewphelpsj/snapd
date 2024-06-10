@@ -2707,37 +2707,6 @@ func updateWithDeviceContext(st *state.State, name string, opts *RevisionOptions
 	return flat, nil
 }
 
-func infoForUpdate(st *state.State, snapst *SnapState, name string, opts *RevisionOptions, userID int, flags Flags, deviceCtx DeviceContext) (*snap.Info, error) {
-	if opts.Revision.Unset() {
-		// good ol' refresh
-		info, err := updateInfo(st, snapst, opts, userID, flags, deviceCtx)
-		if err != nil {
-			return nil, err
-		}
-		if ValidateRefreshes != nil && !flags.IgnoreValidation {
-			_, err := ValidateRefreshes(st, []*snap.Info{info}, nil, userID, deviceCtx)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return info, nil
-	}
-	var sideInfo *snap.SideInfo
-	for _, si := range snapst.Sequence.SideInfos() {
-		if si.Revision == opts.Revision {
-			sideInfo = si
-			break
-		}
-	}
-	if sideInfo == nil {
-		// refresh from given revision from store
-		return updateToRevisionInfo(st, snapst, opts, userID, flags, deviceCtx)
-	}
-
-	// refresh-to-local, this assumes the snap revision is mounted
-	return readInfo(name, sideInfo, errorOnBroken)
-}
-
 // AutoRefreshAssertions allows to hook fetching of important assertions
 // into the Autorefresh function.
 var AutoRefreshAssertions func(st *state.State, userID int) error

@@ -26,7 +26,6 @@ import (
 
 	"github.com/snapcore/snapd/asserts"
 	"github.com/snapcore/snapd/asserts/snapasserts"
-	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/overlord/auth"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/snap"
@@ -355,117 +354,6 @@ func installInfo(ctx context.Context, st *state.State, name string, revOpts *Rev
 	return singleActionResult(name, action.Action, res, err)
 }
 
-func updateInfo(st *state.State, snapst *SnapState, opts *RevisionOptions, userID int, flags Flags, deviceCtx DeviceContext) (*snap.Info, error) {
-	curSnaps, err := currentSnaps(st)
-	if err != nil {
-		return nil, err
-	}
-
-	refreshOpts, err := refreshOptions(st, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	curInfo, user, err := preUpdateInfo(st, snapst, flags.Amend, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	var storeFlags store.SnapActionFlags
-	if flags.IgnoreValidation {
-		storeFlags = store.SnapActionIgnoreValidation
-	} else {
-		storeFlags = store.SnapActionEnforceValidation
-	}
-
-	action := &store.SnapAction{
-		Action:       "refresh",
-		InstanceName: curInfo.InstanceName(),
-		SnapID:       curInfo.SnapID,
-		// the desired channel
-		Channel: opts.Channel,
-		Flags:   storeFlags,
-	}
-
-	if len(opts.ValidationSets) > 0 {
-		// update to a specific revision is handled by updateToRevisionInfo.
-		// updating without a revision while enforcing validation sets is not a
-		// viable scenario (although we could handle it if desired), we only install/refresh
-		// what's missing and explicitly required by requested validation sets.
-		return nil, fmt.Errorf("internal error: list of validation sets is not expected for update without revision")
-	}
-
-	var requiredRevision snap.Revision
-	var requiredValsets []snapasserts.ValidationSetKey
-
-	if !flags.IgnoreValidation {
-		enforcedSets, err := EnforcedValidationSets(st)
-		if err != nil {
-			return nil, err
-		}
-		if enforcedSets != nil {
-			requiredValsets, requiredRevision, err = enforcedSets.CheckPresenceRequired(naming.Snap(curInfo.InstanceName()))
-			if err != nil {
-				return nil, err
-			}
-			if !requiredRevision.Unset() && snapst.Current == requiredRevision {
-				logger.Debugf("snap %q is already at the revision %s required by validation sets: %s, skipping",
-					curInfo.InstanceName(), snapst.Current, snapasserts.ValidationSetKeySlice(requiredValsets).CommaSeparated())
-				return nil, store.ErrNoUpdateAvailable
-			}
-			if len(requiredValsets) > 0 {
-				setActionValidationSetsAndRequiredRevision(action, requiredValsets, requiredRevision)
-			}
-		}
-	}
-
-	// only set cohort if validation sets don't require a specific revision
-	if action.Revision.Unset() {
-		action.CohortKey = opts.CohortKey
-	} else {
-		// specific revision is required, reset cohort in current snaps
-		for _, sn := range curSnaps {
-			if sn.InstanceName == curInfo.InstanceName() {
-				sn.CohortKey = ""
-				break
-			}
-		}
-	}
-
-	if curInfo.SnapID == "" { // amend
-		action.Action = "install"
-		action.Epoch = curInfo.Epoch
-	}
-
-	theStore := Store(st, deviceCtx)
-	st.Unlock() // calls to the store should be done without holding the state lock
-	res, _, err := theStore.SnapAction(context.TODO(), curSnaps, []*store.SnapAction{action}, nil, user, refreshOpts)
-	st.Lock()
-
-	sar, err := singleActionResult(curInfo.InstanceName(), action.Action, res, err)
-	return sar.Info, err
-}
-
-func preUpdateInfo(st *state.State, snapst *SnapState, amend bool, userID int) (*snap.Info, *auth.UserState, error) {
-	user, err := userFromUserID(st, snapst.UserID, userID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	curInfo, err := snapst.CurrentInfo()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if curInfo.SnapID == "" { // covers also trymode
-		if !amend {
-			return nil, nil, store.ErrLocalSnap
-		}
-	}
-
-	return curInfo, user, nil
-}
-
 var ErrMissingExpectedResult = fmt.Errorf("unexpectedly empty response from the server (try again later)")
 
 func singleActionResultErr(name, action string, e error) error {
@@ -510,85 +398,6 @@ func singleActionResult(name, action string, results []store.SnapActionResult, e
 	}
 
 	return store.SnapActionResult{}, singleActionResultErr(name, action, e)
-}
-
-func updateToRevisionInfo(st *state.State, snapst *SnapState, revOpts *RevisionOptions, userID int, flags Flags, deviceCtx DeviceContext) (*snap.Info, error) {
-	curSnaps, err := currentSnaps(st)
-	if err != nil {
-		return nil, err
-	}
-
-	curInfo, user, err := preUpdateInfo(st, snapst, false, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	opts, err := refreshOptions(st, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	action := &store.SnapAction{
-		Action:       "refresh",
-		SnapID:       curInfo.SnapID,
-		InstanceName: curInfo.InstanceName(),
-		// the desired revision
-		Revision: revOpts.Revision,
-	}
-
-	var requiredRevision snap.Revision
-	var requiredValsets []snapasserts.ValidationSetKey
-
-	var storeFlags store.SnapActionFlags
-	if !flags.IgnoreValidation {
-		if len(revOpts.ValidationSets) > 0 {
-			requiredRevision = revOpts.Revision
-			requiredValsets = revOpts.ValidationSets
-		} else {
-			enforcedSets, err := EnforcedValidationSets(st)
-			if err != nil {
-				return nil, err
-			}
-			if enforcedSets != nil {
-				requiredValsets, requiredRevision, err = enforcedSets.CheckPresenceRequired(naming.Snap(curInfo.InstanceName()))
-				if err != nil {
-					return nil, err
-				}
-				if !requiredRevision.Unset() {
-					if revOpts.Revision != requiredRevision {
-						return nil, fmt.Errorf("cannot update snap %q to revision %s without --ignore-validation, revision %s is required by validation sets: %s",
-							curInfo.InstanceName(), revOpts.Revision, requiredRevision, snapasserts.ValidationSetKeySlice(requiredValsets).CommaSeparated())
-					}
-					// note, not checking if required revision matches snapst.Current because
-					// this is already indirectly prevented by infoForUpdate().
-
-					// specific revision is required, reset cohort in current snaps
-					for _, sn := range curSnaps {
-						if sn.InstanceName == curInfo.InstanceName() {
-							sn.CohortKey = ""
-							break
-						}
-					}
-				}
-			}
-		}
-	} else {
-		storeFlags = store.SnapActionIgnoreValidation
-	}
-
-	if len(requiredValsets) > 0 {
-		setActionValidationSetsAndRequiredRevision(action, requiredValsets, requiredRevision)
-	}
-
-	action.Flags = storeFlags
-
-	theStore := Store(st, deviceCtx)
-	st.Unlock() // calls to the store should be done without holding the state lock
-	res, _, err := theStore.SnapAction(context.TODO(), curSnaps, []*store.SnapAction{action}, nil, user, opts)
-	st.Lock()
-
-	sar, err := singleActionResult(curInfo.InstanceName(), action.Action, res, err)
-	return sar.Info, err
 }
 
 func currentSnapsImpl(st *state.State) ([]*store.CurrentSnap, error) {
@@ -659,6 +468,338 @@ func collectCurrentSnaps(snapStates map[string]*SnapState, holds map[string][]st
 	}
 
 	return curSnaps, nil
+}
+
+// refreshCandidatesV2 is a wrapper for refreshCandidatesCore.
+//
+// It addresses the case where the store doesn't return refresh candidates for
+// snaps with already existing monitored refresh-candidates due to inconsistent
+// store return being caused by the throttling.
+// A second request is sent for eligible snaps that might have been throttled
+// with the RevisionOptions.Scheduled option turned off.
+//
+// Note: This wrapper is a short term solution and should be removed once a better
+// solution is reached.
+func refreshCandidatesV2(ctx context.Context, st *state.State, requested map[string]StoreUpdate, user *auth.UserState, refreshOpts *store.RefreshOptions, opts Options) (UpdateSummary, error) {
+	// initialize options before using
+	refreshOpts, err := refreshOptions(st, refreshOpts)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	summary, err := storeUpdateSummary(ctx, st, requested, user, refreshOpts, opts)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	if !refreshOpts.Scheduled {
+		// not an auto-refresh, just return what we got
+		return summary, nil
+	}
+
+	var oldHints map[string]*refreshCandidate
+	if err := st.Get("refresh-candidates", &oldHints); err != nil {
+		if errors.Is(err, &state.NoStateError{}) {
+			// do nothing
+			return summary, nil
+		}
+
+		return UpdateSummary{}, fmt.Errorf("cannot get refresh-candidates: %v", err)
+	}
+
+	missingRequests := make(map[string]StoreUpdate)
+	for name, hint := range oldHints {
+		if !hint.Monitored {
+			continue
+		}
+		hasUpdate := false
+		for _, update := range summary.Targets {
+			if update.info.InstanceName() == name {
+				hasUpdate = true
+				break
+			}
+		}
+		if hasUpdate {
+			continue
+		}
+
+		req, ok := requested[name]
+		if !ok {
+			if !summary.RefreshAll {
+				continue
+			}
+			req = StoreUpdate{InstanceName: name}
+		}
+
+		missingRequests[name] = req
+	}
+
+	if len(missingRequests) > 0 {
+		if err := validateAndInitStoreUpdates(st, missingRequests, opts); err != nil {
+			return UpdateSummary{}, err
+		}
+
+		// mimic manual refresh to avoid throttling.
+		// context: snaps may be throttled by the store to balance load
+		// and therefore may not always receive an update (even if one was
+		// returned before). forcing a manual refresh should be fine since
+		// we already started a pre-download for this snap, so no extra
+		// load is being exerted on the store.
+		refreshOpts.Scheduled = false
+		extraSummary, err := storeUpdateSummary(ctx, st, missingRequests, user, refreshOpts, opts)
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+		summary.Targets = append(summary.Targets, extraSummary.Targets...)
+	}
+
+	return summary, nil
+}
+
+func storeUpdateSummary(
+	ctx context.Context,
+	st *state.State,
+	requested map[string]StoreUpdate,
+	user *auth.UserState,
+	refreshOpts *store.RefreshOptions,
+	opts Options,
+) (UpdateSummary, error) {
+	if refreshOpts == nil {
+		return UpdateSummary{}, fmt.Errorf("internal error: opts cannot be nil")
+	}
+
+	summary := UpdateSummary{
+		Requested:  make([]string, 0, len(requested)),
+		RefreshAll: len(requested) == 0,
+	}
+
+	for name := range requested {
+		summary.Requested = append(summary.Requested, name)
+	}
+
+	all, err := All(st)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	updates := requested
+	if summary.RefreshAll {
+		updates = make(map[string]StoreUpdate, len(all))
+		for _, snapst := range all {
+			updates[snapst.InstanceName()] = StoreUpdate{
+				InstanceName: snapst.InstanceName(),
+				// default the channel and cohort key to the existing values,
+				RevOpts: RevisionOptions{
+					Channel:   snapst.TrackingChannel,
+					CohortKey: snapst.CohortKey,
+				},
+			}
+		}
+	}
+
+	// make sure that all requested updates are currently installed
+	for _, update := range updates {
+		if _, ok := all[update.InstanceName]; !ok {
+			return UpdateSummary{}, snap.NotInstalledError{Snap: update.InstanceName}
+		}
+	}
+
+	actionsByUserID := make(map[int][]*store.SnapAction)
+
+	// create a closure that will lazily load the enforced validation sets if
+	// any of the targets require them
+	var vsets *snapasserts.ValidationSets
+	enforcedSets := func() (*snapasserts.ValidationSets, error) {
+		if vsets != nil {
+			return vsets, nil
+		}
+
+		var err error
+		vsets, err = EnforcedValidationSets(st)
+		if err != nil {
+			return nil, err
+		}
+
+		return vsets, nil
+	}
+
+	// some snaps might have been requested to be updated but didn't get
+	// updated, either because we detected that the requested/required revision
+	// is already installed, or the store reported that there was no update
+	// available. in either case, we need to keep track of these, since we still
+	// might need to change the channel, cohort key, or validation set
+	// enforcement.
+	summary.UpdateNotAvailable = make(map[*SnapState]RevisionOptions)
+
+	// some snaps will have a local revision that is the same as the requested
+	// revision, we don't need to reach out to the store for these. keep track
+	// of them so we can handle them differently.
+	hasLocalRevision := make(map[*SnapState]RevisionOptions)
+
+	var fallbackID int
+	// normalize fallback user
+	if !user.HasStoreAuth() {
+		user = nil
+	} else {
+		fallbackID = user.ID
+	}
+
+	addCand := func(installed *store.CurrentSnap, snapst *SnapState) error {
+		// no auto-refresh for devmode
+		if summary.RefreshAll && snapst.DevMode {
+			return nil
+		}
+
+		req, ok := updates[installed.InstanceName]
+		if !ok {
+			return nil
+		}
+
+		// FIXME: snaps that are not active are skipped for now until we know
+		// what we want to do
+		if !snapst.Active {
+			if opts.ExpectOneSnap {
+				return fmt.Errorf("refreshing disabled snap %q not supported", snapst.InstanceName())
+			}
+			return nil
+		}
+
+		if !req.RevOpts.Revision.Unset() && snapst.LastIndex(req.RevOpts.Revision) != -1 {
+			hasLocalRevision[snapst] = req.RevOpts
+			return nil
+		}
+
+		action := &store.SnapAction{
+			Action:       "refresh",
+			SnapID:       installed.SnapID,
+			InstanceName: installed.InstanceName,
+		}
+
+		// TODO: this is silly, but it matches how we currently send these flags
+		// now. we should probably just default to sending enforce, but that
+		// would require updating a good number of tests. good candidate for a
+		// follow-up PR.
+		//
+		// if we are expecting only one snap to be updated, we respect the flag
+		// that was passed in. this maintains the existing behavior of Update vs
+		// UpdateMany.
+		ignoreValidation := snapst.IgnoreValidation
+		if opts.ExpectOneSnap {
+			ignoreValidation = opts.Flags.IgnoreValidation
+			if !opts.Flags.IgnoreValidation && req.RevOpts.Revision.Unset() {
+				action.Flags = store.SnapActionEnforceValidation
+			}
+		}
+
+		if err := completeStoreAction(action, req.RevOpts, ignoreValidation, enforcedSets); err != nil {
+			return err
+		}
+
+		// if we already have the requested revision installed, we don't need to
+		// consider this snap
+		if !action.Revision.Unset() && action.Revision == installed.Revision {
+			summary.UpdateNotAvailable[snapst] = req.RevOpts
+			return nil
+		}
+
+		if !action.Revision.Unset() {
+			// ignore cohort if revision is specified
+			installed.CohortKey = ""
+		}
+
+		// only enforce refresh block if we are refreshing everything
+		if summary.RefreshAll {
+			installed.Block = snapst.Block()
+		}
+
+		userID := snapst.UserID
+		if userID == 0 {
+			userID = fallbackID
+		}
+		actionsByUserID[userID] = append(actionsByUserID[userID], action)
+
+		return nil
+	}
+
+	// TODO: is this right? why do we only pass in the requested names here?
+	// what about when we are refreshing all snaps?
+	holds, err := SnapHolds(st, summary.Requested)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	// determine current snaps and create actions for each snap that needs to
+	// be refreshed
+	current, err := collectCurrentSnaps(all, holds, addCand)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	// create actions to refresh (install, from the store's perspective) snaps
+	// that were installed locally
+	ammendActionsByUserID, err := installActionsForAmmend(st, updates, opts, enforcedSets, fallbackID)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	for id, actions := range ammendActionsByUserID {
+		actionsByUserID[id] = append(actionsByUserID[id], actions...)
+	}
+
+	sars, noUpdates, err := sendActionsByUserID(ctx, st, actionsByUserID, current, refreshOpts, opts)
+	if err != nil {
+		return UpdateSummary{}, err
+	}
+
+	for _, name := range noUpdates {
+		summary.UpdateNotAvailable[all[name]] = updates[name].RevOpts
+	}
+
+	for _, sar := range sars {
+		up, ok := updates[sar.InstanceName()]
+		if !ok {
+			return UpdateSummary{}, fmt.Errorf("unsolicited snap action result: %q", sar.InstanceName())
+		}
+
+		snapst, ok := all[sar.InstanceName()]
+		if !ok {
+			return UpdateSummary{}, fmt.Errorf("internal error: snap %q not found", sar.InstanceName())
+		}
+
+		summary.Targets = append(summary.Targets, target{
+			info:   sar.Info,
+			snapst: *snapst,
+			setup: SnapSetup{
+				DownloadInfo: &sar.DownloadInfo,
+				Channel:      up.RevOpts.Channel,
+				CohortKey:    up.RevOpts.CohortKey,
+			},
+			components: nil, // TODO: fill this out from the already installed components from snapst
+		})
+	}
+
+	// consider snaps that already have a local copy of the revision that we are
+	// trying to install, skipping a trip to the store
+	for snapst, revOpts := range hasLocalRevision {
+		si := snapst.Sequence.Revisions[snapst.LastIndex(revOpts.Revision)].Snap
+		info, err := readInfo(snapst.InstanceName(), si, errorOnBroken)
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+
+		summary.Targets = append(summary.Targets, target{
+			info:   info,
+			snapst: *snapst,
+			setup: SnapSetup{
+				Channel:   revOpts.Channel,
+				CohortKey: revOpts.CohortKey,
+				SnapPath:  info.MountFile(),
+			},
+			components: nil,
+		})
+	}
+
+	return summary, nil
 }
 
 // SnapHolds returns a map of held snaps to lists of holding snaps (including
