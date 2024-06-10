@@ -704,7 +704,7 @@ func refreshCandidatesV2(ctx context.Context, st *state.State, requested map[str
 		return UpdateSummary{}, err
 	}
 
-	summary, err := refreshCandidatesCoreV2(ctx, st, requested, user, refreshOpts, opts)
+	summary, err := storeUpdateSummary(ctx, st, requested, user, refreshOpts, opts)
 	if err != nil {
 		return UpdateSummary{}, err
 	}
@@ -763,7 +763,7 @@ func refreshCandidatesV2(ctx context.Context, st *state.State, requested map[str
 		// we already started a pre-download for this snap, so no extra
 		// load is being exerted on the store.
 		refreshOpts.Scheduled = false
-		extraSummary, err := refreshCandidatesCoreV2(ctx, st, missingRequests, user, refreshOpts, opts)
+		extraSummary, err := storeUpdateSummary(ctx, st, missingRequests, user, refreshOpts, opts)
 		if err != nil {
 			return UpdateSummary{}, err
 		}
@@ -773,21 +773,55 @@ func refreshCandidatesV2(ctx context.Context, st *state.State, requested map[str
 	return summary, nil
 }
 
-func completeSummaryFromStore(
+func storeUpdateSummary(
 	ctx context.Context,
 	st *state.State,
-	summary *UpdateSummary,
-	updates map[string]StoreUpdate,
+	requested map[string]StoreUpdate,
 	user *auth.UserState,
 	refreshOpts *store.RefreshOptions,
 	opts Options,
-) error {
-	actionsByUserID := make(map[int][]*store.SnapAction)
+) (UpdateSummary, error) {
+	if refreshOpts == nil {
+		return UpdateSummary{}, fmt.Errorf("internal error: opts cannot be nil")
+	}
+
+	summary := UpdateSummary{
+		Requested:  make([]string, 0, len(requested)),
+		RefreshAll: len(requested) == 0,
+	}
+
+	for name := range requested {
+		summary.Requested = append(summary.Requested, name)
+	}
 
 	all, err := All(st)
 	if err != nil {
-		return err
+		return UpdateSummary{}, err
 	}
+
+	updates := requested
+	if summary.RefreshAll {
+		updates = make(map[string]StoreUpdate, len(all))
+		for _, snapst := range all {
+			updates[snapst.InstanceName()] = StoreUpdate{
+				InstanceName: snapst.InstanceName(),
+				// default the channel and cohort key to the existing values,
+				RevOpts: RevisionOptions{
+					Channel:   snapst.TrackingChannel,
+					CohortKey: snapst.CohortKey,
+				},
+			}
+		}
+	}
+
+	// make sure that all requested updates are currently installed
+	for _, update := range updates {
+		if _, ok := all[update.InstanceName]; !ok {
+			return UpdateSummary{}, snap.NotInstalledError{Snap: update.InstanceName}
+		}
+	}
+
+	actionsByUserID := make(map[int][]*store.SnapAction)
 
 	// create a closure that will lazily load the enforced validation sets if
 	// any of the targets require them
@@ -908,21 +942,21 @@ func completeSummaryFromStore(
 	// what about when we are refreshing all snaps?
 	holds, err := SnapHolds(st, summary.Requested)
 	if err != nil {
-		return err
+		return UpdateSummary{}, err
 	}
 
 	// determine current snaps and create actions for each snap that needs to
 	// be refreshed
 	current, err := collectCurrentSnaps(all, holds, addCand)
 	if err != nil {
-		return err
+		return UpdateSummary{}, err
 	}
 
 	// create actions to refresh (install, from the store's perspective) snaps
 	// that were installed locally
 	ammendActionsByUserID, err := installActionsForAmmend(st, updates, opts, enforcedSets, fallbackID)
 	if err != nil {
-		return err
+		return UpdateSummary{}, err
 	}
 
 	for id, actions := range ammendActionsByUserID {
@@ -931,7 +965,7 @@ func completeSummaryFromStore(
 
 	sars, noUpdates, err := sendActionsByUserID(ctx, st, actionsByUserID, current, refreshOpts, opts)
 	if err != nil {
-		return err
+		return UpdateSummary{}, err
 	}
 
 	for _, name := range noUpdates {
@@ -941,12 +975,12 @@ func completeSummaryFromStore(
 	for _, sar := range sars {
 		up, ok := updates[sar.InstanceName()]
 		if !ok {
-			return fmt.Errorf("unsolicited snap action result: %q", sar.InstanceName())
+			return UpdateSummary{}, fmt.Errorf("unsolicited snap action result: %q", sar.InstanceName())
 		}
 
 		snapst, ok := all[sar.InstanceName()]
 		if !ok {
-			return fmt.Errorf("internal error: snap %q not found", sar.InstanceName())
+			return UpdateSummary{}, fmt.Errorf("internal error: snap %q not found", sar.InstanceName())
 		}
 
 		summary.Targets = append(summary.Targets, target{
@@ -967,7 +1001,7 @@ func completeSummaryFromStore(
 		si := snapst.Sequence.Revisions[snapst.LastIndex(revOpts.Revision)].Snap
 		info, err := readInfo(snapst.InstanceName(), si, errorOnBroken)
 		if err != nil {
-			return err
+			return UpdateSummary{}, err
 		}
 
 		summary.Targets = append(summary.Targets, target{
@@ -982,7 +1016,7 @@ func completeSummaryFromStore(
 		})
 	}
 
-	return nil
+	return summary, nil
 }
 
 func sendActionsByUserID(ctx context.Context, st *state.State, actionsByUserID map[int][]*store.SnapAction, current []*store.CurrentSnap, refreshOpts *store.RefreshOptions, opts Options) ([]store.SnapActionResult, []string, error) {
@@ -1110,55 +1144,6 @@ func installActionsForAmmend(st *state.State, updates map[string]StoreUpdate, op
 	}
 
 	return actionsByUserID, nil
-}
-
-func refreshCandidatesCoreV2(ctx context.Context, st *state.State, requested map[string]StoreUpdate, user *auth.UserState, refreshOpts *store.RefreshOptions, opts Options) (UpdateSummary, error) {
-	if refreshOpts == nil {
-		return UpdateSummary{}, fmt.Errorf("internal error: opts cannot be nil")
-	}
-
-	names := make([]string, 0, len(requested))
-	for name := range requested {
-		names = append(names, name)
-	}
-
-	summary := UpdateSummary{
-		Requested:  names,
-		RefreshAll: len(names) == 0,
-	}
-
-	all, err := All(st)
-	if err != nil {
-		return UpdateSummary{}, err
-	}
-
-	updates := requested
-	if summary.RefreshAll {
-		updates = make(map[string]StoreUpdate, len(all))
-		for _, snapst := range all {
-			updates[snapst.InstanceName()] = StoreUpdate{
-				InstanceName: snapst.InstanceName(),
-				// default the channel and cohort key to the existing values,
-				RevOpts: RevisionOptions{
-					Channel:   snapst.TrackingChannel,
-					CohortKey: snapst.CohortKey,
-				},
-			}
-		}
-	}
-
-	// make sure that all requested updates are currently installed
-	for _, update := range updates {
-		if _, ok := all[update.InstanceName]; !ok {
-			return UpdateSummary{}, snap.NotInstalledError{Snap: update.InstanceName}
-		}
-	}
-
-	if err := completeSummaryFromStore(ctx, st, &summary, updates, user, refreshOpts, opts); err != nil {
-		return UpdateSummary{}, err
-	}
-
-	return summary, nil
 }
 
 // TODO: would really like for this to take an UpdateSummary as a param, but it
