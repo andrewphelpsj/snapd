@@ -1602,10 +1602,19 @@ func PathUpdateGoal(snaps ...PathUpdate) UpdateGoal {
 func (p *pathUpdateGoal) toUpdate(_ context.Context, st *state.State, opts Options) (UpdateSummary, error) {
 	targets := make([]target, 0, len(p.updates))
 	names := make([]string, 0, len(p.updates))
+
+	noUpdates := make(map[*SnapState]RevisionOptions)
 	for _, sn := range p.updates {
 		var snapst SnapState
 		if err := Get(st, sn.InstanceName, &snapst); err != nil && !errors.Is(err, state.ErrNoState) {
 			return UpdateSummary{}, err
+		}
+
+		if si := snapst.CurrentSideInfo(); si != nil {
+			if !si.Revision.Unset() && si.Revision == sn.SideInfo.Revision {
+				noUpdates[&snapst] = sn.RevOpts
+				continue
+			}
 		}
 
 		t, err := targetForPathUpdate(sn, snapst, opts)
@@ -1618,8 +1627,9 @@ func (p *pathUpdateGoal) toUpdate(_ context.Context, st *state.State, opts Optio
 	}
 
 	return UpdateSummary{
-		Targets:   targets,
-		Requested: names,
+		Targets:            targets,
+		Requested:          names,
+		UpdateNotAvailable: noUpdates,
 	}, nil
 }
 
@@ -1634,10 +1644,6 @@ func targetForPathUpdate(update PathUpdate, snapst SnapState, opts Options) (tar
 		if si.Revision.Unset() {
 			return target{}, fmt.Errorf("internal error: snap id set to install %q but revision is unset", update.Path)
 		}
-	}
-
-	if update.InstanceName == "" {
-		update.InstanceName = si.RealName
 	}
 
 	if err := snap.ValidateInstanceName(update.InstanceName); err != nil {

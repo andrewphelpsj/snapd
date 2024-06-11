@@ -123,9 +123,6 @@ func (rc *refreshCandidate) SnapSetupForUpdate(st *state.State, _ updateParamsFu
 	return snapsup, &snapst, nil
 }
 
-// soundness check
-var _ readyUpdateInfo = (*refreshCandidate)(nil)
-
 // autoRefresh will ensure that snaps are refreshed automatically
 // according to the refresh schedule.
 type autoRefresh struct {
