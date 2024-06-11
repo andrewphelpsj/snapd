@@ -1816,9 +1816,10 @@ func updateManyFiltered(ctx context.Context, st *state.State, names []string, re
 
 	goal := StoreUpdateGoal(updates...)
 	return UpdateWithGoal(ctx, st, goal, filter, Options{
-		Flags:     *flags,
-		UserID:    userID,
-		DeviceCtx: nil,
+		Flags:      *flags,
+		UserID:     userID,
+		FromChange: fromChange,
+		DeviceCtx:  nil,
 	})
 }
 
@@ -2472,6 +2473,11 @@ type snapInfoForUpdate func(dc DeviceContext, ro *RevisionOptions, fl Flags, sna
 func UpdateWithDeviceContext(st *state.State, name string, opts *RevisionOptions, userID int, flags Flags, prqt PrereqTracker, deviceCtx DeviceContext, fromChange string) (*state.TaskSet, error) {
 	if opts == nil {
 		opts = &RevisionOptions{}
+	}
+
+	// this is to maintain backwards compatibility with the old behavior
+	if flags.Transaction == "" {
+		flags.Transaction = client.TransactionPerSnap
 	}
 
 	goal := StoreUpdateGoal(StoreUpdate{

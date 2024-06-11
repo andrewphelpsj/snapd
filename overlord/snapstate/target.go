@@ -1170,10 +1170,6 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, errors.New("cannot specify a lane without setting transaction to \"all-snaps\"")
 	}
 
-	if opts.Flags.Transaction == "" {
-		opts.Flags.Lane = st.NewLane()
-	}
-
 	summary, err := goal.toUpdate(ctx, st, opts)
 	if err != nil {
 		return nil, nil, err
