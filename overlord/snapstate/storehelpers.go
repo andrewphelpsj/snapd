@@ -669,10 +669,21 @@ func storeUpdateSummary(
 			return nil
 		}
 
+		comps, err := snapst.CurrentComponentInfos()
+		if err != nil {
+			return err
+		}
+
+		compNames := make([]string, 0, len(comps))
+		for _, comp := range comps {
+			compNames = append(compNames, comp.Component.ComponentName)
+		}
+
 		action := &store.SnapAction{
 			Action:       "refresh",
 			SnapID:       installed.SnapID,
 			InstanceName: installed.InstanceName,
+			Resources:    compNames,
 		}
 
 		// TODO: this is silly, but it matches how we currently send these flags
@@ -766,6 +777,23 @@ func storeUpdateSummary(
 			return UpdateSummary{}, fmt.Errorf("internal error: snap %q not found", sar.InstanceName())
 		}
 
+		currentComps, err := snapst.CurrentComponentInfos()
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+
+		compNames := make([]string, 0, len(currentComps))
+		for _, comp := range currentComps {
+			compNames = append(compNames, comp.Component.ComponentName)
+		}
+
+		// TODO: what do we do when an already installed component is not
+		// included in the snap resources?
+		compTargets, err := componentTargetsFromActionResult(sar, compNames)
+		if err != nil {
+			return UpdateSummary{}, fmt.Errorf("cannot extract components from snap resources: %w", err)
+		}
+
 		summary.Targets = append(summary.Targets, target{
 			info:   sar.Info,
 			snapst: *snapst,
@@ -774,7 +802,7 @@ func storeUpdateSummary(
 				Channel:      up.RevOpts.Channel,
 				CohortKey:    up.RevOpts.CohortKey,
 			},
-			components: nil, // TODO: fill this out from the already installed components from snapst
+			components: compTargets,
 		})
 	}
 

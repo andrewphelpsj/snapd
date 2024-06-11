@@ -380,7 +380,7 @@ func (s *storeInstallGoal) toInstall(ctx context.Context, st *state.State, opts 
 			channel = sn.RevOpts.Channel
 		}
 
-		comps, err := requestedComponentsFromActionResult(sn, r)
+		comps, err := componentTargetsFromActionResult(r, sn.Components)
 		if err != nil {
 			return nil, fmt.Errorf("cannot extract components from snap resources: %w", err)
 		}
@@ -400,27 +400,27 @@ func (s *storeInstallGoal) toInstall(ctx context.Context, st *state.State, opts 
 	return installs, err
 }
 
-func requestedComponentsFromActionResult(sn StoreSnap, sar store.SnapActionResult) ([]componentTarget, error) {
+func componentTargetsFromActionResult(sar store.SnapActionResult, requested []string) ([]componentTarget, error) {
 	mapping := make(map[string]store.SnapResourceResult, len(sar.Resources))
 	for _, res := range sar.Resources {
 		mapping[res.Name] = res
 	}
 
-	installables := make([]componentTarget, 0, len(sn.Components))
-	for _, comp := range sn.Components {
+	targets := make([]componentTarget, 0, len(requested))
+	for _, comp := range requested {
 		res, ok := mapping[comp]
 		if !ok {
 			return nil, fmt.Errorf("cannot find component %q in snap resources", comp)
 		}
 
-		installable, err := componentFromResource(comp, res, sar.Info)
+		target, err := componentFromResource(comp, res, sar.Info)
 		if err != nil {
 			return nil, err
 		}
 
-		installables = append(installables, installable)
+		targets = append(targets, target)
 	}
-	return installables, nil
+	return targets, nil
 }
 
 func componentFromResource(name string, sar store.SnapResourceResult, info *snap.Info) (componentTarget, error) {
@@ -787,6 +787,17 @@ func installActionsForAmmend(st *state.State, updates map[string]StoreUpdate, op
 		info, err := snapst.CurrentInfo()
 		if err != nil {
 			return nil, err
+		}
+
+		comps, err := snapst.CurrentComponentInfos()
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO: lift this restriction, just don't want to think about it right
+		// now
+		if len(comps) > 0 {
+			return nil, fmt.Errorf("cannot amend snap %q with components", up.InstanceName)
 		}
 
 		action := &store.SnapAction{

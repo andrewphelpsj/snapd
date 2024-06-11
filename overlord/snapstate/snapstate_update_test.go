@@ -66,9 +66,13 @@ import (
 )
 
 func verifyUpdateTasks(c *C, typ snap.Type, opts, discards int, ts *state.TaskSet) {
+	verifyUpdateTasksWithComponents(c, typ, opts, discards, nil, ts)
+}
+
+func verifyUpdateTasksWithComponents(c *C, typ snap.Type, opts, discards int, components []string, ts *state.TaskSet) {
 	kinds := taskKinds(ts.Tasks())
 
-	expected := expectedDoInstallTasks(typ, unlinkBefore|cleanupAfter|opts, discards, nil, nil, nil)
+	expected := expectedDoInstallTasks(typ, unlinkBefore|cleanupAfter|opts, discards, nil, components, nil)
 	if opts&doesReRefresh != 0 {
 		expected = append(expected, "check-rerefresh")
 	}
