@@ -740,3 +740,73 @@ func installableComponentsFromPaths(info *snap.Info, components map[*snap.Compon
 
 	return installables, nil
 }
+
+// UpdateSummary contains the data that describes an update, including a list of
+// Target structs that represent the snaps that are to be updated.
+type UpdateSummary struct {
+	// Requested is the list of snaps that were requested to be updated. If
+	// RefreshAll is true, then this list should be empty.
+	Requested []string
+	// RefreshAll is true if all snaps on the system are being refreshed (could
+	// be either an auto-refresh or something like a manual "snap refresh").
+	// This mostly has the effect of ignoring some some non-fatal errors.
+	RefreshAll bool
+	// Targets is the list of snaps that are to be updated. Note that this list
+	// does not necessarily match the list of snaps in Requested.
+	Targets []target
+	// UpdateNotAvailable is a set of snaps that were requested to be updated
+	// but did not have an update available. They still may require a channel
+	// switch, cohort change, or validation set enforcement change.
+	UpdateNotAvailable map[*SnapState]RevisionOptions
+}
+
+// UpdateGoal represents a single snap or a group of snaps to be updated.
+type UpdateGoal interface {
+	// Install returns the data needed to update the snaps.
+	toUpdate(context.Context, *state.State, Options) (UpdateSummary, error)
+}
+
+// UpdateWithGoal updates the snap/set of snaps specified by the given
+// UpdateGoal.
+func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filter updateFilter, opts Options) ([]string, *UpdateTaskSets, error) {
+	return nil, nil, nil
+}
+
+// storeInstallGoal implements the UpdateGoal interface and represents a group
+// of snaps that are to be updated from the store.
+type storeUpdateGoal struct {
+	// snaps is a mapping of snap names to StoreUpdate structs.
+	snaps map[string]StoreUpdate
+}
+
+// StoreUpdate represents a snap that is to be updated from the store.
+type StoreUpdate struct {
+	// InstanceName is the instancename of snap to update.
+	InstanceName string
+	// RevOpts contains options that apply to the update of this snap.
+	RevOpts RevisionOptions
+}
+
+// StoreUpdateGoal creates a new UpdateGoal to update snaps from the store.
+func StoreUpdateGoal(snaps ...StoreUpdate) UpdateGoal {
+	mapping := make(map[string]StoreUpdate, len(snaps))
+	for _, sn := range snaps {
+		if _, ok := mapping[sn.InstanceName]; ok {
+			continue
+		}
+
+		mapping[sn.InstanceName] = sn
+	}
+
+	return &storeUpdateGoal{
+		snaps: mapping,
+	}
+}
+
+func (s *storeUpdateGoal) toUpdate(ctx context.Context, st *state.State, opts Options) (UpdateSummary, error) {
+	if opts.ExpectOneSnap && len(s.snaps) != 1 {
+		return UpdateSummary{}, ErrExpectedOneSnap
+	}
+
+	return UpdateSummary{}, nil
+}
