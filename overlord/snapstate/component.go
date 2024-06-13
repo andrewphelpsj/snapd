@@ -177,7 +177,8 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 		addTask(unlink)
 	}
 
-	// security
+	// when installing snap+components at the same time, setup-profiles is done
+	// once for the entire batch of snap+components
 	if !flags.SkipSecurity {
 		setupSecurity := st.NewTask("setup-profiles", fmt.Sprintf(i18n.G("Setup component %q%s security profiles"), compSi.Component, revisionStr))
 		addTask(setupSecurity)
@@ -189,8 +190,9 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 			compSi.Component, revisionStr))
 	addTask(linkSnap)
 
-	// clean-up previous revision of the component if present
-	if compInstalled {
+	// clean-up previous revision of the component if present and we're not
+	// changing snap revisions
+	if compInstalled && !snapst.Current.Unset() && snapst.Current == snapSi.Revision {
 		discardComp := st.NewTask("discard-component", fmt.Sprintf(i18n.G(
 			"Discard previous revision for component %q"),
 			compSi.Component))
