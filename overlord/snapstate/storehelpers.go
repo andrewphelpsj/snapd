@@ -865,7 +865,7 @@ func storeUpdateSummary(
 			return err
 		}
 
-		compNames := make([]string, 0, len(comps))
+		var compNames []string
 		for _, comp := range comps {
 			compNames = append(compNames, comp.Component.ComponentName)
 		}
