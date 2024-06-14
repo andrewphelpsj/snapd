@@ -91,9 +91,22 @@ func (t *target) setups(st *state.State, opts Options) (SnapSetup, []ComponentSe
 		return SnapSetup{}, nil, err
 	}
 
-	flags, err := earlyChecks(st, &t.snapst, t.info, opts.Flags)
+	flags := opts.Flags
+
+	if !flags.JailMode && !flags.DevMode {
+		flags.Classic = flags.Classic || t.snapst.Classic
+	}
+
+	flags, err = earlyChecks(st, &t.snapst, t.info, flags)
 	if err != nil {
 		return SnapSetup{}, nil, err
+	}
+
+	// to match the behavior of the original Update and UpdateMany, we only
+	// allow updating ignoring validation sets if we are working with
+	// exactly one snap
+	if !opts.ExpectOneSnap {
+		flags.IgnoreValidation = t.snapst.IgnoreValidation
 	}
 
 	compsups := make([]ComponentSetup, 0, len(t.components))
