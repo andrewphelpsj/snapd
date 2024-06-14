@@ -671,6 +671,10 @@ func setDefaultSnapstateOptions(st *state.State, opts *Options) error {
 	} else {
 		opts.DeviceCtx, err = DevicePastSeeding(st, opts.DeviceCtx)
 	}
+
+	if opts.PrereqTracker == nil {
+		opts.PrereqTracker = snap.SimplePrereqTracker{}
+	}
 	return err
 }
 
