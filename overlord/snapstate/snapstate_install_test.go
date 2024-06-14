@@ -120,6 +120,9 @@ func expectedDoInstallTasks(typ snap.Type, opts, discards int, startTasks []stri
 		if opts&localSnap != 0 {
 			compOpts |= compOptIsLocal
 		}
+		if opts&unlinkBefore != 0 {
+			compOpts |= compOptIsActive
+		}
 		compTasks := expectedComponentInstallTasks(compOpts)
 		for i, t := range compTasks {
 			if t == "link-component" {

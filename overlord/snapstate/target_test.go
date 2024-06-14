@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/snapcore/snapd/overlord/snapstate"
+	"github.com/snapcore/snapd/overlord/snapstate/sequence"
+	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snaptest"
@@ -225,4 +227,75 @@ version: 1.0
 	c.Check(info.Components[compName].Name, Equals, compName)
 
 	verifyInstallTasksWithComponents(c, snap.TypeApp, localSnap, 0, []string{compName}, ts)
+}
+
+func (s *TargetTestSuite) TestUpdateWithComponents(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	const (
+		snapName = "some-snap"
+		snapID   = "some-snap-id"
+		compName = "test-component"
+		channel  = "channel-for-components"
+	)
+
+	seq := snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{{
+		RealName: snapName,
+		SnapID:   snapID,
+		Revision: snap.R(7),
+	}})
+
+	seq.AddComponentForRevision(snap.R(7), &sequence.ComponentState{
+		SideInfo: &snap.ComponentSideInfo{
+			Component: naming.NewComponentRef(snapName, compName),
+			Revision:  snap.R(1),
+		},
+		CompType: snap.TestComponent,
+	})
+
+	s.AddCleanup(snapstate.MockReadComponentInfo(func(
+		compMntDir string, info *snap.Info, csi *snap.ComponentSideInfo,
+	) (*snap.ComponentInfo, error) {
+		return &snap.ComponentInfo{
+			Component:         naming.NewComponentRef(info.SnapName(), compName),
+			Type:              snap.TestComponent,
+			Version:           "1.0",
+			ComponentSideInfo: *csi,
+		}, nil
+	}))
+
+	snapstate.Set(s.state, snapName, &snapstate.SnapState{
+		Active:          true,
+		TrackingChannel: channel,
+		Sequence:        seq,
+		Current:         snap.R(7),
+		SnapType:        "app",
+	})
+
+	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
+		c.Assert(info.SnapName(), DeepEquals, snapName)
+
+		return []store.SnapResourceResult{
+			{
+				DownloadInfo: snap.DownloadInfo{
+					DownloadURL: fmt.Sprintf("http://example.com/%s", snapName),
+				},
+				Name:      compName,
+				Revision:  2,
+				Type:      fmt.Sprintf("component/%s", snap.TestComponent),
+				Version:   "1.0",
+				CreatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+	}
+
+	goal := snapstate.StoreUpdateGoal(snapstate.StoreUpdate{
+		InstanceName: snapName,
+	})
+
+	ts, err := snapstate.UpdateOne(context.Background(), s.state, goal, nil, snapstate.Options{})
+	c.Assert(err, IsNil)
+
+	verifyUpdateTasksWithComponents(c, snap.TypeApp, doesReRefresh, 0, []string{compName}, ts)
 }
