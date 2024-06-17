@@ -1829,12 +1829,12 @@ func updateManyFiltered(ctx context.Context, st *state.State, names []string, re
 // canSplitRefresh returns whether the refresh is a standard refresh of a mix
 // of essential and non-essential snaps on a hybrid system. If the refresh
 // can be split, it also returns the two split update groups.
-func canSplitRefresh(deviceCtx DeviceContext, infos []minimalInstallInfo) (essential, nonEssential []minimalInstallInfo, split bool) {
+func canSplitRefresh(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, nonEssential []SnapSetup, split bool) {
 	if !deviceCtx.IsCoreBoot() || !release.OnClassic {
 		return nil, nil, false
 	}
 
-	essential, nonEssential = splitEssentialUpdates(deviceCtx, infos)
+	essential, nonEssential = splitEssentialUpdates(deviceCtx, snapsups)
 	if len(essential) == 0 || len(nonEssential) == 0 {
 		return nil, nil, false
 	}
@@ -1846,7 +1846,7 @@ func canSplitRefresh(deviceCtx DeviceContext, infos []minimalInstallInfo) (essen
 // non-essential snaps, so that the latter can refresh independently without
 // waiting for the reboot that the essential snaps require. The only cross-set
 // dependency is snapd which, if present, must refresh before all other snaps.
-func splitRefresh(st *state.State, essential, nonEssential []minimalInstallInfo, userID int, flags *Flags, updateFunc func([]minimalInstallInfo) ([]string, *UpdateTaskSets, error)) ([]string, *UpdateTaskSets, error) {
+func splitRefresh(st *state.State, essential, nonEssential []SnapSetup, userID int, flags *Flags, updateFunc func([]SnapSetup) ([]string, *UpdateTaskSets, error)) ([]string, *UpdateTaskSets, error) {
 	// taskset with essential snaps (snapd, kernel, gadget and the model base)
 	essentialUpdated, essentialTss, err := updateFunc(essential)
 	if err != nil {
@@ -2083,38 +2083,32 @@ func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapsta
 	return updated, updateTss, nil
 }
 
-func splitEssentialUpdates(deviceCtx DeviceContext, updates []minimalInstallInfo) (essential, nonEssential []minimalInstallInfo) {
-	var snapd minimalInstallInfo
-	var modelBase minimalInstallInfo
-
-	for _, update := range updates {
-		switch update.Type() {
+func splitEssentialUpdates(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, nonEssential []SnapSetup) {
+	snapdAndModelBase := make([]SnapSetup, 0, 2)
+	for _, sn := range snapsups {
+		switch sn.Type {
 		case snap.TypeSnapd:
-			snapd = update
+			snapdAndModelBase = append(snapdAndModelBase, sn)
 		case snap.TypeBase:
-			if update.InstanceName() == deviceCtx.Base() {
-				modelBase = update
+			if sn.InstanceName() == deviceCtx.Base() {
+				snapdAndModelBase = append(snapdAndModelBase, sn)
 			} else {
-				nonEssential = append(nonEssential, update)
+				nonEssential = append(nonEssential, sn)
 			}
 		case snap.TypeGadget, snap.TypeKernel:
 			// snaps that require a reboot
-			essential = append(essential, update)
+			essential = append(essential, sn)
 		default:
-			nonEssential = append(nonEssential, update)
+			nonEssential = append(nonEssential, sn)
 		}
 	}
 
 	// if there's no other essential snaps, snapd and the model base can be
 	// refreshed with the apps (order doesn't matter here, we sort later)
-	for _, info := range []minimalInstallInfo{snapd, modelBase} {
-		if info != nil {
-			if len(essential) > 0 {
-				essential = append(essential, info)
-			} else {
-				nonEssential = append(nonEssential, info)
-			}
-		}
+	if len(essential) > 0 {
+		essential = append(essential, snapdAndModelBase...)
+	} else {
+		nonEssential = append(nonEssential, snapdAndModelBase...)
 	}
 
 	return essential, nonEssential
@@ -2787,7 +2781,7 @@ func autoRefreshPhase2(st *state.State, updates []*refreshCandidate, flags *Flag
 	}
 
 	const userID = 0
-	updated, updateTss, err := doUpdate(st, nil, snapsups, snapstates, nil, Options{
+	_, updateTss, err := doPotentiallySplitUpdate(st, nil, snapsups, snapstates, nil, Options{
 		Flags:      *flags,
 		UserID:     userID,
 		FromChange: fromChange,
@@ -2795,11 +2789,6 @@ func autoRefreshPhase2(st *state.State, updates []*refreshCandidate, flags *Flag
 	})
 	if err != nil {
 		return nil, err
-	}
-
-	// only auto-refreshes can generate pre-download tasks so we don't need to check them
-	if len(updateTss.Refresh) > 0 {
-		updateTss.Refresh = finalizeUpdate(st, updateTss.Refresh, len(updates) > 0, updated, nil, userID, flags)
 	}
 
 	return updateTss, nil

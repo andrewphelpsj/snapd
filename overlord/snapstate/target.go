@@ -948,9 +948,25 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
+	updated, uts, err := doSummaryUpdate(st, summary, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// ideally we wouldn't use this error type here, but the current
+	// implementations share this error type for both path and store
+	// installations
+	if opts.ExpectOneSnap && len(uts.Refresh) == 0 {
+		return nil, nil, store.ErrNoUpdateAvailable
+	}
+
+	return updated, uts, nil
+}
+
+func doSummaryUpdate(st *state.State, summary UpdateSummary, opts Options) ([]string, *UpdateTaskSets, error) {
 	// it is sad that we have to split up UpdateSummary like this, but doUpdate
-	// is used in places where we don't have a snap.Info (inside the inhibited
-	// refresh stuff i think)
+	// is used in places where we don't have a snap.Info, so we cannot pass an
+	// UpdateSummary to doUpdate
 	snapsups := make([]SnapSetup, 0, len(summary.Targets))
 	components := make(map[string][]ComponentSetup, len(summary.Targets))
 	snapstates := make(map[string]SnapState, len(summary.Targets))
@@ -972,8 +988,7 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		snapstates[t.info.InstanceName()] = t.snapst
 	}
 
-	// TODO: ignore split refresh for now, come back later
-	updated, uts, err := doUpdate(st, summary.Requested, snapsups, snapstates, components, opts)
+	updated, uts, err := doPotentiallySplitUpdate(st, summary.Requested, snapsups, snapstates, components, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -988,9 +1003,12 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		}
 
 		if len(tss) > 0 {
+			// if we're just switching the channel or cohort key, we should be
+			// able to do this task before anything else, regardless if this
+			// refresh is split or not
 			for _, refreshTs := range uts.Refresh {
 				for _, ts := range tss {
-					ts.WaitAll(refreshTs)
+					refreshTs.WaitAll(ts)
 				}
 			}
 
@@ -1004,20 +1022,8 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		}
 	}
 
-	// ideally we wouldn't use this error type here, but the current
-	// implementations share this error type for both path and store
-	// installations
-	if opts.ExpectOneSnap && len(uts.Refresh) == 0 {
-		return nil, nil, store.ErrNoUpdateAvailable
-	}
-
-	// if there are only pre-downloads, don't add a check-rerefresh task
-	if len(uts.Refresh) > 0 {
-		uts.Refresh = finalizeUpdate(st, uts.Refresh, len(summary.Targets) > 0, updated, nil, opts.UserID, &opts.Flags)
-	}
-
 	// if we're only updating one snap, flatten everything into one task set
-	if opts.ExpectOneSnap {
+	if opts.ExpectOneSnap && len(uts.Refresh) > 1 {
 		flat := state.NewTaskSet()
 		for _, ts := range uts.Refresh {
 			// The tasksets we get from "doUpdate" contain important "TaskEdge"
@@ -1028,6 +1034,53 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 			}
 		}
 		uts.Refresh = []*state.TaskSet{flat}
+	}
+
+	return updated, uts, nil
+}
+
+func doPotentiallySplitUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapstates map[string]SnapState, components map[string][]ComponentSetup, opts Options) ([]string, *UpdateTaskSets, error) {
+	if components == nil {
+		components = make(map[string][]ComponentSetup)
+	}
+
+	// if we're on classic with a kernel/gadget, split refreshes with essential
+	// snaps and apps so that the apps don't have to wait for a reboot
+	if essential, nonEssential, ok := canSplitRefresh(opts.DeviceCtx, snapsups); ok {
+		// if we're putting all of the snaps in the same lane, create the lane
+		// now so that it can be shared between the essential and non-essential
+		// sets
+		if opts.Flags.Transaction == client.TransactionAllSnaps {
+			opts.Flags.Lane = st.NewLane()
+		}
+
+		updateFunc := func(updates []SnapSetup) ([]string, *UpdateTaskSets, error) {
+			states := make(map[string]SnapState, len(updates))
+			comps := make(map[string][]ComponentSetup, len(updates))
+			for _, up := range updates {
+				states[up.InstanceName()] = snapstates[up.InstanceName()]
+				comps[up.InstanceName()] = components[up.InstanceName()]
+			}
+
+			// names are used to determine if the refresh is general, if it was
+			// requested for a snap to update aliases and if it should be
+			// reported so it's fine to pass them all into each call (extra are
+			// ignored)
+			return doUpdate(st, requested, updates, states, comps, opts)
+		}
+
+		// splitRefresh already creates a check-rerefresh task as needed
+		return splitRefresh(st, essential, nonEssential, opts.UserID, &opts.Flags, updateFunc)
+	}
+
+	updated, uts, err := doUpdate(st, requested, snapsups, snapstates, components, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// if there are only pre-downloads, don't add a check-rerefresh task
+	if len(uts.Refresh) > 0 {
+		uts.Refresh = finalizeUpdate(st, uts.Refresh, len(snapsups) > 0, updated, nil, opts.UserID, &opts.Flags)
 	}
 
 	return updated, uts, nil

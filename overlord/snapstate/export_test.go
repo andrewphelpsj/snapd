@@ -574,8 +574,8 @@ func SetPreseed(snapmgr *SnapManager, value bool) {
 	snapmgr.preseed = value
 }
 
-func SplitEssentialUpdates(deviceCtx DeviceContext, updates []minimalInstallInfo) (essential, nonEssential []MinimalInstallInfo) {
-	return splitEssentialUpdates(deviceCtx, updates)
+func SplitEssentialUpdates(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, nonEssential []SnapSetup) {
+	return splitEssentialUpdates(deviceCtx, snapsups)
 }
 
 func MockAffectedSnapsByAttr(value map[string]AffectedSnapsFunc) (restore func()) {
