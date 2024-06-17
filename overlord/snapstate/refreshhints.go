@@ -180,6 +180,12 @@ func refreshHintsFromCandidates(st *state.State, summary UpdateSummary, deviceCt
 			return nil, err
 		}
 
+		// TODO: we need to handle potential channel switches here, since those
+		// shouldn't happen during a auto-refresh.
+		if snapst.IsInstalled() && !update.Revision.Unset() && snapst.Current == update.Revision {
+			continue
+		}
+
 		flags := snapst.Flags
 		flags.IsAutoRefresh = true
 		flags, err := earlyChecks(st, &snapst, update, flags)

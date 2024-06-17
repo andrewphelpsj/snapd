@@ -814,17 +814,20 @@ func storeUpdateSummary(
 		return vsets, nil
 	}
 
-	// some snaps might have been requested to be updated but didn't get
-	// updated, either because we detected that the requested/required revision
-	// is already installed, or the store reported that there was no update
-	// available. in either case, we need to keep track of these, since we still
-	// might need to change the channel, cohort key, or validation set
-	// enforcement.
-	summary.UpdateNotAvailable = make(map[*SnapState]RevisionOptions)
-
-	// some snaps will have a local revision that is the same as the requested
-	// revision, we don't need to reach out to the store for these. keep track
-	// of them so we can handle them differently.
+	// this map keeps track of snaps that already have a local revision that
+	// matches the requested revision. there are two distinct cases here:
+	//
+	// * the snap might have been requested to be updated but didn't get
+	//   updated, either because we detected that the requested/required revision
+	//   is already installed, or the store reported that there was no update
+	//   available.
+	//
+	// * the snap has a local copy of the revision (that was previously
+	//   installed, but isn't right now) that is the same as the requested
+	//   revision
+	//
+	// in either case, we need to keep track of these, since we still might need
+	// to change the channel, cohort key, or validation set enforcement.
 	hasLocalRevision := make(map[*SnapState]RevisionOptions)
 
 	var fallbackID int
@@ -898,9 +901,10 @@ func storeUpdateSummary(
 		}
 
 		// if we already have the requested revision installed, we don't need to
-		// consider this snap
+		// consider this snap for a store update, but we still should return it
+		// as a target for potentially switching channels or cohort keys
 		if !action.Revision.Unset() && action.Revision == installed.Revision {
-			summary.UpdateNotAvailable[snapst] = req.RevOpts
+			hasLocalRevision[snapst] = req.RevOpts
 			return nil
 		}
 
@@ -948,13 +952,13 @@ func storeUpdateSummary(
 		actionsByUserID[id] = append(actionsByUserID[id], actions...)
 	}
 
-	sars, noUpdates, err := sendActionsByUserID(ctx, st, actionsByUserID, current, refreshOpts, opts)
+	sars, noStoreUpdates, err := sendActionsByUserID(ctx, st, actionsByUserID, current, refreshOpts, opts)
 	if err != nil {
 		return UpdateSummary{}, err
 	}
 
-	for _, name := range noUpdates {
-		summary.UpdateNotAvailable[all[name]] = updates[name].RevOpts
+	for _, name := range noStoreUpdates {
+		hasLocalRevision[all[name]] = updates[name].RevOpts
 	}
 
 	for _, sar := range sars {
@@ -1000,11 +1004,23 @@ func storeUpdateSummary(
 	// consider snaps that already have a local copy of the revision that we are
 	// trying to install, skipping a trip to the store
 	for snapst, revOpts := range hasLocalRevision {
-		si := snapst.Sequence.Revisions[snapst.LastIndex(revOpts.Revision)].Snap
+		var si *snap.SideInfo
+		if !revOpts.Revision.Unset() {
+			si = snapst.Sequence.Revisions[snapst.LastIndex(revOpts.Revision)].Snap
+		} else {
+			si = snapst.CurrentSideInfo()
+		}
+
 		info, err := readInfo(snapst.InstanceName(), si, errorOnBroken)
 		if err != nil {
 			return UpdateSummary{}, err
 		}
+
+		// TODO: handle components here
+
+		// make sure that we switch the current channel of the snap that we're
+		// switch to
+		info.Channel = revOpts.Channel
 
 		summary.Targets = append(summary.Targets, target{
 			info:   info,

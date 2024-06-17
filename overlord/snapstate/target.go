@@ -825,10 +825,6 @@ type UpdateSummary struct {
 	// Targets is the list of snaps that are to be updated. Note that this list
 	// does not necessarily match the list of snaps in Requested.
 	Targets []target
-	// UpdateNotAvailable is a set of snaps that were requested to be updated
-	// but did not have an update available. They still may require a channel
-	// switch, cohort change, or validation set enforcement change.
-	UpdateNotAvailable map[*SnapState]RevisionOptions
 }
 
 func (s *UpdateSummary) targetInfos() []*snap.Info {
@@ -901,7 +897,7 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
-	if opts.ExpectOneSnap && len(summary.Targets)+len(summary.UpdateNotAvailable) != 1 {
+	if opts.ExpectOneSnap && len(summary.Targets) != 1 {
 		return nil, nil, ErrExpectedOneSnap
 	}
 
@@ -923,6 +919,7 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 			return nil, nil, err
 		}
 
+		// TODO: why not check this error?
 		updateRefreshCandidates(st, hints, summary.Requested)
 	}
 
@@ -948,7 +945,7 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
-	updated, uts, err := doSummaryUpdate(st, summary, opts)
+	updated, uts, err := updateFromSummary(st, summary, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -963,13 +960,11 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 	return updated, uts, nil
 }
 
-func doSummaryUpdate(st *state.State, summary UpdateSummary, opts Options) ([]string, *UpdateTaskSets, error) {
+func updateFromSummary(st *state.State, summary UpdateSummary, opts Options) ([]string, *UpdateTaskSets, error) {
 	// it is sad that we have to split up UpdateSummary like this, but doUpdate
 	// is used in places where we don't have a snap.Info, so we cannot pass an
 	// UpdateSummary to doUpdate
-	snapsups := make([]SnapSetup, 0, len(summary.Targets))
-	components := make(map[string][]ComponentSetup, len(summary.Targets))
-	snapstates := make(map[string]SnapState, len(summary.Targets))
+	updates := make([]update, 0, len(summary.Targets))
 	for _, t := range summary.Targets {
 		opts.PrereqTracker.Add(t.info)
 
@@ -983,43 +978,16 @@ func doSummaryUpdate(st *state.State, summary UpdateSummary, opts Options) ([]st
 			continue
 		}
 
-		snapsups = append(snapsups, snapsup)
-		components[t.info.InstanceName()] = compsups
-		snapstates[t.info.InstanceName()] = t.snapst
+		updates = append(updates, update{
+			Setup:      snapsup,
+			SnapState:  t.snapst,
+			Components: compsups,
+		})
 	}
 
-	updated, uts, err := doPotentiallySplitUpdate(st, summary.Requested, snapsups, snapstates, components, opts)
+	updated, uts, err := doPotentiallySplitUpdate(st, summary.Requested, updates, opts)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	// some snaps might not have had a revision available to update to, but we
-	// still need to update the channel, cohort key, or validation set
-	// enforcement
-	for snapst, up := range summary.UpdateNotAvailable {
-		tss, err := switchSnapMetadataTasks(st, snapst, up, opts)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if len(tss) > 0 {
-			// if we're just switching the channel or cohort key, we should be
-			// able to do this task before anything else, regardless if this
-			// refresh is split or not
-			for _, refreshTs := range uts.Refresh {
-				for _, ts := range tss {
-					refreshTs.WaitAll(ts)
-				}
-			}
-
-			// this name might already be in the list, since doUpdate could have
-			// done auto-alias changes
-			if !strutil.ListContains(updated, snapst.InstanceName()) {
-				updated = append(updated, snapst.InstanceName())
-			}
-
-			uts.Refresh = append(uts.Refresh, tss...)
-		}
 	}
 
 	// if we're only updating one snap, flatten everything into one task set
@@ -1039,14 +1007,10 @@ func doSummaryUpdate(st *state.State, summary UpdateSummary, opts Options) ([]st
 	return updated, uts, nil
 }
 
-func doPotentiallySplitUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapstates map[string]SnapState, components map[string][]ComponentSetup, opts Options) ([]string, *UpdateTaskSets, error) {
-	if components == nil {
-		components = make(map[string][]ComponentSetup)
-	}
-
+func doPotentiallySplitUpdate(st *state.State, requested []string, updates []update, opts Options) ([]string, *UpdateTaskSets, error) {
 	// if we're on classic with a kernel/gadget, split refreshes with essential
 	// snaps and apps so that the apps don't have to wait for a reboot
-	if essential, nonEssential, ok := canSplitRefresh(opts.DeviceCtx, snapsups); ok {
+	if essential, nonEssential, ok := canSplitRefresh(opts.DeviceCtx, updates); ok {
 		// if we're putting all of the snaps in the same lane, create the lane
 		// now so that it can be shared between the essential and non-essential
 		// sets
@@ -1054,107 +1018,69 @@ func doPotentiallySplitUpdate(st *state.State, requested []string, snapsups []Sn
 			opts.Flags.Lane = st.NewLane()
 		}
 
-		updateFunc := func(updates []SnapSetup) ([]string, *UpdateTaskSets, error) {
-			states := make(map[string]SnapState, len(updates))
-			comps := make(map[string][]ComponentSetup, len(updates))
-			for _, up := range updates {
-				states[up.InstanceName()] = snapstates[up.InstanceName()]
-				comps[up.InstanceName()] = components[up.InstanceName()]
-			}
-
+		updateFunc := func(updates []update) ([]string, bool, *UpdateTaskSets, error) {
 			// names are used to determine if the refresh is general, if it was
 			// requested for a snap to update aliases and if it should be
 			// reported so it's fine to pass them all into each call (extra are
 			// ignored)
-			return doUpdate(st, requested, updates, states, comps, opts)
+			return doUpdate(st, requested, updates, opts)
 		}
 
 		// splitRefresh already creates a check-rerefresh task as needed
 		return splitRefresh(st, essential, nonEssential, opts.UserID, &opts.Flags, updateFunc)
 	}
 
-	updated, uts, err := doUpdate(st, requested, snapsups, snapstates, components, opts)
+	updated, rerefresh, uts, err := doUpdate(st, requested, updates, opts)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// if there are only pre-downloads, don't add a check-rerefresh task
 	if len(uts.Refresh) > 0 {
-		uts.Refresh = finalizeUpdate(st, uts.Refresh, len(snapsups) > 0, updated, nil, opts.UserID, &opts.Flags)
+		uts.Refresh = finalizeUpdate(st, uts.Refresh, rerefresh, updated, nil, opts.UserID, &opts.Flags)
 	}
 
 	return updated, uts, nil
 }
 
-func switchSnapMetadataTasks(st *state.State, snapst *SnapState, revOpts RevisionOptions, opts Options) ([]*state.TaskSet, error) {
-	switchChannel := snapst.TrackingChannel != revOpts.Channel
-	switchCohortKey := snapst.CohortKey != revOpts.CohortKey
+func maybeSwitchSnapMetadataTaskSet(st *state.State, snapsup SnapSetup, snapst SnapState, opts Options) (*state.TaskSet, error) {
+	switchChannel := snapst.TrackingChannel != snapsup.Channel
+	switchCohortKey := snapst.CohortKey != snapsup.CohortKey
 
 	// we only toggle validation set enforcement if we are refreshing exactly
 	// one snap
-	toggleIgnoreValidation := (snapst.IgnoreValidation != opts.Flags.IgnoreValidation) && opts.ExpectOneSnap
+	toggleIgnoreValidation := (snapst.IgnoreValidation != snapsup.IgnoreValidation) && opts.ExpectOneSnap
 
-	var tss []*state.TaskSet
-	if switchChannel || switchCohortKey || toggleIgnoreValidation {
-		if err := checkChangeConflictIgnoringOneChange(st, snapst.InstanceName(), nil, opts.FromChange); err != nil {
-			return nil, err
-		}
-
-		snapsup := &SnapSetup{
-			SideInfo:    snapst.CurrentSideInfo(),
-			Flags:       snapst.ForSnapSetup(),
-			InstanceKey: snapst.InstanceKey,
-			Type:        snap.Type(snapst.SnapType),
-			// no version info needed
-			CohortKey: revOpts.CohortKey,
-		}
-
-		if switchChannel || switchCohortKey {
-			// update the tracked channel and cohort
-			snapsup.Channel = revOpts.Channel
-			snapsup.CohortKey = revOpts.CohortKey
-			// Update the current snap channel as well. This ensures that
-			// the UI displays the right values.
-			snapsup.SideInfo.Channel = revOpts.Channel
-
-			summary := switchSummary(snapsup.InstanceName(), snapst.TrackingChannel, revOpts.Channel, snapst.CohortKey, revOpts.CohortKey)
-			switchSnap := st.NewTask("switch-snap-channel", summary)
-			switchSnap.Set("snap-setup", &snapsup)
-
-			tss = append(tss, state.NewTaskSet(switchSnap))
-		}
-
-		if toggleIgnoreValidation {
-			snapsup.IgnoreValidation = opts.Flags.IgnoreValidation
-			toggle := st.NewTask("toggle-snap-flags", fmt.Sprintf(i18n.G("Toggle snap %q flags"), snapsup.InstanceName()))
-			toggle.Set("snap-setup", &snapsup)
-
-			toggleTs := state.NewTaskSet(toggle)
-			for _, ts := range tss {
-				toggleTs.WaitAll(ts)
-			}
-
-			tss = append(tss, toggleTs)
-		}
-
-		currentInfo, err := snapst.CurrentInfo()
-		if err != nil {
-			return nil, err
-		}
-
-		// if there isn't an update available, then we should still add the
-		// current info to the prereq tracker. this is because we will not
-		// return an error from this function, and the caller will assume
-		// everything worked.
-		addPrereq(opts.PrereqTracker, currentInfo)
+	// nothing to do, we can leave early
+	if !switchChannel && !switchCohortKey && !toggleIgnoreValidation {
+		return nil, nil
 	}
 
-	lane := generateLane(st, opts)
-	for _, ts := range tss {
-		ts.JoinLane(lane)
+	var tasks []*state.Task
+	if err := checkChangeConflictIgnoringOneChange(st, snapst.InstanceName(), nil, opts.FromChange); err != nil {
+		return nil, err
 	}
 
-	return tss, nil
+	if switchChannel || switchCohortKey {
+		summary := switchSummary(snapsup.InstanceName(), snapst.TrackingChannel, snapsup.Channel, snapst.CohortKey, snapsup.CohortKey)
+		switchSnap := st.NewTask("switch-snap-channel", summary)
+		switchSnap.Set("snap-setup", &snapsup)
+
+		tasks = append(tasks, switchSnap)
+	}
+
+	if toggleIgnoreValidation {
+		toggle := st.NewTask("toggle-snap-flags", fmt.Sprintf(i18n.G("Toggle snap %q flags"), snapsup.InstanceName()))
+		toggle.Set("snap-setup", &snapsup)
+
+		for _, tasks := range tasks {
+			toggle.WaitFor(tasks)
+		}
+
+		tasks = append(tasks, toggle)
+	}
+
+	return state.NewTaskSet(tasks...), nil
 }
 
 func filterHeldSnapsInSummary(st *state.State, summary *UpdateSummary, isAutoRefresh bool) error {
@@ -1367,10 +1293,29 @@ func (p *pathUpdateGoal) toUpdate(_ context.Context, st *state.State, opts Optio
 		names = append(names, sn.InstanceName)
 	}
 
+	for snapst, revOpts := range noUpdates {
+		info, err := snapst.CurrentInfo()
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+
+		// TODO: handle components here
+
+		targets = append(targets, target{
+			info:   info,
+			snapst: *snapst,
+			setup: SnapSetup{
+				Channel:   revOpts.Channel,
+				CohortKey: revOpts.CohortKey,
+				SnapPath:  info.MountFile(),
+			},
+			components: nil,
+		})
+	}
+
 	return UpdateSummary{
-		Targets:            targets,
-		Requested:          names,
-		UpdateNotAvailable: noUpdates,
+		Targets:   targets,
+		Requested: names,
 	}, nil
 }
 

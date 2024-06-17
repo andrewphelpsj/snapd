@@ -38,6 +38,7 @@ type (
 	ManagerBackend managerBackend
 
 	MinimalInstallInfo  = minimalInstallInfo
+	SnapUpdate          = update
 	InstallSnapInfo     = installSnapInfo
 	ByType              = byType
 	DirMigrationOptions = dirMigrationOptions
@@ -574,7 +575,7 @@ func SetPreseed(snapmgr *SnapManager, value bool) {
 	snapmgr.preseed = value
 }
 
-func SplitEssentialUpdates(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, nonEssential []SnapSetup) {
+func SplitEssentialUpdates(deviceCtx DeviceContext, snapsups []update) (essential, nonEssential []update) {
 	return splitEssentialUpdates(deviceCtx, snapsups)
 }
 

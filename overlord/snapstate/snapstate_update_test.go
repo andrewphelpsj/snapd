@@ -2998,8 +2998,16 @@ func (s *snapmgrTestSuite) TestUpdateSameRevisionSwitchChannelRunThrough(c *C) {
 	err = task.Get("snap-setup", &snapsup)
 	c.Assert(err, IsNil)
 	c.Assert(snapsup, DeepEquals, snapstate.SnapSetup{
-		Channel:  "channel-for-7/stable",
-		SideInfo: snapsup.SideInfo,
+		Channel:   "channel-for-7/stable",
+		UserID:    s.user.ID,
+		Type:      "app",
+		PlugsOnly: true,
+		Version:   "some-snapVer",
+		SideInfo:  snapsup.SideInfo,
+		Flags: snapstate.Flags{
+			Transaction: client.TransactionPerSnap,
+		},
+		SnapPath: filepath.Join(dirs.SnapBlobDir, "some-snap_7.snap"),
 	})
 	c.Assert(snapsup.SideInfo, DeepEquals, &snap.SideInfo{
 		RealName: "some-snap",
@@ -3105,16 +3113,23 @@ func (s *snapmgrTestSuite) TestUpdateSameRevisionToggleIgnoreValidationRunThroug
 	err = task.Get("snap-setup", &snapsup)
 	c.Assert(err, IsNil)
 	c.Check(snapsup, DeepEquals, snapstate.SnapSetup{
-		SideInfo: snapsup.SideInfo,
+		SideInfo:  snapsup.SideInfo,
+		Channel:   "channel-for-7/stable",
+		UserID:    s.user.ID,
+		Type:      "app",
+		PlugsOnly: true,
+		Version:   "some-snapVer",
 		Flags: snapstate.Flags{
 			IgnoreValidation: true,
+			Transaction:      client.TransactionPerSnap,
 		},
+		SnapPath: filepath.Join(dirs.SnapBlobDir, "some-snap_7.snap"),
 	})
 	c.Check(snapsup.SideInfo, DeepEquals, &snap.SideInfo{
 		RealName: "some-snap",
 		SnapID:   "some-snap-id",
 		Revision: snap.R(7),
-		Channel:  "channel-for-7",
+		Channel:  "channel-for-7/stable",
 	})
 
 	// verify snaps in the system state
@@ -4339,12 +4354,12 @@ func (s *snapmgrTestSuite) TestUpdateWithDeviceContextSameRevisionSwitchesChanne
 
 	ts, err := snapstate.UpdateWithDeviceContext(s.state, "some-snap", &snapstate.RevisionOptions{Channel: "channel-for-7/stable"}, s.user.ID, snapstate.Flags{}, prqt, nil, "")
 	c.Assert(err, IsNil)
-	c.Check(ts.Tasks(), HasLen, 1)
+	c.Check(ts.Tasks(), HasLen, 1, Commentf("%v", taskKinds(ts.Tasks())))
 	c.Check(ts.Tasks()[0].Kind(), Equals, "switch-snap-channel")
 
 	c.Assert(prqt.infos, HasLen, 1)
 	c.Check(prqt.infos[0].SnapName(), Equals, "some-snap")
-	c.Check(prqt.missingProviderContentTagsCalls, Equals, 0)
+	c.Check(prqt.missingProviderContentTagsCalls, Equals, 1)
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithDeviceContext(c *C) {
@@ -5251,6 +5266,144 @@ func (s *snapmgrTestSuite) TestUpdateManyDevMode(c *C) {
 	updates, _, err := snapstate.UpdateMany(context.Background(), s.state, []string{"some-snap"}, nil, 0, nil)
 	c.Assert(err, IsNil)
 	c.Check(updates, HasLen, 1)
+}
+
+func (s *snapmgrTestSuite) TestUpdateManyOneSwitchesChannel(c *C) {
+	sideInfos := []snap.SideInfo{
+		{
+			RealName: "some-snap",
+			Revision: snap.R(7),
+			SnapID:   "some-snap-id",
+		},
+		{
+			RealName: "some-other-snap",
+			Revision: snap.R(1),
+			SnapID:   "some-other-snap-id",
+		},
+	}
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	updates := make([]snapstate.StoreUpdate, 0, len(sideInfos))
+	for _, si := range sideInfos {
+		snaptest.MockSnap(c, fmt.Sprintf("name: %s", si.RealName), &si)
+		snapstate.Set(s.state, si.RealName, &snapstate.SnapState{
+			Active:          true,
+			Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&si}),
+			Current:         si.Revision,
+			SnapType:        "app",
+			TrackingChannel: "latest/stable",
+		})
+
+		// for some-snap, we're going to switch to a different channel
+		var channel string
+		if si.RealName == "some-snap" {
+			channel = "channel-for-7/stable"
+		}
+
+		updates = append(updates, snapstate.StoreUpdate{
+			InstanceName: si.RealName,
+			RevOpts: snapstate.RevisionOptions{
+				Channel: channel,
+			},
+		})
+	}
+
+	goal := snapstate.StoreUpdateGoal(updates...)
+	names, uts, err := snapstate.UpdateWithGoal(context.Background(), s.state, goal, nil, snapstate.Options{})
+	c.Assert(err, IsNil)
+	c.Assert(uts.Refresh, HasLen, 3)
+
+	c.Assert(names, testutil.DeepUnsortedMatches, []string{"some-snap", "some-other-snap"})
+
+	verifyLastTasksetIsReRefresh(c, uts.Refresh)
+	c.Assert(uts.Refresh[1].Tasks(), HasLen, 1)
+
+	switchTask := uts.Refresh[1].Tasks()[0]
+	c.Check(switchTask.Kind(), Equals, "switch-snap-channel")
+}
+
+func (s *snapmgrTestSuite) TestUpdateManyOneSwitchesChannelWithAutoAlias(c *C) {
+	sideInfos := []snap.SideInfo{
+		{
+			RealName: "alias-snap",
+			Revision: snap.R(11),
+			SnapID:   "alias-snap-id",
+		},
+		{
+			RealName: "some-other-snap",
+			Revision: snap.R(1),
+			SnapID:   "some-other-snap-id",
+		},
+	}
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	n := 0
+	snapstate.AutoAliases = func(st *state.State, info *snap.Info) (map[string]string, error) {
+		if info.InstanceName() == "alias-snap" {
+			if n > 0 {
+				return map[string]string{
+					"alias1": "cmd1",
+					"alias2": "cmd2",
+				}, nil
+			}
+			n++
+		}
+		return nil, nil
+	}
+
+	updates := make([]snapstate.StoreUpdate, 0, len(sideInfos))
+	for _, si := range sideInfos {
+		snaptest.MockSnap(c, fmt.Sprintf("name: %s", si.RealName), &si)
+		snapstate.Set(s.state, si.RealName, &snapstate.SnapState{
+			Active:          true,
+			Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&si}),
+			Current:         si.Revision,
+			SnapType:        "app",
+			TrackingChannel: "latest/stable",
+		})
+
+		// for alias-snap, we're going to switch to a different channel
+		var channel string
+		if si.RealName == "alias-snap" {
+			channel = "latest/candidate"
+		}
+
+		updates = append(updates, snapstate.StoreUpdate{
+			InstanceName: si.RealName,
+			RevOpts: snapstate.RevisionOptions{
+				Channel: channel,
+			},
+		})
+	}
+
+	s.state.Set("aliases", map[string]map[string]string{
+		"alias-snap": {
+			"alias1": "auto",
+		},
+	})
+
+	s.state.Unlock()
+	err := s.snapmgr.Ensure()
+	s.state.Lock()
+	c.Assert(err, IsNil)
+
+	goal := snapstate.StoreUpdateGoal(updates...)
+	names, uts, err := snapstate.UpdateWithGoal(context.Background(), s.state, goal, nil, snapstate.Options{})
+	c.Assert(err, IsNil)
+	// switch channel task set, refresh task set, auto alias task set, and
+	// rerefresh task set
+	c.Assert(uts.Refresh, HasLen, 4)
+	c.Assert(names, testutil.DeepUnsortedMatches, []string{"alias-snap", "some-other-snap"})
+
+	verifyLastTasksetIsReRefresh(c, uts.Refresh)
+
+	switchTask := uts.Refresh[2].Tasks()[0]
+	c.Assert(switchTask.Kind(), Equals, "switch-snap-channel")
+	c.Assert(taskKinds(uts.Refresh[1].Tasks()), DeepEquals, []string{"refresh-aliases"})
 }
 
 func (s *snapmgrTestSuite) TestUpdateAllDevMode(c *C) {
@@ -12976,10 +13129,10 @@ func (s *snapmgrTestSuite) TestSplitRefreshUsesSameTransaction(c *C) {
 }
 
 func (s *snapmgrTestSuite) TestSplitEssentialSnapUpdates(c *C) {
-	snapsupsToNames := func(snapsups []snapstate.SnapSetup) []string {
-		names := make([]string, 0, len(snapsups))
-		for _, info := range snapsups {
-			names = append(names, info.InstanceName())
+	updatesToNames := func(updates []snapstate.SnapUpdate) []string {
+		names := make([]string, 0, len(updates))
+		for _, up := range updates {
+			names = append(names, up.Setup.InstanceName())
 		}
 		return names
 	}
@@ -13036,19 +13189,21 @@ func (s *snapmgrTestSuite) TestSplitEssentialSnapUpdates(c *C) {
 	}
 
 	for _, tc := range tcs {
-		updates := make([]snapstate.SnapSetup, 0, len(tc.snaps))
+		updates := make([]snapstate.SnapUpdate, 0, len(tc.snaps))
 		for _, sn := range tc.snaps {
-			updates = append(updates, snapstate.SnapSetup{
-				SideInfo: &snap.SideInfo{RealName: sn, Revision: snap.R(1), SnapID: sn + "-id"},
-				Type:     snap.Type(types[sn]),
-				Base:     tc.bases[sn],
+			updates = append(updates, snapstate.SnapUpdate{
+				Setup: snapstate.SnapSetup{
+					SideInfo: &snap.SideInfo{RealName: sn, Revision: snap.R(1), SnapID: sn + "-id"},
+					Type:     snap.Type(types[sn]),
+					Base:     tc.bases[sn],
+				},
 			})
 		}
 
 		ctx := &snapstatetest.TrivialDeviceContext{DeviceModel: ModelWithBase(tc.modelBase)}
 		essential, nonEssential := snapstate.SplitEssentialUpdates(ctx, updates)
-		c.Assert(snapsupsToNames(essential), testutil.DeepUnsortedMatches, tc.essentialSnaps)
-		c.Assert(snapsupsToNames(nonEssential), testutil.DeepUnsortedMatches, tc.nonEssentialSnaps)
+		c.Assert(updatesToNames(essential), testutil.DeepUnsortedMatches, tc.essentialSnaps)
+		c.Assert(updatesToNames(nonEssential), testutil.DeepUnsortedMatches, tc.nonEssentialSnaps)
 	}
 }
 

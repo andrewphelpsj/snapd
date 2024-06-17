@@ -1829,12 +1829,12 @@ func updateManyFiltered(ctx context.Context, st *state.State, names []string, re
 // canSplitRefresh returns whether the refresh is a standard refresh of a mix
 // of essential and non-essential snaps on a hybrid system. If the refresh
 // can be split, it also returns the two split update groups.
-func canSplitRefresh(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, nonEssential []SnapSetup, split bool) {
+func canSplitRefresh(deviceCtx DeviceContext, updates []update) (essential, nonEssential []update, split bool) {
 	if !deviceCtx.IsCoreBoot() || !release.OnClassic {
 		return nil, nil, false
 	}
 
-	essential, nonEssential = splitEssentialUpdates(deviceCtx, snapsups)
+	essential, nonEssential = splitEssentialUpdates(deviceCtx, updates)
 	if len(essential) == 0 || len(nonEssential) == 0 {
 		return nil, nil, false
 	}
@@ -1846,15 +1846,15 @@ func canSplitRefresh(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, 
 // non-essential snaps, so that the latter can refresh independently without
 // waiting for the reboot that the essential snaps require. The only cross-set
 // dependency is snapd which, if present, must refresh before all other snaps.
-func splitRefresh(st *state.State, essential, nonEssential []SnapSetup, userID int, flags *Flags, updateFunc func([]SnapSetup) ([]string, *UpdateTaskSets, error)) ([]string, *UpdateTaskSets, error) {
+func splitRefresh(st *state.State, essential, nonEssential []update, userID int, flags *Flags, updateFunc func([]update) ([]string, bool, *UpdateTaskSets, error)) ([]string, *UpdateTaskSets, error) {
 	// taskset with essential snaps (snapd, kernel, gadget and the model base)
-	essentialUpdated, essentialTss, err := updateFunc(essential)
+	essentialUpdated, _, essentialTss, err := updateFunc(essential)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// taskset with non-essential snaps (apps and their bases)
-	nonEssentialUpdated, nonEssentialTss, err := updateFunc(nonEssential)
+	nonEssentialUpdated, nonEssentialReRefresh, nonEssentialTss, err := updateFunc(nonEssential)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1895,7 +1895,7 @@ func splitRefresh(st *state.State, essential, nonEssential []SnapSetup, userID i
 			}
 		}
 
-		nonEssentialTss.Refresh = finalizeUpdate(st, nonEssentialTss.Refresh, len(nonEssentialUpdated) > 0, nonEssentialUpdated, considerTasks, userID, flags)
+		nonEssentialTss.Refresh = finalizeUpdate(st, nonEssentialTss.Refresh, nonEssentialReRefresh, nonEssentialUpdated, considerTasks, userID, flags)
 	}
 
 	return allUpdated, &UpdateTaskSets{
@@ -1957,15 +1957,23 @@ type UpdateTaskSets struct {
 	Refresh []*state.TaskSet
 }
 
-func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapstates map[string]SnapState, components map[string][]ComponentSetup, opts Options) ([]string, *UpdateTaskSets, error) {
-	if len(snapsups) != len(snapstates) {
-		return nil, nil, fmt.Errorf("internal error: snapstates and snapsups must have the same length")
+type update struct {
+	Setup      SnapSetup
+	SnapState  SnapState
+	Components []ComponentSetup
+}
+
+func (u *update) satisfied() bool {
+	if !u.SnapState.IsInstalled() {
+		return false
 	}
 
-	if components == nil {
-		components = make(map[string][]ComponentSetup)
-	}
+	// TODO: check that we need change the state of components
 
+	return u.SnapState.Current == u.Setup.Revision()
+}
+
+func doUpdate(st *state.State, requested []string, updates []update, opts Options) ([]string, bool, *UpdateTaskSets, error) {
 	var installTasksets []*state.TaskSet
 	var preDlTasksets []*state.TaskSet
 
@@ -1979,17 +1987,12 @@ func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapsta
 		}
 	}
 
-	updateNames := make([]string, 0, len(snapsups))
-	for _, up := range snapsups {
-		updateNames = append(updateNames, up.InstanceName())
-	}
-
-	newAutoAliases, mustPruneAutoAliases, transferTargets, err := autoAliasesUpdate(st, requested, updateNames)
+	newAutoAliases, mustPruneAutoAliases, transferTargets, err := autoAliasesUpdate(st, requested, updates)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 
-	reportUpdated := make(map[string]bool, len(snapsups))
+	reportUpdated := make(map[string]bool, len(updates))
 	var pruningAutoAliasesTs *state.TaskSet
 
 	if len(mustPruneAutoAliases) != 0 {
@@ -2000,7 +2003,7 @@ func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapsta
 			}
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, false, nil, err
 		}
 		installTasksets = append(installTasksets, pruningAutoAliasesTs)
 	}
@@ -2014,27 +2017,41 @@ func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapsta
 	}
 
 	// first snapd, core, kernel, bases, then rest
-	sort.SliceStable(snapsups, func(i, j int) bool {
-		return snapsups[i].Type.SortsBefore(snapsups[j].Type)
+	sort.SliceStable(updates, func(i, j int) bool {
+		return updates[i].Setup.Type.SortsBefore(updates[j].Setup.Type)
 	})
 
 	if opts.Flags.Transaction == client.TransactionAllSnaps && opts.Flags.Lane == 0 {
 		opts.Flags.Lane = st.NewLane()
 	}
 
+	// some snaps might not have a revision change, we'll keep track of those
+	// and check to see if we need to switch any metadata, like channel or
+	// cohort
+	var alreadySatisfied []update
+
+	// keep track of any snaps that we requested to refresh actually got
+	// refreshed. if any do, tell the caller that we need to re-refresh
+	needsRerefresh := false
+
 	// updates is sorted by kind so this will process first core
 	// and bases and then other snaps
-	for _, snapsup := range snapsups {
-		snapst, ok := snapstates[snapsup.InstanceName()]
-		if !ok {
-			return nil, nil, fmt.Errorf("internal error: missing snap state for %q", snapsup.InstanceName())
+	for _, up := range updates {
+		// if there isn't a revision change, then there isn't anything for
+		// doInstall to do
+		// TODO: confirm that this means there shouldn't be any component
+		// changes either
+		if up.satisfied() {
+			alreadySatisfied = append(alreadySatisfied, up)
+			continue
 		}
 
-		compsups := components[snapsup.InstanceName()]
+		// if any snaps actually get a revision change, we need to re-refresh
+		needsRerefresh = true
 
 		// Do not set any default restart boundaries, we do it when we have access to all
 		// the task-sets in preparation for single-reboot.
-		ts, err := doInstall(st, &snapst, snapsup, compsups, noRestartBoundaries, opts.FromChange, inUseFor(opts.DeviceCtx))
+		ts, err := doInstall(st, &up.SnapState, up.Setup, up.Components, noRestartBoundaries, opts.FromChange, inUseFor(opts.DeviceCtx))
 		if err != nil {
 			if errors.Is(err, &timedBusySnapError{}) && ts != nil {
 				// snap is busy and pre-download tasks were made for it
@@ -2044,30 +2061,50 @@ func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapsta
 			}
 
 			if refreshAll {
-				logger.Noticef("cannot refresh snap %q: %v", snapsup.InstanceName(), err)
+				logger.Noticef("cannot refresh snap %q: %v", up.Setup.InstanceName(), err)
 				continue
 			}
-			return nil, nil, err
+			return nil, false, nil, err
 		}
 
 		ts.JoinLane(generateLane(st, opts))
 
-		scheduleUpdate(snapsup.InstanceName(), ts)
+		scheduleUpdate(up.Setup.InstanceName(), ts)
 		installTasksets = append(installTasksets, ts)
 	}
 
 	// Make sure each of them are marked with default restart-boundaries to maintain the previous
 	// reboot-behaviour prior to new restart logic.
 	if err := arrangeSnapTaskSetsLinkageAndRestart(st, nil, installTasksets); err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 
 	if len(newAutoAliases) != 0 {
 		addAutoAliasesTs, err := applyAutoAliasesDelta(st, newAutoAliases, "refresh", refreshAll, opts.FromChange, scheduleUpdate)
 		if err != nil {
-			return nil, nil, err
+			return nil, false, nil, err
 		}
 		installTasksets = append(installTasksets, addAutoAliasesTs)
+	}
+
+	for _, up := range alreadySatisfied {
+		switchTs, err := maybeSwitchSnapMetadataTaskSet(st, up.Setup, up.SnapState, opts)
+		if err != nil {
+			return nil, false, nil, err
+		}
+
+		// nothing to do, we can skip this one
+		if switchTs == nil {
+			continue
+		}
+
+		for _, ts := range installTasksets {
+			switchTs.WaitAll(ts)
+		}
+
+		switchTs.JoinLane(generateLane(st, opts))
+		installTasksets = append(installTasksets, switchTs)
+		reportUpdated[up.Setup.InstanceName()] = true
 	}
 
 	updated := make([]string, 0, len(reportUpdated))
@@ -2080,26 +2117,26 @@ func doUpdate(st *state.State, requested []string, snapsups []SnapSetup, snapsta
 		PreDownload: preDlTasksets,
 	}
 
-	return updated, updateTss, nil
+	return updated, needsRerefresh, updateTss, nil
 }
 
-func splitEssentialUpdates(deviceCtx DeviceContext, snapsups []SnapSetup) (essential, nonEssential []SnapSetup) {
-	snapdAndModelBase := make([]SnapSetup, 0, 2)
-	for _, sn := range snapsups {
-		switch sn.Type {
+func splitEssentialUpdates(deviceCtx DeviceContext, updates []update) (essential, nonEssential []update) {
+	snapdAndModelBase := make([]update, 0, 2)
+	for _, up := range updates {
+		switch up.Setup.Type {
 		case snap.TypeSnapd:
-			snapdAndModelBase = append(snapdAndModelBase, sn)
+			snapdAndModelBase = append(snapdAndModelBase, up)
 		case snap.TypeBase:
-			if sn.InstanceName() == deviceCtx.Base() {
-				snapdAndModelBase = append(snapdAndModelBase, sn)
+			if up.Setup.InstanceName() == deviceCtx.Base() {
+				snapdAndModelBase = append(snapdAndModelBase, up)
 			} else {
-				nonEssential = append(nonEssential, sn)
+				nonEssential = append(nonEssential, up)
 			}
 		case snap.TypeGadget, snap.TypeKernel:
 			// snaps that require a reboot
-			essential = append(essential, sn)
+			essential = append(essential, up)
 		default:
-			nonEssential = append(nonEssential, sn)
+			nonEssential = append(nonEssential, up)
 		}
 	}
 
@@ -2187,10 +2224,10 @@ func applyAutoAliasesDelta(st *state.State, delta map[string][]string, op string
 	return applyTs, nil
 }
 
-func autoAliasesUpdate(st *state.State, requestedUpdates []string, updateNames []string) (changed map[string][]string, mustPrune map[string][]string, transferTargets map[string]bool, err error) {
+func autoAliasesUpdate(st *state.State, requested []string, updates []update) (changed map[string][]string, mustPrune map[string][]string, transferTargets map[string]bool, err error) {
 	changed, dropped, err := autoAliasesDelta(st, nil)
 	if err != nil {
-		if len(requestedUpdates) != 0 {
+		if len(requested) != 0 {
 			// not "refresh all", error
 			return nil, nil, nil, err
 		}
@@ -2198,7 +2235,7 @@ func autoAliasesUpdate(st *state.State, requestedUpdates []string, updateNames [
 		logger.Noticef("cannot find the delta for automatic aliases for some snaps: %v", err)
 	}
 
-	refreshAll := len(requestedUpdates) == 0
+	refreshAll := len(requested) == 0
 
 	// dropped alias -> snapName
 	droppedAliases := make(map[string][]string, len(dropped))
@@ -2212,7 +2249,7 @@ func autoAliasesUpdate(st *state.State, requestedUpdates []string, updateNames [
 	// we add auto-aliases only for mentioned snaps
 	if !refreshAll && len(changed) != 0 {
 		filteredChanged := make(map[string][]string, len(changed))
-		for _, name := range requestedUpdates {
+		for _, name := range requested {
 			if changed[name] != nil {
 				filteredChanged[name] = changed[name]
 			}
@@ -2235,9 +2272,9 @@ func autoAliasesUpdate(st *state.State, requestedUpdates []string, updateNames [
 	}
 
 	// snaps with updates
-	updating := make(map[string]bool, len(updateNames))
-	for _, name := range updateNames {
-		updating[name] = true
+	updating := make(map[string]bool, len(updates))
+	for _, up := range updates {
+		updating[up.Setup.InstanceName()] = !up.satisfied()
 	}
 
 	// add explicitly auto-aliases only for snaps that are not updated
@@ -2260,7 +2297,7 @@ func autoAliasesUpdate(st *state.State, requestedUpdates []string, updateNames [
 			}
 		}
 	} else {
-		for _, name := range requestedUpdates {
+		for _, name := range requested {
 			if !updating[name] && dropped[name] != nil {
 				mustPrune[name] = dropped[name]
 			}
@@ -2746,7 +2783,7 @@ func autoRefreshPhase1(ctx context.Context, st *state.State, forGatingSnap strin
 }
 
 // autoRefreshPhase2 creates tasks for refreshing snaps from updates.
-func autoRefreshPhase2(st *state.State, updates []*refreshCandidate, flags *Flags, fromChange string) (*UpdateTaskSets, error) {
+func autoRefreshPhase2(st *state.State, candidates []*refreshCandidate, flags *Flags, fromChange string) (*UpdateTaskSets, error) {
 	if flags == nil {
 		flags = &Flags{}
 	}
@@ -2761,27 +2798,28 @@ func autoRefreshPhase2(st *state.State, updates []*refreshCandidate, flags *Flag
 		return nil, err
 	}
 
-	snapsups := make([]SnapSetup, 0, len(updates))
-	snapstates := make(map[string]SnapState, len(updates))
-	toUpdate := make([]minimalInstallInfo, 0, len(updates))
-	for _, up := range updates {
+	updates := make([]update, 0, len(candidates))
+	installInfos := make([]minimalInstallInfo, 0, len(candidates))
+	for _, up := range candidates {
 		snapsup, snapst, err := up.SnapSetupForUpdate(st, nil, 0, flags, nil)
 		if err != nil {
 			logger.Noticef("cannot update %q: %v", up.InstanceName(), err)
 			continue
 		}
 
-		snapsups = append(snapsups, *snapsup)
-		snapstates[up.InstanceName()] = *snapst
-		toUpdate = append(toUpdate, up)
+		updates = append(updates, update{
+			Setup:     *snapsup,
+			SnapState: *snapst,
+		})
+		installInfos = append(installInfos, up)
 	}
 
-	if err := checkDiskSpace(st, "refresh", toUpdate, 0, nil); err != nil {
+	if err := checkDiskSpace(st, "refresh", installInfos, 0, nil); err != nil {
 		return nil, err
 	}
 
 	const userID = 0
-	_, updateTss, err := doPotentiallySplitUpdate(st, nil, snapsups, snapstates, nil, Options{
+	_, updateTss, err := doPotentiallySplitUpdate(st, nil, updates, Options{
 		Flags:      *flags,
 		UserID:     userID,
 		FromChange: fromChange,
