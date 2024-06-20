@@ -3562,7 +3562,7 @@ func (s *snapmgrTestSuite) TestParallelInstanceUpdateIgnoreValidationSticky(c *C
 						InstanceName: "some-snap_instance",
 						SnapID:       "some-snap-id",
 						Channel:      "latest/stable",
-						Flags:        store.SnapActionEnforceValidation,
+						Flags:        store.SnapActionIgnoreValidation,
 					},
 					userID: 1,
 				})
