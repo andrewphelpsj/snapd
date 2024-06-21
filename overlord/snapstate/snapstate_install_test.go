@@ -5114,6 +5114,7 @@ func (s *snapmgrTestSuite) testRetainCorrectNumRevisions(c *C, installFn install
 	defer s.state.Unlock()
 
 	si := &snap.SideInfo{
+		Channel:  "latest/stable",
 		RealName: "some-snap",
 		SnapID:   "some-snap-id",
 		Revision: snap.R(1),

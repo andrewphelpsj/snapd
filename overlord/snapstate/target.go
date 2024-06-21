@@ -120,6 +120,7 @@ func (t *target) setups(st *state.State, opts Options) (SnapSetup, []ComponentSe
 		CohortKey:    t.setup.CohortKey,
 		DownloadInfo: t.setup.DownloadInfo,
 		SnapPath:     t.setup.SnapPath,
+		AlwaysUpdate: t.setup.AlwaysUpdate,
 
 		Base:               t.info.Base,
 		Prereq:             getKeys(providerContentAttrs),

@@ -1019,7 +1019,7 @@ func storeUpdateSummary(
 		// TODO: handle components here
 
 		// make sure that we switch the current channel of the snap that we're
-		// switch to
+		// switching to
 		info.Channel = revOpts.Channel
 
 		summary.Targets = append(summary.Targets, target{
@@ -1029,6 +1029,12 @@ func storeUpdateSummary(
 				Channel:   revOpts.Channel,
 				CohortKey: revOpts.CohortKey,
 				SnapPath:  info.MountFile(),
+
+				// if the caller specified a revision, then we always run
+				// through the entire update process. this enables something
+				// like "snap refresh --revision=n", where revision n is already
+				// installed
+				AlwaysUpdate: !revOpts.Revision.Unset(),
 			},
 			components: nil,
 		})

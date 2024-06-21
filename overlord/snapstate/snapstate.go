@@ -1964,7 +1964,7 @@ type update struct {
 }
 
 func (u *update) satisfied() bool {
-	if !u.SnapState.IsInstalled() {
+	if u.Setup.AlwaysUpdate || !u.SnapState.IsInstalled() {
 		return false
 	}
 
@@ -2037,10 +2037,7 @@ func doUpdate(st *state.State, requested []string, updates []update, opts Option
 	// updates is sorted by kind so this will process first core
 	// and bases and then other snaps
 	for _, up := range updates {
-		// if there isn't a revision change, then there isn't anything for
-		// doInstall to do
-		// TODO: confirm that this means there shouldn't be any component
-		// changes either
+		// if the update is already satisfied, then we can skip it
 		if up.satisfied() {
 			alreadySatisfied = append(alreadySatisfied, up)
 			continue
