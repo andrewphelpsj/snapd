@@ -574,6 +574,28 @@ func doInstall(st *state.State, snapst *SnapState, snapsup SnapSetup, compsups [
 		addTask(preRefreshHook)
 	}
 
+	var tasksAfterLinkSnap []*state.Task
+	var tasksBeforeCurrentUnlink []*state.Task
+	for _, compsup := range compsups {
+		compTaskSet, err := doInstallComponent(st, snapst, &compsup, &snapsup, componentInstallFlags{
+			// if we are removing the snap, we can assume that we should remove
+			// the component too
+			RemoveComponentPath: snapsup.RemoveSnapPath,
+			SkipSecurity:        true,
+		}, "")
+		if err != nil {
+			return nil, fmt.Errorf("cannot install component %q: %v", compsup.CompSideInfo.Component, err)
+		}
+
+		beforeLink, afterLink, err := componentTasksForInstallWithSnap(compTaskSet)
+		if err != nil {
+			return nil, err
+		}
+
+		tasksBeforeCurrentUnlink = append(tasksBeforeCurrentUnlink, beforeLink...)
+		tasksAfterLinkSnap = append(tasksAfterLinkSnap, afterLink...)
+	}
+
 	if snapst.IsInstalled() {
 		// unlink-current-snap (will stop services for copy-data)
 		stop := st.NewTask("stop-snap-services", fmt.Sprintf(i18n.G("Stop snap %q services"), snapsup.InstanceName()))
@@ -584,9 +606,21 @@ func doInstall(st *state.State, snapst *SnapState, snapsup SnapSetup, compsups [
 		removeAliases.Set("remove-reason", removeAliasesReasonRefresh)
 		addTask(removeAliases)
 
+		// if we're replacing an already installed snaps, make sure that we do
+		// some of the component tasks, up to unlinking the current components,
+		// before we unlink the current snap. this makes sure that undos happen
+		// in the right order
+		for _, t := range tasksBeforeCurrentUnlink {
+			addTask(t)
+		}
+
 		unlink := st.NewTask("unlink-current-snap", fmt.Sprintf(i18n.G("Make current revision for snap %q unavailable"), snapsup.InstanceName()))
 		unlink.Set("unlink-reason", unlinkReasonRefresh)
 		addTask(unlink)
+	} else {
+		for _, t := range tasksBeforeCurrentUnlink {
+			addTask(t)
+		}
 	}
 
 	// we need to know some of the characteristics of the device - it is
@@ -624,30 +658,6 @@ func doInstall(st *state.State, snapst *SnapState, snapsup SnapSetup, compsups [
 	if !snapsup.Flags.Revert {
 		copyData := st.NewTask("copy-snap-data", fmt.Sprintf(i18n.G("Copy snap %q data"), snapsup.InstanceName()))
 		addTask(copyData)
-	}
-
-	tasksAfterLinkSnap := make([]*state.Task, 0, len(compsups))
-	for _, compsup := range compsups {
-		compTaskSet, err := doInstallComponent(st, snapst, &compsup, &snapsup, componentInstallFlags{
-			// if we are removing the snap, we can assume that we should remove
-			// the component too
-			RemoveComponentPath: snapsup.RemoveSnapPath,
-			SkipSecurity:        true,
-		}, "")
-		if err != nil {
-			return nil, fmt.Errorf("cannot install component %q: %v", compsup.CompSideInfo.Component, err)
-		}
-
-		beforeLink, afterLink, err := componentTasksForInstallWithSnap(compTaskSet)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, t := range beforeLink {
-			addTask(t)
-		}
-
-		tasksAfterLinkSnap = append(tasksAfterLinkSnap, afterLink...)
 	}
 
 	// security

@@ -100,19 +100,7 @@ func expectedDoInstallTasks(typ snap.Type, opts, discards int, startTasks []stri
 			"stop-snap-services",
 			"remove-aliases",
 		)
-		expected = append(expected, "unlink-current-snap")
 	}
-	if opts&updatesGadgetAssets != 0 && opts&needsKernelSetup != 0 {
-		expected = append(expected, "prepare-kernel-snap")
-	}
-	if opts&(updatesGadget|updatesGadgetAssets) != 0 {
-		expected = append(expected, "update-gadget-assets")
-	}
-	if opts&updatesGadget != 0 {
-		expected = append(expected, "update-gadget-cmdline")
-	}
-
-	expected = append(expected, "copy-snap-data")
 
 	afterLinkSnap := make([]string, 0, len(components))
 	for range components {
@@ -132,6 +120,21 @@ func expectedDoInstallTasks(typ snap.Type, opts, discards int, startTasks []stri
 			expected = append(expected, t)
 		}
 	}
+
+	if opts&unlinkBefore != 0 {
+		expected = append(expected, "unlink-current-snap")
+	}
+	if opts&updatesGadgetAssets != 0 && opts&needsKernelSetup != 0 {
+		expected = append(expected, "prepare-kernel-snap")
+	}
+	if opts&(updatesGadget|updatesGadgetAssets) != 0 {
+		expected = append(expected, "update-gadget-assets")
+	}
+	if opts&updatesGadget != 0 {
+		expected = append(expected, "update-gadget-cmdline")
+	}
+
+	expected = append(expected, "copy-snap-data")
 
 	expected = append(expected, "setup-profiles", "link-snap")
 	expected = append(expected, afterLinkSnap...)
@@ -6228,6 +6231,14 @@ func undoInstallOps(snapName, instanceName string, snapRevision snap.Revision, c
 		op:    "setup-profiles:Undoing",
 		name:  instanceName,
 		revno: snapRevision,
+	}, {
+		op:   "undo-copy-snap-data",
+		path: snapMount,
+		old:  oldMount,
+	}, {
+		op:   "undo-setup-snap-save-data",
+		path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
+		old:  oldSaveDir,
 	}}...)
 
 	for i := len(components) - 1; i >= 0; i-- {
@@ -6259,18 +6270,6 @@ func undoInstallOps(snapName, instanceName string, snapRevision snap.Revision, c
 	}
 
 	ops = append(ops, []fakeOp{{
-		op:   "undo-copy-snap-data",
-		path: snapMount,
-		old:  "<no-old>",
-	}, {
-		op:   "undo-setup-snap-save-data",
-		path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
-		old:  "<no-old>",
-	}, {
-		op:   "remove-snap-data-dir",
-		name: instanceName,
-		path: filepath.Join(dirs.SnapDataDir, instanceName),
-	}, {
 		op:    "undo-setup-snap",
 		name:  instanceName,
 		stype: "app",
@@ -6439,13 +6438,6 @@ func (s *snapmgrTestSuite) testInstallComponentsRunThrough(c *C, snapName, insta
 		name:  instanceName,
 		path:  filepath.Join(dirs.SnapBlobDir, snapFileName),
 		revno: snapRevision,
-	}, {
-		op:   "copy-data",
-		path: filepath.Join(dirs.SnapMountDir, filepath.Join(instanceName, snapRevision.String())),
-		old:  "<no-old>",
-	}, {
-		op:   "setup-snap-save-data",
-		path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
 	}}
 
 	// ops for mounting a component (but not yet linking it)
@@ -6488,6 +6480,13 @@ func (s *snapmgrTestSuite) testInstallComponentsRunThrough(c *C, snapName, insta
 	}
 
 	expected = append(expected, []fakeOp{{
+		op:   "copy-data",
+		path: filepath.Join(dirs.SnapMountDir, filepath.Join(instanceName, snapRevision.String())),
+		old:  "<no-old>",
+	}, {
+		op:   "setup-snap-save-data",
+		path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
+	}, {
 		op:    "setup-profiles:Doing",
 		name:  instanceName,
 		revno: snapRevision,
@@ -6726,13 +6725,6 @@ components:
 		name:  instanceName,
 		path:  snapPath,
 		revno: snapRevision,
-	}, {
-		op:   "copy-data",
-		path: filepath.Join(dirs.SnapMountDir, filepath.Join(instanceName, snapRevision.String())),
-		old:  "<no-old>",
-	}, {
-		op:   "setup-snap-save-data",
-		path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
 	}}
 
 	for i, compName := range compNames {
@@ -6757,6 +6749,13 @@ components:
 	}
 
 	expected = append(expected, []fakeOp{{
+		op:   "copy-data",
+		path: filepath.Join(dirs.SnapMountDir, filepath.Join(instanceName, snapRevision.String())),
+		old:  "<no-old>",
+	}, {
+		op:   "setup-snap-save-data",
+		path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
+	}, {
 		op:    "setup-profiles:Doing",
 		name:  instanceName,
 		revno: snapRevision,
