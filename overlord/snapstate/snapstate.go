@@ -104,14 +104,6 @@ type minimalInstallInfo interface {
 	Prereq(st *state.State, prqt PrereqTracker) []string
 }
 
-type updateParamsFunc func(*snap.Info) (*RevisionOptions, Flags, *SnapState)
-
-type readyUpdateInfo interface {
-	minimalInstallInfo
-
-	SnapSetupForUpdate(st *state.State, params updateParamsFunc, userID int, globalFlags *Flags, prqt PrereqTracker) (*SnapSetup, *SnapState, error)
-}
-
 // ByType supports sorting by snap type. The most important types come first.
 type byType []minimalInstallInfo
 
@@ -137,93 +129,6 @@ func (ins installSnapInfo) SnapBase() string {
 func (ins installSnapInfo) Prereq(st *state.State, prqt PrereqTracker) []string {
 	return getKeys(defaultProviderContentAttrs(st, ins.Info, prqt))
 }
-
-func (ins installSnapInfo) SnapSetupForUpdate(st *state.State, params updateParamsFunc, userID int, globalFlags *Flags, prqt PrereqTracker) (*SnapSetup, *SnapState, error) {
-	update := ins.Info
-
-	revnoOpts, flags, snapst := params(update)
-	flags.IsAutoRefresh = globalFlags.IsAutoRefresh
-	flags.IsContinuedAutoRefresh = globalFlags.IsContinuedAutoRefresh
-
-	flags, err := earlyChecks(st, snapst, update, flags)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	snapUserID, err := userIDForSnap(st, snapst, userID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	providerContentAttrs := defaultProviderContentAttrs(st, update, prqt)
-	snapsup := SnapSetup{
-		Base:               update.Base,
-		Prereq:             getKeys(providerContentAttrs),
-		PrereqContentAttrs: providerContentAttrs,
-		Channel:            revnoOpts.Channel,
-		CohortKey:          revnoOpts.CohortKey,
-		UserID:             snapUserID,
-		Flags:              flags.ForSnapSetup(),
-		DownloadInfo:       &update.DownloadInfo,
-		SideInfo:           &update.SideInfo,
-		Type:               update.Type(),
-		Version:            update.Version,
-		PlugsOnly:          len(update.Slots) == 0,
-		InstanceKey:        update.InstanceKey,
-		auxStoreInfo: auxStoreInfo{
-			Media: update.Media,
-			// XXX we store this for the benefit of old snapd
-			Website: update.Website(),
-		},
-		ExpectedProvenance: update.SnapProvenance,
-	}
-	snapsup.IgnoreRunning = globalFlags.IgnoreRunning
-	return &snapsup, snapst, nil
-}
-
-// pathInfo holds information about a path install
-type pathInfo struct {
-	*snap.Info
-	path     string
-	sideInfo *snap.SideInfo
-}
-
-func (i pathInfo) DownloadSize() int64 {
-	return i.Size
-}
-
-// SnapBase returns the base snap of the snap.
-func (i pathInfo) SnapBase() string {
-	return i.Base
-}
-
-func (i pathInfo) Prereq(st *state.State, prqt PrereqTracker) []string {
-	return getKeys(defaultProviderContentAttrs(st, i.Info, prqt))
-}
-
-func (i pathInfo) SnapSetupForUpdate(st *state.State, params updateParamsFunc, _ int, _ *Flags, prqt PrereqTracker) (*SnapSetup, *SnapState, error) {
-	update := i.Info
-
-	_, flags, snapst := params(update)
-
-	providerContentAttrs := defaultProviderContentAttrs(st, update, prqt)
-	snapsup := SnapSetup{
-		Base:               i.Base,
-		Prereq:             getKeys(providerContentAttrs),
-		PrereqContentAttrs: providerContentAttrs,
-		SideInfo:           i.sideInfo,
-		SnapPath:           i.path,
-		Flags:              flags.ForSnapSetup(),
-		Type:               i.Type(),
-		Version:            i.Version,
-		PlugsOnly:          len(i.Slots) == 0,
-		InstanceKey:        i.InstanceKey,
-	}
-	return &snapsup, snapst, nil
-}
-
-// soundness check
-var _ readyUpdateInfo = installSnapInfo{}
 
 // InsufficientSpaceError represents an error where there is not enough disk
 // space to perform an operation.
@@ -1382,14 +1287,6 @@ type PrereqTracker interface {
 	MissingProviderContentTags(info *snap.Info, repo snap.InterfaceRepo) map[string][]string
 }
 
-// addPrereq adds the given prerequisite snap to the tracker, if the tracker is
-// not nil
-func addPrereq(prqt PrereqTracker, info *snap.Info) {
-	if prqt != nil {
-		prqt.Add(info)
-	}
-}
-
 // InstallPath returns a set of tasks for installing a snap from a file path
 // and the snap.Info for the given snap.
 //
@@ -1936,27 +1833,6 @@ func maybeFindTasksetForSnap(tss []*state.TaskSet, name string) (*state.TaskSet,
 	return nil, nil
 }
 
-// filterHeldSnaps filters held snaps from being updated in a general refresh.
-func filterHeldSnaps(st *state.State, updates []minimalInstallInfo, flags *Flags) ([]minimalInstallInfo, error) {
-	holdLevel := HoldGeneral
-	if flags.IsAutoRefresh {
-		holdLevel = HoldAutoRefresh
-	}
-	heldSnaps, err := HeldSnaps(st, holdLevel)
-	if err != nil {
-		return nil, err
-	}
-
-	filteredUpdates := make([]minimalInstallInfo, 0, len(updates))
-	for _, update := range updates {
-		if _, ok := heldSnaps[update.InstanceName()]; !ok {
-			filteredUpdates = append(filteredUpdates, update)
-		}
-	}
-
-	return filteredUpdates, nil
-}
-
 // UpdateTaskSets distinguishes tasksets for refreshes and pre-downloads since an
 // auto-refresh can return both (even simultaneously).
 type UpdateTaskSets struct {
@@ -2492,8 +2368,6 @@ func Update(st *state.State, name string, opts *RevisionOptions, userID int, fla
 	return UpdateWithDeviceContext(st, name, opts, userID, flags, nil, nil, "")
 }
 
-type snapInfoForUpdate func(dc DeviceContext, ro *RevisionOptions, fl Flags, snapst *SnapState) ([]minimalInstallInfo, error)
-
 // UpdateWithDeviceContext initiates a change updating a snap.
 // It will query the store for the snap with the given deviceCtx.
 // Note that the state must be locked by the caller.
@@ -2556,37 +2430,6 @@ func UpdatePathWithDeviceContext(st *state.State, si *snap.SideInfo, path, name 
 		PrereqTracker: prqt,
 		FromChange:    fromChange,
 	})
-}
-
-func infoForUpdate(st *state.State, snapst *SnapState, name string, opts *RevisionOptions, userID int, flags Flags, deviceCtx DeviceContext) (*snap.Info, error) {
-	if opts.Revision.Unset() {
-		// good ol' refresh
-		info, err := updateInfo(st, snapst, opts, userID, flags, deviceCtx)
-		if err != nil {
-			return nil, err
-		}
-		if ValidateRefreshes != nil && !flags.IgnoreValidation {
-			_, err := ValidateRefreshes(st, []*snap.Info{info}, nil, userID, deviceCtx)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return info, nil
-	}
-	var sideInfo *snap.SideInfo
-	for _, si := range snapst.Sequence.SideInfos() {
-		if si.Revision == opts.Revision {
-			sideInfo = si
-			break
-		}
-	}
-	if sideInfo == nil {
-		// refresh from given revision from store
-		return updateToRevisionInfo(st, snapst, opts, userID, flags, deviceCtx)
-	}
-
-	// refresh-to-local, this assumes the snap revision is mounted
-	return readInfo(name, sideInfo, errorOnBroken)
 }
 
 // AutoRefreshAssertions allows to hook fetching of important assertions
@@ -2808,7 +2651,7 @@ func autoRefreshPhase2(st *state.State, candidates []*refreshCandidate, flags *F
 	updates := make([]update, 0, len(candidates))
 	installInfos := make([]minimalInstallInfo, 0, len(candidates))
 	for _, up := range candidates {
-		snapsup, snapst, err := up.SnapSetupForUpdate(st, nil, 0, flags, nil)
+		snapsup, snapst, err := up.SnapSetupForUpdate(st, flags)
 		if err != nil {
 			logger.Noticef("cannot update %q: %v", up.InstanceName(), err)
 			continue
