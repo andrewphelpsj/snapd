@@ -13505,12 +13505,38 @@ func findTaskForSnap(c *C, chg *state.Change, kind, snap string) *state.Task {
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
-	components := []string{"test-component", "kernel-modules-component"}
+	const (
+		undo                  = false
+		refreshAppAwarenessUX = false
+	)
+	s.testUpdateWithComponentsRunThrough(c, []string{"test-component", "kernel-modules-component"}, refreshAppAwarenessUX, undo)
+}
+
+func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughNoComponents(c *C) {
+	const (
+		undo                  = false
+		refreshAppAwarenessUX = false
+	)
+	s.testUpdateWithComponentsRunThrough(c, nil, refreshAppAwarenessUX, undo)
+}
+
+func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughUndo(c *C) {
+	const (
+		undo                  = true
+		refreshAppAwarenessUX = true
+	)
+	s.testUpdateWithComponentsRunThrough(c, []string{"test-component", "kernel-modules-component"}, refreshAppAwarenessUX, undo)
+}
+
+func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, components []string, refreshAppAwarenessUX, undo bool) {
+	if refreshAppAwarenessUX {
+		s.enableRefreshAppAwarenessUX()
+	}
 
 	const (
-		snapName    = "services-snap"
+		snapName    = "some-snap"
 		instanceKey = ""
-		snapID      = "services-snap-id"
+		snapID      = "some-snap-id"
 		channel     = "channel-for-components"
 	)
 
@@ -13549,7 +13575,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 	// we start without the auxiliary store info (or with an older one)
 	c.Check(snapstate.AuxStoreInfoFilename(snapID), testutil.FileAbsent)
 
-	// use services-snap here to make sure services would be stopped/started appropriately
 	si := snap.SideInfo{
 		RealName: snapName,
 		Revision: currentSnapRev,
@@ -13608,12 +13633,23 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 		TrackingChannel: channel,
 	})
 
-	chg := s.state.NewChange("refresh", "refresh a snap")
-
-	ts, err := snapstate.Update(s.state, instanceName, nil, s.user.ID, snapstate.Flags{})
+	ts, err := snapstate.Update(s.state, instanceName, nil, s.user.ID, snapstate.Flags{
+		NoReRefresh: true,
+	})
 	c.Assert(err, IsNil)
 
+	chg := s.state.NewChange("refresh", "refresh a snap")
 	chg.AddAll(ts)
+
+	if undo {
+		last := lastWithLane(ts.Tasks())
+		c.Assert(last, NotNil)
+
+		terr := s.state.NewTask("error-trigger", "provoking total undo")
+		terr.WaitFor(last)
+		terr.JoinLane(last.Lanes()[0])
+		chg.AddTask(terr)
+	}
 
 	// check unlink-reason
 	unlinkTask := findLastTask(chg, "unlink-current-snap")
@@ -13629,7 +13665,11 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 
 	s.settle(c)
 
-	c.Assert(chg.Err(), IsNil, Commentf("change error: %v", chg.Err()))
+	if undo {
+		c.Assert(chg.Err(), NotNil, Commentf("change tasks:\n%s", printTasks(chg.Tasks())))
+	} else {
+		c.Assert(chg.Err(), IsNil, Commentf("change tasks:\n%s", printTasks(chg.Tasks())))
+	}
 
 	expected := fakeOps{
 		{
@@ -13640,7 +13680,7 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 				Revision:        currentSnapRev,
 				TrackingChannel: channel,
 				RefreshedDate:   refreshedDate,
-				Epoch:           snap.E("0"),
+				Epoch:           snap.E("1*"),
 			}},
 			userID: 1,
 		},
@@ -13686,39 +13726,14 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 			path:  filepath.Join(dirs.SnapBlobDir, fmt.Sprintf("%s_%v.snap", instanceName, newSnapRev)),
 			revno: newSnapRev,
 		},
-		{
-			op:   "stop-snap-services:refresh",
-			path: filepath.Join(dirs.SnapMountDir, "services-snap/7"),
-		},
-		{
-			op: "current-snap-service-states",
-		},
-		{
-			op:   "remove-snap-aliases",
-			name: snapName,
-		},
 	}
 
-	expected = append(expected, fakeOps{
-		{
-			op:          "run-inhibit-snap-for-unlink",
-			name:        instanceName,
-			inhibitHint: "refresh",
-		},
-		{
-			op:   "unlink-snap",
-			path: filepath.Join(dirs.SnapMountDir, "services-snap/7"),
-		},
-		{
-			op:   "copy-data",
-			path: filepath.Join(dirs.SnapMountDir, "services-snap/11"),
-			old:  filepath.Join(dirs.SnapMountDir, "services-snap/7"),
-		},
-		{
-			op:   "setup-snap-save-data",
-			path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
-		},
-	}...)
+	if !refreshAppAwarenessUX {
+		expected = append(expected, fakeOp{
+			op:   "remove-snap-aliases",
+			name: snapName,
+		})
+	}
 
 	for i, compName := range components {
 		csi := snap.ComponentSideInfo{
@@ -13757,11 +13772,37 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 			})
 		}
 
+		// note that unlinking the current component revision happens before
+		// unlinking the current snap revision. this is important since this
+		// allows us to properly undo the operation, by re-linking the old snap
+		// before re-linking the old components
 		expected = append(expected, fakeOp{
 			op:   "unlink-component",
 			path: snap.ComponentMountDir(compName, snap.R(i+1), instanceName),
 		})
 	}
+
+	expected = append(expected, fakeOps{
+		{
+			op:          "run-inhibit-snap-for-unlink",
+			name:        instanceName,
+			inhibitHint: "refresh",
+		},
+		{
+			op:                 "unlink-snap",
+			path:               filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			unlinkSkipBinaries: refreshAppAwarenessUX,
+		},
+		{
+			op:   "copy-data",
+			path: filepath.Join(dirs.SnapMountDir, snapName, newSnapRev.String()),
+			old:  filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+		},
+		{
+			op:   "setup-snap-save-data",
+			path: filepath.Join(dirs.SnapDataSaveDir, instanceName),
+		},
+	}...)
 
 	expected = append(expected, fakeOps{
 		{
@@ -13780,7 +13821,7 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 		},
 		{
 			op:   "link-snap",
-			path: filepath.Join(dirs.SnapMountDir, "services-snap/11"),
+			path: filepath.Join(dirs.SnapMountDir, snapName, newSnapRev.String()),
 		},
 	}...)
 
@@ -13800,22 +13841,22 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 		{
 			op: "update-aliases",
 		},
-		{
-			op:       "start-snap-services",
-			path:     filepath.Join(dirs.SnapMountDir, "services-snap/11"),
-			services: []string{"svc1", "svc3", "svc2"},
-		},
-		{
+	}...)
+
+	if undo {
+		expected = append(expected, undoOps(instanceName, newSnapRev, currentSnapRev, components)...)
+	} else {
+		expected = append(expected, fakeOp{
 			op:    "cleanup-trash",
 			name:  instanceName,
-			revno: snap.R(11),
-		},
-	}...)
+			revno: newSnapRev,
+		})
+	}
 
 	downloads := []fakeDownload{{
 		macaroon: s.user.StoreMacaroon,
 		name:     instanceName,
-		target:   filepath.Join(dirs.SnapBlobDir, "services-snap_11.snap"),
+		target:   filepath.Join(dirs.SnapBlobDir, fmt.Sprintf("%s_%v.snap", snapName, newSnapRev)),
 	}}
 	for i, compName := range components {
 		downloads = append(downloads, fakeDownload{
@@ -13846,13 +13887,13 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 		Channel: channel,
 		UserID:  s.user.ID,
 
-		SnapPath: filepath.Join(dirs.SnapBlobDir, "services-snap_11.snap"),
+		SnapPath: filepath.Join(dirs.SnapBlobDir, fmt.Sprintf("%s_%v.snap", snapName, newSnapRev)),
 		DownloadInfo: &snap.DownloadInfo{
 			DownloadURL: "https://some-server.com/some/path.snap",
 		},
 		SideInfo:  snapsup.SideInfo,
 		Type:      snap.TypeApp,
-		Version:   "services-snapVer",
+		Version:   "some-snapVer",
 		PlugsOnly: true,
 		Flags: snapstate.Flags{
 			Transaction: client.TransactionPerSnap,
@@ -13865,47 +13906,46 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
 		SnapID:   snapID,
 	})
 
-	// verify services stop reason
-	verifyStopReason(c, ts, "refresh")
-
-	// check post-refresh hook
-	task = ts.Tasks()[25]
-	c.Assert(task.Kind(), Equals, "run-hook")
-	c.Assert(task.Summary(), Matches, fmt.Sprintf(`Run post-refresh hook of %q snap if present`, instanceName))
-
 	// verify snaps in the system state
 	var snapst snapstate.SnapState
 	err = snapstate.Get(s.state, instanceName, &snapst)
 	c.Assert(err, IsNil)
 
-	c.Assert(snapst.LastRefreshTime, NotNil)
-	c.Check(snapst.LastRefreshTime.Equal(now), Equals, true)
-	c.Assert(snapst.Active, Equals, true)
-	c.Assert(snapst.Sequence.Revisions, HasLen, 2)
-	c.Assert(snapst.Sequence.Revisions[0], DeepEquals, seq.Revisions[0])
+	if !undo {
+		c.Assert(snapst.LastRefreshTime, NotNil)
+		c.Check(snapst.LastRefreshTime.Equal(now), Equals, true)
+		c.Assert(snapst.Active, Equals, true)
+		c.Assert(snapst.Sequence.Revisions, HasLen, 2)
+		c.Assert(snapst.Sequence.Revisions[0], DeepEquals, seq.Revisions[0])
 
-	cand := sequence.NewRevisionSideState(&snap.SideInfo{
-		RealName: instanceName,
-		Channel:  channel,
-		SnapID:   snapID,
-		Revision: newSnapRev,
-	}, nil)
+		cand := sequence.NewRevisionSideState(&snap.SideInfo{
+			RealName: instanceName,
+			Channel:  channel,
+			SnapID:   snapID,
+			Revision: newSnapRev,
+		}, nil)
 
-	for i, comp := range components {
-		cand.Components = append(cand.Components, &sequence.ComponentState{
-			SideInfo: &snap.ComponentSideInfo{
-				Component: naming.NewComponentRef(snapName, comp),
-				Revision:  snap.R(i + 2),
-			},
-			CompType: compNameToType(comp),
-		})
+		for i, comp := range components {
+			cand.Components = append(cand.Components, &sequence.ComponentState{
+				SideInfo: &snap.ComponentSideInfo{
+					Component: naming.NewComponentRef(snapName, comp),
+					Revision:  snap.R(i + 2),
+				},
+				CompType: compNameToType(comp),
+			})
+		}
+
+		// add our new revision to the sequence
+		seq.Revisions = append(seq.Revisions, cand)
+
+		c.Assert(snapst.Sequence, DeepEquals, seq)
+
+		// we end up with the auxiliary store info
+		c.Check(snapstate.AuxStoreInfoFilename(snapID), testutil.FilePresent)
+	} else {
+		// make sure everything is back to how it started
+		c.Assert(snapst.Active, Equals, true)
+		c.Assert(snapst.Sequence.Revisions, HasLen, 1)
+		c.Assert(snapst.Sequence.Revisions[0], DeepEquals, seq.Revisions[0])
 	}
-
-	// add our new revision to the sequence
-	seq.Revisions = append(seq.Revisions, cand)
-
-	c.Assert(snapst.Sequence, DeepEquals, seq)
-
-	// we end up with the auxiliary store info
-	c.Check(snapstate.AuxStoreInfoFilename(snapID), testutil.FilePresent)
 }
