@@ -189,10 +189,13 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 			compSi.Component, revisionStr))
 	addTask(linkSnap)
 
-	// clean-up previous revision of the component if present and
-	// not used in previous sequence points
+	changingSnapRev := !snapst.Current.Unset() && snapst.Current != snapSi.Revision
+
+	// clean-up previous revision of the component if present, not used in
+	// previous sequence points, and the snap is not being updated (it will soon
+	// be referenced by a previous sequence point).
 	if compInstalled &&
-		!snapst.IsCurrentComponentRevInAnyNonCurrentSeq(compSetup.CompSideInfo.Component) {
+		!snapst.IsCurrentComponentRevInAnyNonCurrentSeq(compSetup.CompSideInfo.Component) && !changingSnapRev {
 
 		discardComp := st.NewTask("discard-component", fmt.Sprintf(i18n.G(
 			"Discard previous revision for component %q"),

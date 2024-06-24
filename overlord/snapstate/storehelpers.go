@@ -640,6 +640,10 @@ func storeUpdateSummary(
 	// to change the channel, cohort key, or validation set enforcement.
 	hasLocalRevision := make(map[*SnapState]RevisionOptions)
 
+	// if any of the snaps that we are refreshing have components, we need to
+	// make sure to explicitly request the components from the store.
+	requestCompnentsFromStore := false
+
 	var fallbackID int
 	// normalize fallback user
 	if !user.HasStoreAuth() {
@@ -723,6 +727,15 @@ func storeUpdateSummary(
 		}
 		actionsByUserID[userID] = append(actionsByUserID[userID], action)
 
+		comps, err := snapst.CurrentComponentInfos()
+		if err != nil {
+			return err
+		}
+
+		if len(comps) > 0 {
+			requestCompnentsFromStore = true
+		}
+
 		return nil
 	}
 
@@ -751,6 +764,7 @@ func storeUpdateSummary(
 		actionsByUserID[id] = append(actionsByUserID[id], actions...)
 	}
 
+	refreshOpts.IncludeResources = requestCompnentsFromStore
 	sars, noStoreUpdates, err := sendActionsByUserID(ctx, st, actionsByUserID, current, refreshOpts, opts)
 	if err != nil {
 		return UpdateSummary{}, err
@@ -771,7 +785,22 @@ func storeUpdateSummary(
 			return UpdateSummary{}, fmt.Errorf("internal error: snap %q not found", sar.InstanceName())
 		}
 
-		// TODO: handle components here
+		currentComps, err := snapst.CurrentComponentInfos()
+		if err != nil {
+			return UpdateSummary{}, err
+		}
+
+		compNames := make([]string, 0, len(currentComps))
+		for _, comp := range currentComps {
+			compNames = append(compNames, comp.Component.ComponentName)
+		}
+
+		// TODO: what do we do when an already installed component is not
+		// included in the snap resources?
+		compTargets, err := componentTargetsFromActionResult(sar, compNames)
+		if err != nil {
+			return UpdateSummary{}, fmt.Errorf("cannot extract components from snap resources: %w", err)
+		}
 
 		summary.Targets = append(summary.Targets, target{
 			info:   sar.Info,
@@ -781,7 +810,7 @@ func storeUpdateSummary(
 				Channel:      up.RevOpts.Channel,
 				CohortKey:    up.RevOpts.CohortKey,
 			},
-			components: nil,
+			components: compTargets,
 		})
 	}
 
