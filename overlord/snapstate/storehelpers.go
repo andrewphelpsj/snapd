@@ -703,6 +703,9 @@ func storeUpdateSummary(
 			return err
 		}
 
+		// TODO: can we actually skip hitting the store for this case when we
+		// have components installed? i think no, since we may need to remove
+		// components that are no longer tied to the snap.
 		// if we already have the requested revision installed, we don't need to
 		// consider this snap for a store update, but we still should return it
 		// as a target for potentially switching channels or cohort keys
