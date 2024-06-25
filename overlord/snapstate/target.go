@@ -904,6 +904,14 @@ func UpdateWithGoal(ctx context.Context, st *state.State, goal UpdateGoal, filte
 		return nil, nil, err
 	}
 
+	for _, t := range summary.Targets {
+		// sort the components by name to ensure we always install components in the
+		// same order
+		sort.Slice(t.components, func(i, j int) bool {
+			return t.components[i].ComponentName() < t.components[j].ComponentName()
+		})
+	}
+
 	if opts.ExpectOneSnap && len(summary.Targets) != 1 {
 		return nil, nil, ErrExpectedOneSnap
 	}
@@ -1248,6 +1256,10 @@ func targetForPathUpdate(update PathUpdate, snapst SnapState, opts Options) (tar
 		return target{}, fmt.Errorf("cannot install local snap %q: %v != %v (revision mismatch)", update.InstanceName, update.RevOpts.Revision, si.Revision)
 	}
 
+	if update.RevOpts.Channel != "" && si.Channel != "" && update.RevOpts.Channel != si.Channel {
+		return target{}, fmt.Errorf("cannot install local snap %q: %v != %v (channel mismatch)", update.InstanceName, update.RevOpts.Channel, si.Channel)
+	}
+
 	info, err := validatedInfoFromPathAndSideInfo(update.InstanceName, update.Path, si)
 	if err != nil {
 		return target{}, err
@@ -1264,7 +1276,12 @@ func targetForPathUpdate(update PathUpdate, snapst SnapState, opts Options) (tar
 		trackingChannel = snapst.TrackingChannel
 	}
 
-	channel, err := resolveChannel(update.InstanceName, trackingChannel, update.RevOpts.Channel, opts.DeviceCtx)
+	newChannel := update.RevOpts.Channel
+	if newChannel == "" {
+		newChannel = si.Channel
+	}
+
+	channel, err := resolveChannel(update.InstanceName, trackingChannel, newChannel, opts.DeviceCtx)
 	if err != nil {
 		return target{}, err
 	}
