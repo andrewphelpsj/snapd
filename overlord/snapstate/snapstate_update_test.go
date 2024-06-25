@@ -13796,8 +13796,11 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, instanceKey 
 
 		if strings.HasPrefix(compName, string(snap.KernelModulesComponent)) {
 			expected = append(expected, fakeOp{
-				op:           "setup-kernel-modules-components",
-				currentComps: []*snap.ComponentSideInfo{},
+				op: "setup-kernel-modules-components",
+				currentComps: []*snap.ComponentSideInfo{{
+					Component: csi.Component,
+					Revision:  snap.R(i + 1),
+				}},
 				compsToInstall: []*snap.ComponentSideInfo{{
 					Component: naming.NewComponentRef(snapName, compName),
 					Revision:  csi.Revision,
@@ -14207,8 +14210,11 @@ components:
 
 		if strings.HasPrefix(compName, string(snap.KernelModulesComponent)) {
 			expected = append(expected, fakeOp{
-				op:           "setup-kernel-modules-components",
-				currentComps: []*snap.ComponentSideInfo{},
+				op: "setup-kernel-modules-components",
+				currentComps: []*snap.ComponentSideInfo{{
+					Component: csi.Component,
+					Revision:  snap.R(i + 1),
+				}},
 				compsToInstall: []*snap.ComponentSideInfo{{
 					Component: naming.NewComponentRef(snapName, compName),
 					Revision:  csi.Revision,
