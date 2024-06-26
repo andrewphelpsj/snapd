@@ -17,18 +17,18 @@ import (
 	. "gopkg.in/check.v1"
 )
 
-type TargetTestSuite struct {
+type targetTestSuite struct {
 	snapmgrBaseTest
 }
 
-var _ = Suite(&TargetTestSuite{})
+var _ = Suite(&targetTestSuite{})
 
-func (s *TargetTestSuite) TestInstallWithComponents(c *C) {
+func (s *targetTestSuite) TestInstallWithComponents(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
 	const (
-		snapName = "test-snap"
+		snapName = "some-snap"
 		compName = "test-component"
 		channel  = "channel-for-components"
 	)
@@ -67,12 +67,12 @@ func (s *TargetTestSuite) TestInstallWithComponents(c *C) {
 	verifyInstallTasksWithComponents(c, snap.TypeApp, 0, 0, []string{compName}, ts)
 }
 
-func (s *TargetTestSuite) TestInstallWithComponentsMissingResource(c *C) {
+func (s *targetTestSuite) TestInstallWithComponentsMissingResource(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
 	const (
-		snapName = "test-snap"
+		snapName = "some-snap"
 		compName = "test-component"
 		channel  = "channel-for-components"
 	)
@@ -105,12 +105,12 @@ func (s *TargetTestSuite) TestInstallWithComponentsMissingResource(c *C) {
 	c.Assert(err, ErrorMatches, fmt.Sprintf(`.*cannot find component "%s" in snap resources`, compName))
 }
 
-func (s *TargetTestSuite) TestInstallWithComponentsWrongType(c *C) {
+func (s *targetTestSuite) TestInstallWithComponentsWrongType(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
 	const (
-		snapName = "test-snap"
+		snapName = "some-snap"
 		compName = "test-component"
 		channel  = "channel-for-components"
 	)
@@ -145,12 +145,12 @@ func (s *TargetTestSuite) TestInstallWithComponentsWrongType(c *C) {
 	))
 }
 
-func (s *TargetTestSuite) TestInstallWithComponentsMissingInInfo(c *C) {
+func (s *targetTestSuite) TestInstallWithComponentsMissingInInfo(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
 	const (
-		snapName = "test-snap"
+		snapName = "some-snap"
 		compName = "test-missing-component"
 		channel  = "channel-for-components"
 	)
@@ -183,15 +183,15 @@ func (s *TargetTestSuite) TestInstallWithComponentsMissingInInfo(c *C) {
 	c.Assert(err, ErrorMatches, fmt.Sprintf(`.*"%s" is not a component for snap "%s"`, compName, snapName))
 }
 
-func (s *TargetTestSuite) TestInstallWithComponentsFromPath(c *C) {
+func (s *targetTestSuite) TestInstallWithComponentsFromPath(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
 	const (
-		snapName = "test-snap"
-		snapID   = "test-snap-id"
+		snapName = "some-snap"
+		snapID   = "some-snap-id"
 		compName = "test-component"
-		snapYaml = `name: test-snap
+		snapYaml = `name: some-snap
 version: 1.0
 components:
   test-component:
@@ -199,7 +199,7 @@ components:
   kernel-modules-component:
     type: kernel-modules
 `
-		componentYaml = `component: test-snap+test-component
+		componentYaml = `component: some-snap+test-component
 type: test
 version: 1.0
 `
