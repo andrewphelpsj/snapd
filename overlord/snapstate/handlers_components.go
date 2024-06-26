@@ -392,6 +392,11 @@ func (m *SnapManager) doLinkComponent(t *state.Task, _ *tomb.Tomb) error {
 		return err
 	}
 
+	// during a revert, components should already be linked
+	if snapsup.Revert {
+		return nil
+	}
+
 	// Grab information for current snap revision
 	// TODO will this still be correct when jointly installing snap +
 	// components? Link for the snap should happen earlier. But we do not
@@ -444,6 +449,12 @@ func (m *SnapManager) undoLinkComponent(t *state.Task, _ *tomb.Tomb) error {
 	_, snapsup, snapSt, err := compSetupAndState(t)
 	if err != nil {
 		return err
+	}
+
+	// nothing to do when unding a revert, since the components were already
+	// linked
+	if snapsup.Revert {
+		return nil
 	}
 
 	// Expected to be installed
