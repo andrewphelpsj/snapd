@@ -1269,7 +1269,10 @@ func targetForPathUpdate(update PathUpdate, snapst SnapState, opts Options) (tar
 		return target{}, err
 	}
 
-	// TODO: handle components here
+	comps, err := componentSetupsFromPaths(info, update.Components)
+	if err != nil {
+		return target{}, err
+	}
 
 	return target{
 		setup: SnapSetup{
@@ -1279,6 +1282,6 @@ func targetForPathUpdate(update PathUpdate, snapst SnapState, opts Options) (tar
 		},
 		info:       info,
 		snapst:     snapst,
-		components: nil,
+		components: comps,
 	}, nil
 }
