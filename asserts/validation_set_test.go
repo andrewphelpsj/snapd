@@ -132,6 +132,7 @@ func (vss *validationSetSuite) TestDecodeInvalid(c *C) {
 		{"OTHER", "    components:\n      c: optional\n", `invalid component name "c"`},
 		{"OTHER", "    components:\n      comp:\n        revision: 1\n", `"presence" of component "comp" is mandatory`},
 		{"OTHER", "    components:\n      comp:\n        - test\n", `each field in "components" map must be either a map or a string`},
+		{"OTHER", "    components:\n      comp:\n        revision: -1\n        presence: optional\n", `"revision" of component "comp" must be >=1: -1`},
 	}
 
 	for _, test := range invalidTests {
