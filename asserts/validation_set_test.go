@@ -196,15 +196,17 @@ func (vss *validationSetSuite) TestSnapComponents(c *C) {
 	c.Assert(snaps, HasLen, 1)
 	c.Assert(snaps[0].Components, HasLen, 3)
 
-	c.Check(snaps[0].Components["string-only"], Equals, asserts.ValidationSetComponent{
-		Presence: asserts.PresenceOptional,
-	})
-	c.Check(snaps[0].Components["with-revision"], Equals, asserts.ValidationSetComponent{
-		Presence: asserts.PresenceRequired,
-		Revision: 10,
-	})
-	c.Check(snaps[0].Components["no-revision"], Equals, asserts.ValidationSetComponent{
-		Presence: asserts.PresenceInvalid,
+	c.Check(snaps[0].Components, DeepEquals, map[string]asserts.ValidationSetComponent{
+		"string-only": {
+			Presence: asserts.PresenceOptional,
+		},
+		"with-revision": {
+			Presence: asserts.PresenceRequired,
+			Revision: 10,
+		},
+		"no-revision": {
+			Presence: asserts.PresenceInvalid,
+		},
 	})
 }
 
