@@ -203,14 +203,19 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup *Component
 		addTask(discardComp)
 	}
 
+	var postOpHook *state.Task
 	if !compInstalled {
-		installHook := SetupInstallComponentHook(st, snapsup.InstanceName(), compSi.Component.ComponentName)
-		addTask(installHook)
+		postOpHook = SetupInstallComponentHook(st, snapsup.InstanceName(), compSi.Component.ComponentName)
+		addTask(postOpHook)
+	} else {
+		// TODO: create a post-refresh hook
+		postOpHook = nil
 	}
 
 	installSet := state.NewTaskSet(tasks...)
 	installSet.MarkEdge(prepare, BeginEdge)
 	installSet.MarkEdge(linkSnap, MaybeRebootEdge)
+	installSet.MarkEdge(postOpHook, PostOpHookEdge)
 
 	// TODO do we need to set restart boundaries here? (probably
 	// for kernel-modules components if installed along the kernel)
