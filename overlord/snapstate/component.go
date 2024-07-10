@@ -100,7 +100,7 @@ func InstallComponents(ctx context.Context, st *state.State, names []string, inf
 			return nil, err
 		}
 
-		if len(componentTS.beforeLink) == 0 && len(componentTS.postOpHookAndAfter) != 1 {
+		if len(componentTS.beforeLink) == 0 && len(componentTS.postOpHookToDiscard) != 1 {
 			return nil, fmt.Errorf("internal error: missing expected tasks in component task set")
 		}
 
@@ -112,7 +112,7 @@ func InstallComponents(ctx context.Context, st *state.State, names []string, inf
 		componentTS.linkTask.WaitFor(setupSecurity)
 
 		if kmodSetup != nil {
-			kmodSetup.WaitFor(componentTS.postOpHookAndAfter[0])
+			kmodSetup.WaitFor(componentTS.postOpHookToDiscard[0])
 			if componentTS.discardTask != nil {
 				componentTS.discardTask.WaitFor(kmodSetup)
 			}
@@ -274,18 +274,18 @@ type componentInstallFlags struct {
 }
 
 type componentInstallTaskSet struct {
-	compSetupTaskID    string
-	beforeLink         []*state.Task
-	linkTask           *state.Task
-	postOpHookAndAfter []*state.Task
-	discardTask        *state.Task
+	compSetupTaskID     string
+	beforeLink          []*state.Task
+	linkTask            *state.Task
+	postOpHookToDiscard []*state.Task
+	discardTask         *state.Task
 }
 
 func (c *componentInstallTaskSet) taskSet() *state.TaskSet {
-	tasks := make([]*state.Task, 0, len(c.beforeLink)+1+len(c.postOpHookAndAfter)+1)
+	tasks := make([]*state.Task, 0, len(c.beforeLink)+1+len(c.postOpHookToDiscard)+1)
 	tasks = append(tasks, c.beforeLink...)
 	tasks = append(tasks, c.linkTask)
-	tasks = append(tasks, c.postOpHookAndAfter...)
+	tasks = append(tasks, c.postOpHookToDiscard...)
 	if c.discardTask != nil {
 		tasks = append(tasks, c.discardTask)
 	}
@@ -432,14 +432,14 @@ func doInstallComponent(st *state.State, snapst *SnapState, compSetup ComponentS
 	} else {
 		postOpHook = SetupPostRefreshComponentHook(st, snapsup.InstanceName(), compSi.Component.ComponentName)
 	}
-	componentTS.postOpHookAndAfter = append(componentTS.postOpHookAndAfter, postOpHook)
+	componentTS.postOpHookToDiscard = append(componentTS.postOpHookToDiscard, postOpHook)
 	addTask(postOpHook)
 
 	if !compSetup.MultiComponentInstall && compSetup.CompType == snap.KernelModulesComponent {
 		kmodSetup := st.NewTask("prepare-kernel-modules-components",
 			fmt.Sprintf(i18n.G("Prepare kernel-modules component %q%s"),
 				compSi.Component, revisionStr))
-		componentTS.postOpHookAndAfter = append(componentTS.postOpHookAndAfter, kmodSetup)
+		componentTS.postOpHookToDiscard = append(componentTS.postOpHookToDiscard, kmodSetup)
 		addTask(kmodSetup)
 	}
 
