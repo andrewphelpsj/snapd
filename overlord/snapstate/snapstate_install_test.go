@@ -6276,7 +6276,7 @@ func (s *snapmgrTestSuite) TestInstallInstanceManyComponentsUndoRunThrough(c *C)
 	s.testInstallComponentsRunThrough(c, snapName, instanceKey, []string{"test-component", "kernel-modules-component"}, undo)
 }
 
-func undoOps(instanceName string, snapRevision, prevRev snap.Revision, components []string, compRevs map[string]snap.Revision) []fakeOp {
+func undoOps(instanceName string, snapRevision, prevRev snap.Revision, components []string, compRevs, prevCompRevs map[string]snap.Revision) []fakeOp {
 	snapName, _ := snap.SplitInstanceName(instanceName)
 
 	snapMount := filepath.Join(dirs.SnapMountDir, filepath.Join(instanceName, snapRevision.String()))
@@ -6351,11 +6351,28 @@ func undoOps(instanceName string, snapRevision, prevRev snap.Revision, component
 		containerName := fmt.Sprintf("%s+%s", instanceName, components[i])
 		filename := fmt.Sprintf("%s_%v.comp", containerName, csi.Revision)
 
+		// if the snap revision isn't changing, then we need to re-link the old
+		// component
+		if snapRevision == prevRev {
+			ops = append(ops, []fakeOp{{
+				op:   "link-component",
+				path: snap.ComponentMountDir(components[i], prevCompRevs[components[i]], instanceName),
+			}}...)
+		}
+
 		if strings.HasPrefix(components[i], string(snap.KernelModulesComponent)) {
+			finalComps := []*snap.ComponentSideInfo{}
+			if snapRevision == prevRev {
+				finalComps = []*snap.ComponentSideInfo{{
+					Component: naming.NewComponentRef(snapName, components[i]),
+					Revision:  prevCompRevs[components[i]],
+				}}
+			}
+
 			ops = append(ops, fakeOp{
 				op:            "remove-kernel-modules-components-setup",
 				compsToRemove: []*snap.ComponentSideInfo{csi},
-				finalComps:    []*snap.ComponentSideInfo{},
+				finalComps:    finalComps,
 			})
 		}
 
@@ -6370,16 +6387,18 @@ func undoOps(instanceName string, snapRevision, prevRev snap.Revision, component
 		}}...)
 	}
 
-	ops = append(ops, []fakeOp{{
-		op:    "undo-setup-snap",
-		name:  instanceName,
-		stype: "app",
-		path:  snapMount,
-	}, {
-		op:   "remove-snap-dir",
-		name: instanceName,
-		path: filepath.Join(dirs.SnapMountDir, instanceName),
-	}}...)
+	if snapRevision != prevRev {
+		ops = append(ops, []fakeOp{{
+			op:    "undo-setup-snap",
+			name:  instanceName,
+			stype: "app",
+			path:  snapMount,
+		}, {
+			op:   "remove-snap-dir",
+			name: instanceName,
+			path: filepath.Join(dirs.SnapMountDir, instanceName),
+		}}...)
+	}
 
 	return ops
 }
@@ -6626,7 +6645,7 @@ func (s *snapmgrTestSuite) testInstallComponentsRunThrough(c *C, snapName, insta
 	}}...)
 
 	if undo {
-		expected = append(expected, undoOps(instanceName, snapRevision, snap.Revision{}, components, compRevs)...)
+		expected = append(expected, undoOps(instanceName, snapRevision, snap.Revision{}, components, compRevs, nil)...)
 	} else {
 		expected = append(expected, fakeOp{
 			op:    "cleanup-trash",
@@ -6911,7 +6930,7 @@ components:
 	}}...)
 
 	if undo {
-		expected = append(expected, undoOps(instanceName, snapRevision, snap.Revision{}, compNames, compRevs)...)
+		expected = append(expected, undoOps(instanceName, snapRevision, snap.Revision{}, compNames, compRevs, nil)...)
 	} else {
 		expected = append(expected, fakeOp{
 			op:    "cleanup-trash",
