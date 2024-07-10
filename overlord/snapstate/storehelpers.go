@@ -447,6 +447,19 @@ func collectCurrentSnaps(snapStates map[string]*SnapState, holds map[string][]st
 			continue
 		}
 
+		comps, err := snapst.ComponentInfosForRevision(snapInfo.Revision)
+		if err != nil {
+			return nil, err
+		}
+
+		var resources map[string]snap.Revision
+		for _, comp := range comps {
+			if resources == nil {
+				resources = make(map[string]snap.Revision, len(comps))
+			}
+			resources[comp.Component.ComponentName] = comp.Revision
+		}
+
 		installed := &store.CurrentSnap{
 			InstanceName: snapInfo.InstanceName(),
 			SnapID:       snapInfo.SnapID,
@@ -458,6 +471,7 @@ func collectCurrentSnaps(snapStates map[string]*SnapState, holds map[string][]st
 			Epoch:            snapInfo.Epoch,
 			CohortKey:        snapst.CohortKey,
 			HeldBy:           holds[snapInfo.InstanceName()],
+			Resources:        resources,
 		}
 		curSnaps = append(curSnaps, installed)
 
