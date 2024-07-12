@@ -13989,9 +13989,29 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughInstanceKeyUndo(c *
 	})
 }
 
+func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughLoseComponents(c *C) {
+	s.testUpdateWithComponentsRunThrough(c, updateWIthComponentsOpts{
+		instanceKey:           "key",
+		components:            []string{"test-component", "kernel-modules-component"},
+		postRefreshComponents: []string{"test-component"},
+		refreshAppAwarenessUX: true,
+	})
+}
+
+func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughLoseComponentsUndo(c *C) {
+	s.testUpdateWithComponentsRunThrough(c, updateWIthComponentsOpts{
+		instanceKey:           "key",
+		components:            []string{"test-component", "kernel-modules-component"},
+		postRefreshComponents: []string{"test-component"},
+		refreshAppAwarenessUX: true,
+		undo:                  true,
+	})
+}
+
 type updateWIthComponentsOpts struct {
 	instanceKey           string
 	components            []string
+	postRefreshComponents []string
 	refreshAppAwarenessUX bool
 	undo                  bool
 }
@@ -14011,7 +14031,22 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 	newSnapRev := snap.R(11)
 	instanceName := snap.InstanceName(snapName, opts.instanceKey)
 
+	if opts.postRefreshComponents == nil {
+		opts.postRefreshComponents = opts.components
+	}
+
 	sort.Strings(opts.components)
+	sort.Strings(opts.postRefreshComponents)
+
+	originalCompRevisions := make(map[string]snap.Revision)
+	for i, compName := range opts.components {
+		originalCompRevisions[compName] = snap.R(i + 1)
+	}
+
+	updatedCompRevisions := make(map[string]snap.Revision)
+	for i, compName := range opts.components {
+		updatedCompRevisions[compName] = snap.R(i + 2)
+	}
 
 	compNameToType := func(name string) snap.ComponentType {
 		typ := strings.TrimSuffix(name, "-component")
@@ -14024,13 +14059,13 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
 		c.Assert(info.InstanceName(), DeepEquals, instanceName)
 		var results []store.SnapResourceResult
-		for i, compName := range opts.components {
+		for _, compName := range opts.postRefreshComponents {
 			results = append(results, store.SnapResourceResult{
 				DownloadInfo: snap.DownloadInfo{
 					DownloadURL: "http://example.com/" + compName,
 				},
 				Name:      compName,
-				Revision:  i + 2,
+				Revision:  updatedCompRevisions[compName].N,
 				Type:      fmt.Sprintf("component/%s", compNameToType(compName)),
 				Version:   "1.0",
 				CreatedAt: "2024-01-01T00:00:00Z",
@@ -14077,11 +14112,11 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 	seq := snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&si})
 
 	var currentResources map[string]snap.Revision
-	for i, comp := range opts.components {
+	for _, comp := range opts.components {
 		err := seq.AddComponentForRevision(currentSnapRev, &sequence.ComponentState{
 			SideInfo: &snap.ComponentSideInfo{
 				Component: naming.NewComponentRef(snapName, comp),
-				Revision:  snap.R(i + 1),
+				Revision:  originalCompRevisions[comp],
 			},
 			CompType: compNameToType(comp),
 		})
@@ -14090,7 +14125,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		if currentResources == nil {
 			currentResources = make(map[string]snap.Revision, len(opts.components))
 		}
-		currentResources[comp] = snap.R(i + 1)
+		currentResources[comp] = originalCompRevisions[comp]
 	}
 
 	s.AddCleanup(snapstate.MockReadComponentInfo(func(
@@ -14215,10 +14250,10 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		})
 	}
 
-	for i, compName := range opts.components {
+	for _, compName := range opts.postRefreshComponents {
 		csi := snap.ComponentSideInfo{
 			Component: naming.NewComponentRef(snapName, compName),
-			Revision:  snap.R(i + 2),
+			Revision:  updatedCompRevisions[compName],
 		}
 
 		containerName := fmt.Sprintf("%s+%s", instanceName, compName)
@@ -14295,10 +14330,10 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		},
 	}...)
 
-	for i, compName := range opts.components {
+	for _, compName := range opts.postRefreshComponents {
 		expected = append(expected, fakeOp{
 			op:   "link-component",
-			path: snap.ComponentMountDir(compName, snap.R(i+2), instanceName),
+			path: snap.ComponentMountDir(compName, updatedCompRevisions[compName], instanceName),
 		})
 	}
 
@@ -14314,7 +14349,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 	}...)
 
 	if opts.undo {
-		expected = append(expected, undoOps(instanceName, newSnapRev, currentSnapRev, opts.components)...)
+		expected = append(expected, undoOps(instanceName, newSnapRev, currentSnapRev, opts.postRefreshComponents, updatedCompRevisions)...)
 	} else {
 		expected = append(expected, fakeOp{
 			op:    "cleanup-trash",
@@ -14328,11 +14363,11 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		name:     snapName,
 		target:   filepath.Join(dirs.SnapBlobDir, fmt.Sprintf("%s_%v.snap", instanceName, newSnapRev)),
 	}}
-	for i, compName := range opts.components {
+	for _, compName := range opts.postRefreshComponents {
 		downloads = append(downloads, fakeDownload{
 			macaroon: s.user.StoreMacaroon,
 			name:     fmt.Sprintf("%s+%s", snapName, compName),
-			target:   filepath.Join(dirs.SnapBlobDir, fmt.Sprintf("%s+%s_%d.comp", instanceName, compName, i+2)),
+			target:   filepath.Join(dirs.SnapBlobDir, fmt.Sprintf("%s+%s_%d.comp", instanceName, compName, updatedCompRevisions[compName].N)),
 		})
 	}
 
@@ -14396,11 +14431,11 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 			Revision: newSnapRev,
 		}, nil)
 
-		for i, comp := range opts.components {
+		for _, comp := range opts.postRefreshComponents {
 			cand.Components = append(cand.Components, &sequence.ComponentState{
 				SideInfo: &snap.ComponentSideInfo{
 					Component: naming.NewComponentRef(snapName, comp),
-					Revision:  snap.R(i + 2),
+					Revision:  updatedCompRevisions[comp],
 				},
 				CompType: compNameToType(comp),
 			})
