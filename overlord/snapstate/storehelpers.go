@@ -625,13 +625,7 @@ func storeUpdatePlanCore(
 
 	enforcedSetsFunc := cachedEnforcedValidationSets(st)
 
-	var fallbackID int
-	// normalize fallback user
-	if !user.HasStoreAuth() {
-		user = nil
-	} else {
-		fallbackID = user.ID
-	}
+	fallbackID := fallbackUserID(user)
 
 	// hasLocalRevision keeps track of snaps that already have a local revision
 	// matching the requested revision. there are two distinct cases here:
@@ -791,6 +785,13 @@ func componentTargetsFromLocalRevision(snapst *SnapState, snapRev snap.Revision)
 		})
 	}
 	return components, nil
+}
+
+func fallbackUserID(user *auth.UserState) int {
+	if !user.HasStoreAuth() {
+		return 0
+	}
+	return user.ID
 }
 
 func collectCurrentSnapsAndActions(

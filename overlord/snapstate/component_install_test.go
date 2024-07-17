@@ -20,7 +20,10 @@
 package snapstate_test
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"strings"
 
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/overlord/snapstate"
@@ -31,6 +34,8 @@ import (
 	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snapfile"
 	"github.com/snapcore/snapd/snap/snaptest"
+	"github.com/snapcore/snapd/store"
+	"github.com/snapcore/snapd/testutil"
 	. "gopkg.in/check.v1"
 )
 
@@ -165,18 +170,22 @@ version: 1.0
 }
 
 func createTestSnapInfoForComponent(c *C, snapName string, snapRev snap.Revision, compName string) *snap.Info {
-	return createTestSnapInfoForComponentWithType(c, snapName, snapRev, compName, "test")
+	return createTestSnapInfoForComponents(c, snapName, snapRev, map[string]string{compName: "test"})
 }
 
-func createTestSnapInfoForComponentWithType(c *C, snapName string, snapRev snap.Revision, compName, typ string) *snap.Info {
-	snapYaml := fmt.Sprintf(`name: %s
+func createTestSnapInfoForComponents(c *C, snapName string, snapRev snap.Revision, compNamesToType map[string]string) *snap.Info {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, `name: %s
 type: app
 version: 1.1
 components:
-  %s:
-    type: %s
-`, snapName, compName, typ)
-	info, err := snap.InfoFromSnapYaml([]byte(snapYaml))
+`, snapName)
+
+	for compName, typ := range compNamesToType {
+		fmt.Fprintf(&b, "  %s:\n    type: %s\n", compName, typ)
+	}
+
+	info, err := snap.InfoFromSnapYaml(b.Bytes())
 	c.Assert(err, IsNil)
 	info.SideInfo = snap.SideInfo{RealName: snapName, Revision: snapRev}
 
@@ -543,7 +552,7 @@ func (s *snapmgrTestSuite) TestInstallKernelModulesComponentPath(c *C) {
 	const snapName = "mysnap"
 	const compName = "mycomp"
 	snapRev := snap.R(1)
-	info := createTestSnapInfoForComponentWithType(c, snapName, snapRev, compName, "kernel-modules")
+	info := createTestSnapInfoForComponents(c, snapName, snapRev, map[string]string{compName: "kernel-modules"})
 	_, compPath := createTestComponentWithType(c, snapName, compName, "kernel-modules", info)
 
 	s.state.Lock()
@@ -645,4 +654,88 @@ func (s *snapmgrTestSuite) TestInstallComponentPathRun(c *C) {
 	c.Assert(snapstate.Get(s.state, snapName, &snapst), IsNil)
 
 	c.Assert(snapst.IsComponentInCurrentSeq(cref), Equals, true)
+}
+
+func (s *snapmgrTestSuite) TestInstallComponents(c *C) {
+	const snapName = "some-snap"
+	snapRev := snap.R(1)
+
+	compNamesToType := map[string]string{
+		"one": "test",
+		"two": "test",
+	}
+
+	info := createTestSnapInfoForComponents(c, snapName, snapRev, compNamesToType)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	si := &snap.SideInfo{
+		RealName: snapName,
+		Revision: snapRev,
+		SnapID:   "some-snap-id",
+	}
+
+	snapstate.Set(s.state, snapName, &snapstate.SnapState{
+		Active: true,
+		Sequence: snapstatetest.NewSequenceFromRevisionSideInfos([]*sequence.RevisionSideState{
+			sequence.NewRevisionSideState(si, nil),
+		}),
+		Current:         snapRev,
+		TrackingChannel: "channel-for-components",
+	})
+
+	components := []string{"test-component", "kernel-modules-component"}
+
+	compNameToType := func(name string) snap.ComponentType {
+		typ := strings.TrimSuffix(name, "-component")
+		if typ == name {
+			c.Fatalf("unexpected component name %q", name)
+		}
+		return snap.ComponentType(typ)
+	}
+
+	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
+		c.Assert(info.InstanceName(), DeepEquals, snapName)
+		var results []store.SnapResourceResult
+		for _, compName := range components {
+			results = append(results, store.SnapResourceResult{
+				DownloadInfo: snap.DownloadInfo{
+					DownloadURL: "http://example.com/" + compName,
+				},
+				Name:      compName,
+				Revision:  snap.R(3).N,
+				Type:      fmt.Sprintf("component/%s", compNameToType(compName)),
+				Version:   "1.0",
+				CreatedAt: "2024-01-01T00:00:00Z",
+			})
+		}
+		return results
+	}
+
+	tss, err := snapstate.InstallComponents(context.Background(), s.state, components, info, snapstate.Options{})
+	c.Assert(err, IsNil)
+
+	setupProfiles := tss[len(tss)-1].Tasks()[0]
+	c.Assert(setupProfiles.Kind(), Equals, "setup-profiles")
+
+	for _, ts := range tss[0 : len(tss)-1] {
+		task := ts.Tasks()[0]
+		compsup, _, err := snapstate.TaskComponentSetup(task)
+		c.Assert(err, IsNil)
+
+		opts := compOptSkipSecurity
+		if compNameToType(compsup.ComponentName()) == snap.KernelModulesComponent {
+			opts |= compTypeIsKernMods
+		}
+
+		verifyComponentInstallTasks(c, opts, ts)
+
+		edge, err := ts.Edge(snapstate.MaybeRebootEdge)
+		c.Assert(err, IsNil)
+
+		// make sure that the link-component tasks wait on the all-inclusive
+		// setup-profiles task
+		c.Assert(edge.WaitTasks(), testutil.DeepContains, setupProfiles)
+	}
 }
