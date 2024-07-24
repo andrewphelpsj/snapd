@@ -1,7 +1,8 @@
 summary: Test refreshing a component from the store
 
 details: |
-  Verifies that we can refresh a snap with components from the store.
+  Verifies that we can install a snap and components from the store, refresh the
+  snap+components, and revert the snap+components.
 
 systems: [ubuntu-16.04-64, ubuntu-18.04-64, ubuntu-2*, ubuntu-core-*, fedora-*]
 
@@ -54,3 +55,9 @@ execute: |
   snap refresh test-snap-component-refreshes --revision=4
   test-snap-component-refreshes one | MATCH '.*revision 4$'
   not test-snap-component-refreshes two
+
+  # note that a revert does bring back the "two" component, since it was
+  # installed when revision 5 was last installed
+  snap revert test-snap-component-refreshes --revision=5
+  test-snap-component-refreshes one | MATCH '.*revision 5$'
+  test-snap-component-refreshes two | MATCH '.*revision 5$'
