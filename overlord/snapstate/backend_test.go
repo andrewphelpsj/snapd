@@ -535,6 +535,14 @@ func (f *fakeStore) lookupRefresh(cand refreshCand) (*snap.Info, error) {
 				Type: snap.KernelModulesComponent,
 				Name: "kernel-modules-component",
 			},
+			"test-component-extra": {
+				Type: snap.TestComponent,
+				Name: "test-component-extra",
+			},
+			"test-component-present-in-both": {
+				Type: snap.TestComponent,
+				Name: "test-component-present-in-both",
+			},
 		}
 	}
 	if name == "some-snap-now-classic" {
@@ -1128,6 +1136,10 @@ func (f *fakeSnappyBackend) ReadInfo(name string, si *snap.SideInfo) (*snap.Info
 			"kernel-modules-component": {
 				Type: snap.KernelModulesComponent,
 				Name: "kernel-modules-component",
+			},
+			"test-component-present-in-both": {
+				Type: snap.TestComponent,
+				Name: "test-component-present-in-both",
 			},
 		}
 	case "services-snap":

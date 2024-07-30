@@ -13811,8 +13811,8 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 	sort.Strings(components)
 
 	compNameToType := func(name string) snap.ComponentType {
-		typ := strings.TrimSuffix(name, "-component")
-		if typ == name {
+		typ, _, ok := strings.Cut(name, "-component")
+		if !ok {
 			c.Fatalf("unexpected component name %q", name)
 		}
 		return snap.ComponentType(typ)
@@ -13849,7 +13849,14 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 		Channel:  channel,
 	}
 
-	seq := snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&prevSI, &currentSI})
+	otherSI := snap.SideInfo{
+		RealName: snapName,
+		Revision: snap.R(99),
+		SnapID:   snapID,
+		Channel:  channel,
+	}
+
+	seq := snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&otherSI, &prevSI, &currentSI})
 
 	currentKmodComps := make([]*snap.ComponentSideInfo, 0, len(components))
 	newKmodComps := make([]*snap.ComponentSideInfo, 0, len(components))
@@ -13889,14 +13896,43 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 			})
 			currentKmodComps = append(currentKmodComps, &currentCsi)
 		}
-
 		currentResources[comp] = snap.R(i + 3)
+	}
+
+	availableComponents := make([]string, len(components))
+	copy(availableComponents, components)
+	availableComponents = append(availableComponents, "test-component-extra", "test-component-present-in-sequence")
+
+	// test-component-extra is installed for just the revision we're moving to,
+	// it should be unlinked and discarded
+	extraCsi := snap.ComponentSideInfo{
+		Component: naming.NewComponentRef(snapName, "test-component-extra"),
+		Revision:  snap.R(len(availableComponents) + 1),
+	}
+	err := seq.AddComponentForRevision(prevSnapRev, &sequence.ComponentState{
+		SideInfo: &extraCsi,
+		CompType: compNameToType(extraCsi.Component.ComponentName),
+	})
+	c.Assert(err, IsNil)
+
+	// test-component-present-in-sequence is installed for the revision we're
+	// moving to and another revision. it should be unlinked, but not discarded.
+	presentInSeqCsi := snap.ComponentSideInfo{
+		Component: naming.NewComponentRef(snapName, "test-component-present-in-sequence"),
+		Revision:  snap.R(len(availableComponents) + 1),
+	}
+	for _, si := range []*snap.SideInfo{&prevSI, &otherSI} {
+		err := seq.AddComponentForRevision(si.Revision, &sequence.ComponentState{
+			SideInfo: &presentInSeqCsi,
+			CompType: compNameToType(presentInSeqCsi.Component.ComponentName),
+		})
+		c.Assert(err, IsNil)
 	}
 
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
 		c.Assert(info.InstanceName(), DeepEquals, instanceName)
 		var results []store.SnapResourceResult
-		for i, compName := range components {
+		for i, compName := range availableComponents {
 			results = append(results, store.SnapResourceResult{
 				DownloadInfo: snap.DownloadInfo{
 					DownloadURL: "http://example.com/" + compName,
@@ -13985,6 +14021,13 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 			revno:  prevSnapRev,
 			userID: 1,
 		},
+	}
+
+	for _, unlinked := range []snap.ComponentSideInfo{extraCsi, presentInSeqCsi} {
+		expected = append(expected, fakeOp{
+			op:   "unlink-component",
+			path: snap.ComponentMountDir(unlinked.Component.ComponentName, unlinked.Revision, instanceName),
+		})
 	}
 
 	for i, compName := range components {
@@ -14084,6 +14127,23 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 		})
 	}
 
+	// note that test-present-in-both-component is not discarded since it is
+	// still referenced by the original snap revision
+	discardedContainerName := fmt.Sprintf("%s+%s", instanceName, extraCsi.Component.ComponentName)
+	discardedFilename := fmt.Sprintf("%s_%v.comp", discardedContainerName, extraCsi.Revision)
+	expected = append(expected, []fakeOp{
+		{
+			op:                "undo-setup-component",
+			containerName:     discardedContainerName,
+			containerFileName: discardedFilename,
+		},
+		{
+			op:                "remove-component-dir",
+			containerName:     discardedContainerName,
+			containerFileName: discardedFilename,
+		},
+	}...)
+
 	expected = append(expected, fakeOp{
 		op:    "cleanup-trash",
 		name:  instanceName,
@@ -14129,11 +14189,11 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 
 	c.Assert(snapst.LastRefreshTime, NotNil)
 	c.Assert(snapst.Active, Equals, true)
-	c.Assert(snapst.Sequence.Revisions, HasLen, 2)
+	c.Assert(snapst.Sequence.Revisions, HasLen, 3)
 
 	// the original revision's components should be replaced with the new
 	// components
-	seq.Revisions[0].Components = nil
+	seq.Revisions[1].Components = nil
 	for i, comp := range components {
 		err := seq.AddComponentForRevision(prevSnapRev, &sequence.ComponentState{
 			SideInfo: &snap.ComponentSideInfo{
@@ -14146,9 +14206,10 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 	}
 
 	// link-snap should put the revision we refreshed to at the end of the
-	// sequence. in this case, swapping their positions.
-	c.Assert(snapst.Sequence.Revisions[1], DeepEquals, seq.Revisions[0])
-	c.Assert(snapst.Sequence.Revisions[0], DeepEquals, seq.Revisions[1])
+	// sequence
+	c.Assert(snapst.Sequence.Revisions[2], DeepEquals, seq.Revisions[1])
+	c.Assert(snapst.Sequence.Revisions[1], DeepEquals, seq.Revisions[2])
+	c.Assert(snapst.Sequence.Revisions[0], DeepEquals, seq.Revisions[0])
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThrough(c *C) {
