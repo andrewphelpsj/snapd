@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/snapcore/snapd/client"
 	"github.com/snapcore/snapd/i18n"
 	"github.com/snapcore/snapd/overlord/snapstate/backend"
 	"github.com/snapcore/snapd/overlord/snapstate/sequence"
@@ -38,9 +39,19 @@ import (
 // InstallComponents installs all of the components in the given names list. The
 // snap represented by info must already be installed, and all of the components
 // in names should not be installed prior to calling this function.
-//
-// TODO:COMPS: respect the transaction that is passed to this function
 func InstallComponents(ctx context.Context, st *state.State, names []string, info *snap.Info, opts Options) ([]*state.TaskSet, error) {
+	if opts.Flags.Transaction != client.TransactionAllSnaps && opts.Flags.Lane != 0 {
+		return nil, errors.New("cannot specify a lane without setting transaction to \"all-snaps\"")
+	}
+
+	if opts.Flags.Transaction == client.TransactionAllSnaps && opts.Flags.Lane == 0 {
+		opts.Flags.Lane = st.NewLane()
+	}
+
+	if err := setDefaultSnapstateOptions(st, &opts); err != nil {
+		return nil, err
+	}
+
 	var snapst SnapState
 	err := Get(st, info.InstanceName(), &snapst)
 	if err != nil {
@@ -119,12 +130,19 @@ func InstallComponents(ctx context.Context, st *state.State, names []string, inf
 		}
 
 		compSetupIDs = append(compSetupIDs, componentTS.compSetupTaskID)
-		tss = append(tss, componentTS.taskSet())
+
+		ts := componentTS.taskSet()
+		ts.JoinLane(generateLane(st, opts))
+
+		tss = append(tss, ts)
 	}
 
 	setupSecurity.Set("component-setup-tasks", compSetupIDs)
 
-	tss = append(tss, state.NewTaskSet(setupSecurity, kmodSetup))
+	ts := state.NewTaskSet(setupSecurity, kmodSetup)
+	ts.JoinLane(generateLane(st, opts))
+
+	tss = append(tss, ts)
 
 	return tss, nil
 }
@@ -223,7 +241,19 @@ func installComponentAction(st *state.State, snapst SnapState, snapRev snap.Revi
 // full metadata in which case the component will appear as installed from the
 // store.
 func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *snap.Info,
-	path string, flags Flags) (*state.TaskSet, error) {
+	path string, opts Options) (*state.TaskSet, error) {
+	if opts.Flags.Transaction != client.TransactionAllSnaps && opts.Flags.Lane != 0 {
+		return nil, errors.New("cannot specify a lane without setting transaction to \"all-snaps\"")
+	}
+
+	if opts.Flags.Transaction == client.TransactionAllSnaps && opts.Flags.Lane == 0 {
+		opts.Flags.Lane = st.NewLane()
+	}
+
+	if err := setDefaultSnapstateOptions(st, &opts); err != nil {
+		return nil, err
+	}
+
 	var snapst SnapState
 	// owner snap must be already installed
 	err := Get(st, info.InstanceName(), &snapst)
@@ -245,7 +275,7 @@ func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *sn
 		Base:        info.Base,
 		SideInfo:    &info.SideInfo,
 		Channel:     info.Channel,
-		Flags:       flags.ForSnapSetup(),
+		Flags:       opts.Flags.ForSnapSetup(),
 		Type:        info.Type(),
 		Version:     info.Version,
 		PlugsOnly:   len(info.Slots) == 0,
@@ -266,7 +296,11 @@ func InstallComponentPath(st *state.State, csi *snap.ComponentSideInfo, info *sn
 		return nil, err
 	}
 
-	return componentTS.taskSet(), nil
+	ts := componentTS.taskSet()
+
+	ts.JoinLane(generateLane(st, opts))
+
+	return ts, nil
 }
 
 type componentInstallFlags struct {

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/snapcore/snapd/client"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/snapstate/sequence"
@@ -246,6 +247,14 @@ func setStateWithComponents(st *state.State, snapName string,
 }
 
 func (s *snapmgrTestSuite) TestInstallComponentPath(c *C) {
+	s.testInstallComponentPath(c, 0)
+}
+
+func (s *snapmgrTestSuite) TestInstallComponentPathWithLane(c *C) {
+	s.testInstallComponentPath(c, 1)
+}
+
+func (s *snapmgrTestSuite) testInstallComponentPath(c *C, lane int) {
 	const snapName = "mysnap"
 	const compName = "mycomp"
 	snapRev := snap.R(1)
@@ -259,9 +268,21 @@ func (s *snapmgrTestSuite) TestInstallComponentPath(c *C) {
 
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
-	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+
+	opts := snapstate.Options{
+		Flags: snapstate.Flags{Lane: lane},
+	}
+	if lane != 0 {
+		opts.Flags.Transaction = client.TransactionAllSnaps
+	}
+
+	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath, opts)
+
 	c.Assert(err, IsNil)
+
+	for _, t := range ts.Tasks() {
+		c.Assert(t.Lanes(), DeepEquals, []int{lane})
+	}
 
 	verifyComponentInstallTasks(c, compOptIsLocal, ts)
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
@@ -285,7 +306,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathWrongComponent(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(ts, IsNil)
 	c.Assert(err, ErrorMatches, `.*"mycomp" is not a component for snap "mysnap"`)
 }
@@ -311,7 +332,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathWrongType(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(ts, IsNil)
 	c.Assert(err.Error(), Equals,
 		`inconsistent component type ("random-comp-type" in snap, "test" in component)`)
@@ -344,7 +365,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathForParallelInstall(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	verifyComponentInstallTasks(c, compOptIsLocal, ts)
@@ -375,7 +396,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathWrongSnap(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, otherInfo, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(ts, IsNil)
 	c.Assert(err, ErrorMatches,
 		`component "mysnap\+mycomp" is not a component for snap "other-snap"`)
@@ -398,7 +419,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathCompRevisionPresent(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, compRev)
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	verifyComponentInstallTasks(c, compOptIsLocal|compOptRevisionPresent|compOptIsActive|compCurrentIsDiscarded, ts)
@@ -438,7 +459,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathCompRevisionPresentDiffSnapRe
 	})
 
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	// In this case there is no unlink-current-component, as the component
@@ -466,7 +487,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathCompAlreadyInstalled(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, compRev)
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	verifyComponentInstallTasks(c, compOptIsLocal|compOptIsActive|compCurrentIsDiscarded, ts)
@@ -497,7 +518,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathSnapNotActive(c *C) {
 	})
 
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err.Error(), Equals, `cannot install component "mysnap+mycomp" for disabled snap "mysnap"`)
 	c.Assert(ts, IsNil)
 	c.Assert(osutil.FileExists(compPath), Equals, true)
@@ -522,7 +543,7 @@ func (s *snapmgrTestSuite) TestInstallComponentRemodelConflict(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(ts, IsNil)
 	c.Assert(err.Error(), Equals,
 		`remodeling in progress, no other changes allowed until this is done`)
@@ -550,7 +571,7 @@ func (s *snapmgrTestSuite) TestInstallComponentUpdateConflict(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(ts, IsNil)
 	c.Assert(err.Error(), Equals,
 		`snap "some-snap" has "update" change in progress`)
@@ -571,7 +592,7 @@ func (s *snapmgrTestSuite) TestInstallKernelModulesComponentPath(c *C) {
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	verifyComponentInstallTasks(c, compOptIsLocal|compTypeIsKernMods, ts)
@@ -614,7 +635,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathCompRevisionPresentInTwoSeqPt
 	csi := snap.NewComponentSideInfo(naming.ComponentRef{
 		SnapName: snapName, ComponentName: compName}, compRev)
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	verifyComponentInstallTasks(c, compOptIsLocal|compOptIsActive, ts)
@@ -642,7 +663,7 @@ func (s *snapmgrTestSuite) TestInstallComponentPathRun(c *C) {
 	cref := naming.NewComponentRef(snapName, compName)
 	csi := snap.NewComponentSideInfo(cref, snap.R(33))
 	ts, err := snapstate.InstallComponentPath(s.state, csi, info, compPath,
-		snapstate.Flags{})
+		snapstate.Options{})
 	c.Assert(err, IsNil)
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
@@ -665,6 +686,14 @@ func (s *snapmgrTestSuite) TestInstallComponentPathRun(c *C) {
 }
 
 func (s *snapmgrTestSuite) TestInstallComponents(c *C) {
+	s.testInstallComponents(c, 0)
+}
+
+func (s *snapmgrTestSuite) TestInstallComponentsWithLane(c *C) {
+	s.testInstallComponents(c, 1)
+}
+
+func (s *snapmgrTestSuite) testInstallComponents(c *C, lane int) {
 	const snapName = "some-snap"
 	snapRev := snap.R(1)
 
@@ -721,7 +750,14 @@ func (s *snapmgrTestSuite) TestInstallComponents(c *C) {
 		return results
 	}
 
-	tss, err := snapstate.InstallComponents(context.Background(), s.state, components, info, snapstate.Options{})
+	opts := snapstate.Options{
+		Flags: snapstate.Flags{Lane: lane},
+	}
+	if lane != 0 {
+		opts.Flags.Transaction = client.TransactionAllSnaps
+	}
+
+	tss, err := snapstate.InstallComponents(context.Background(), s.state, components, info, opts)
 	c.Assert(err, IsNil)
 
 	setupProfiles := tss[len(tss)-1].Tasks()[0]
@@ -734,6 +770,10 @@ func (s *snapmgrTestSuite) TestInstallComponents(c *C) {
 	chg := s.state.NewChange("install", "...")
 	for _, ts := range tss {
 		chg.AddAll(ts)
+
+		for _, t := range ts.Tasks() {
+			c.Assert(t.Lanes(), DeepEquals, []int{lane})
+		}
 	}
 
 	for _, ts := range tss[0 : len(tss)-1] {
