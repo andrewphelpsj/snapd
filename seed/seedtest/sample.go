@@ -111,6 +111,24 @@ version: 2.0
 type: test
 version: 2.0
 `,
+	"component-test": `name: component-test
+type: app
+base: core20
+version: 1.0
+components:
+  comp1:
+    type: test
+  comp2:
+    type: test
+`,
+	"component-test+comp1": `component: component-test+comp1
+type: test
+version: 1.0
+`,
+	"component-test+comp2": `component: component-test+comp2
+type: test
+version: 2.0
+`,
 	"optional20-a": `name: optional20-a
 type: app
 base: core20
