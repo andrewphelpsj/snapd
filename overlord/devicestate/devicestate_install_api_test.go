@@ -21,6 +21,7 @@
 package devicestate_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -397,6 +398,10 @@ var mockFilledPartialDiskVolume = gadget.OnDiskVolume{
 type fakeSeedCopier struct {
 	fakeSeed
 	copyFn func(seedDir string, tm timings.Measurer, opts seed.CopyOptions) error
+}
+
+func (s *fakeSeedCopier) OptionalContainers() (seed.OptionalContainers, error) {
+	return seed.OptionalContainers{}, errors.New("not implemented")
 }
 
 func (s *fakeSeedCopier) Copy(seedDir string, tm timings.Measurer, opts seed.CopyOptions) error {
