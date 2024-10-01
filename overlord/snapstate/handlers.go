@@ -742,6 +742,9 @@ func (m *SnapManager) doDownloadSnap(t *state.Task, tomb *tomb.Tomb) error {
 				Channel:   snapsup.Channel,
 				CohortKey: snapsup.CohortKey,
 				Revision:  snapsup.Revision(),
+				// we can use the empty validation set here, since we don't want
+				// to actually validate anything.
+				ValidationSets: snapasserts.NewValidationSets(),
 			},
 		}, Options{})
 		if err != nil {
