@@ -508,7 +508,6 @@ func storeUpdatePlanCore(
 
 	updates := requested
 	if plan.refreshAll() {
-
 		var vsets *snapasserts.ValidationSets
 		if !opts.Flags.IgnoreValidation {
 			enforced, err := EnforcedValidationSets(st)
@@ -545,7 +544,7 @@ func storeUpdatePlanCore(
 			return updatePlan{}, snap.NotInstalledError{Snap: update.InstanceName}
 		}
 
-		if snapst.HasActiveComponents() {
+		if snapst.HasActiveComponents() || update.InstallRequiredComponents {
 			requestComponentsFromStore = true
 		}
 	}
@@ -579,7 +578,7 @@ func storeUpdatePlanCore(
 	}
 
 	for _, name := range localAmends {
-		hasLocalRevision[allSnaps[name]] = updates[name].RevOpts
+		hasLocalRevision[name] = allSnaps[name]
 	}
 
 	for id, actions := range amendActionsByUserID {
@@ -593,7 +592,7 @@ func storeUpdatePlanCore(
 	}
 
 	for _, name := range noStoreUpdates {
-		hasLocalRevision[allSnaps[name]] = updates[name].RevOpts
+		hasLocalRevision[name] = allSnaps[name]
 	}
 
 	for _, sar := range sars {
@@ -618,6 +617,17 @@ func storeUpdatePlanCore(
 		for _, comp := range currentComps {
 			compNames = append(compNames, comp.Component.ComponentName)
 		}
+
+		if up.InstallRequiredComponents {
+			p, err := up.RevOpts.ValidationSets.Presence(sar.Info)
+			if err != nil {
+				return updatePlan{}, err
+			}
+
+			compNames = append(compNames, keys(p.RequiredComponents())...)
+		}
+
+		compNames = unique(compNames)
 
 		// compTargets will be filtered down to only the components that appear
 		// in the action result, meaning that we might install fewer components
@@ -646,10 +656,15 @@ func storeUpdatePlanCore(
 
 	// consider snaps that already have a local copy of the revision that we are
 	// trying to install, skipping a trip to the store
-	for snapst, revOpts := range hasLocalRevision {
+	for name, snapst := range hasLocalRevision {
+		up, ok := updates[name]
+		if !ok {
+			return updatePlan{}, fmt.Errorf("internal error: unexpected update to local revision: %q", snapst.InstanceName())
+		}
+
 		var si *snap.SideInfo
-		if !revOpts.Revision.Unset() {
-			si = snapst.Sequence.Revisions[snapst.LastIndex(revOpts.Revision)].Snap
+		if !up.RevOpts.Revision.Unset() {
+			si = snapst.Sequence.Revisions[snapst.LastIndex(up.RevOpts.Revision)].Snap
 		} else {
 			si = snapst.CurrentSideInfo()
 		}
@@ -669,10 +684,21 @@ func storeUpdatePlanCore(
 			return updatePlan{}, err
 		}
 
+		if up.InstallRequiredComponents {
+			p, err := up.RevOpts.ValidationSets.Presence(snapst)
+			if err != nil {
+				return updatePlan{}, err
+			}
+
+			compsToInstall = append(compsToInstall, keys(p.RequiredComponents())...)
+		}
+
+		compsToInstall = unique(compsToInstall)
+
 		compsups, err := componentSetupsForInstall(ctx, st, compsToInstall, *snapst, RevisionOptions{
-			Channel:        revOpts.Channel,
+			Channel:        up.RevOpts.Channel,
 			Revision:       si.Revision,
-			ValidationSets: revOpts.ValidationSets,
+			ValidationSets: up.RevOpts.ValidationSets,
 		}, opts)
 		if err != nil {
 			return updatePlan{}, err
@@ -681,25 +707,25 @@ func storeUpdatePlanCore(
 		// this must happen after the call to componentSetupsForInstall, since
 		// we can't set the channel to the tracking channel if we don't know
 		// that the requested revision is part of this channel
-		revOpts.setChannelIfUnset(snapst.TrackingChannel)
+		up.RevOpts.setChannelIfUnset(snapst.TrackingChannel)
 
 		// make sure that we switch the current channel of the snap that we're
 		// switching to
-		info.Channel = revOpts.Channel
+		info.Channel = up.RevOpts.Channel
 
 		plan.targets = append(plan.targets, target{
 			info:   info,
 			snapst: *snapst,
 			setup: SnapSetup{
-				Channel:   revOpts.Channel,
-				CohortKey: revOpts.CohortKey,
+				Channel:   up.RevOpts.Channel,
+				CohortKey: up.RevOpts.CohortKey,
 				SnapPath:  info.MountFile(),
 
 				// if the caller specified a revision, then we always run
 				// through the entire update process. this enables something
 				// like "snap refresh --revision=n", where revision n is already
 				// installed
-				AlwaysUpdate: !revOpts.Revision.Unset(),
+				AlwaysUpdate: !up.RevOpts.Revision.Unset(),
 			},
 			components: compsups,
 		})
@@ -758,8 +784,8 @@ func collectCurrentSnapsAndActions(
 	requested []string,
 	opts Options,
 	fallbackID int,
-) (actionsByUserID map[int][]*store.SnapAction, hasLocalRevision map[*SnapState]RevisionOptions, current []*store.CurrentSnap, err error) {
-	hasLocalRevision = make(map[*SnapState]RevisionOptions)
+) (actionsByUserID map[int][]*store.SnapAction, hasLocalRevision map[string]*SnapState, current []*store.CurrentSnap, err error) {
+	hasLocalRevision = make(map[string]*SnapState)
 	actionsByUserID = make(map[int][]*store.SnapAction)
 	refreshAll := len(requested) == 0
 
@@ -784,7 +810,7 @@ func collectCurrentSnapsAndActions(
 		}
 
 		if !req.RevOpts.Revision.Unset() && snapst.LastIndex(req.RevOpts.Revision) != -1 {
-			hasLocalRevision[snapst] = req.RevOpts
+			hasLocalRevision[snapst.InstanceName()] = snapst
 			return nil
 		}
 
@@ -812,7 +838,7 @@ func collectCurrentSnapsAndActions(
 		// consider this snap for a store update, but we still should return it
 		// as a target for potentially switching channels or cohort keys
 		if !action.Revision.Unset() && action.Revision == installed.Revision {
-			hasLocalRevision[snapst] = req.RevOpts
+			hasLocalRevision[installed.InstanceName] = snapst
 			return nil
 		}
 

@@ -1200,6 +1200,10 @@ type StoreUpdate struct {
 	InstanceName string
 	// RevOpts contains options that apply to the update of this snap.
 	RevOpts RevisionOptions
+	// InstallRequiredComponents should be set to true if the caller wants to
+	// automatically install any components that are required by validation
+	// sets.
+	InstallRequiredComponents bool
 }
 
 // StoreUpdateGoal creates a new UpdateGoal to update snaps from the store.
