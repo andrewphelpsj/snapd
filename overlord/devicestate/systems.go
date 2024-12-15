@@ -242,6 +242,24 @@ func (ig *setupInfoGetter) ComponentInfo(st *state.State, cref naming.ComponentR
 	//   * have just been downloaded by a task in setup.ComponentSetupTasks
 	//   * already installed on the system
 
+	for _, l := range ig.setup.LocalComponents {
+		if l.SideInfo.Component != cref {
+			continue
+		}
+
+		snapf, err := snapfile.Open(l.Path)
+		if err != nil {
+			return nil, "", false, err
+		}
+
+		info, err := snap.ReadComponentInfoFromContainer(snapf, snapInfo, l.SideInfo)
+		if err != nil {
+			return nil, "", false, err
+		}
+
+		return info, l.Path, true, nil
+	}
+
 	// in a remodel scenario, the components may need to be fetched and thus
 	// their content can be different from what we have already installed, so we
 	// should first check the download tasks before consulting snapstate
@@ -408,8 +426,9 @@ func createSystemForModelFromValidatedSnaps(
 
 	wOpts := &seedwriter.Options{
 		// RW mount of ubuntu-seed
-		SeedDir: boot.InitramfsUbuntuSeedDir,
-		Label:   label,
+		SeedDir:                    boot.InitramfsUbuntuSeedDir,
+		Label:                      label,
+		IgnoreOptionFileExtentions: true,
 	}
 	w, err := seedwriter.New(model, wOpts)
 	if err != nil {
