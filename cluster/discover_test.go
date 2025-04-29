@@ -17,21 +17,27 @@ type discoverySuite struct{}
 var _ = Suite(&discoverySuite{})
 
 func (s *discoverySuite) TestDiscoverer(c *C) {
-	expected := []net.IP{
-		[]byte{192, 168, 0, 41},
-		[]byte{192, 168, 0, 42},
+	expected := []cluster.UntrustedPeer{
+		{
+			IP:   []byte{192, 168, 0, 41},
+			Port: 9090,
+		},
+		{
+			IP:   []byte{192, 168, 0, 42},
+			Port: 9091,
+		},
 	}
 
 	one := cluster.AdvertiseOpts{
 		Instance: "one",
-		Port:     9090,
-		IPs:      []net.IP{expected[0]},
+		Port:     expected[0].Port,
+		IPs:      []net.IP{expected[0].IP},
 	}
 
 	two := cluster.AdvertiseOpts{
 		Instance: "two",
-		Port:     9091,
-		IPs:      []net.IP{expected[1]},
+		Port:     expected[1].Port,
+		IPs:      []net.IP{expected[1].IP},
 	}
 
 	oneStop, err := cluster.Advertise(one)
@@ -46,14 +52,14 @@ func (s *discoverySuite) TestDiscoverer(c *C) {
 		c.Assert(twoStop(), IsNil)
 	}()
 
-	// first discover should see both IPs
+	// first discover should see both peers
 	ctx := context.Background()
 	ips, err := cluster.Discover(ctx, cluster.DiscoverOpts{})
 	c.Assert(err, IsNil)
 
 	c.Assert(ips, testutil.DeepUnsortedMatches, expected)
 
-	// stop one, then we should only see two's IP
+	// stop one, then we should only see two
 	err = oneStop()
 	c.Assert(err, IsNil)
 

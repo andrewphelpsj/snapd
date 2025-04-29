@@ -15,20 +15,25 @@ import (
 
 func run() error {
 	name := flag.String("node", "", "name of the node")
-	ip := flag.String("ip", "", "ip of the node")
 	domain := flag.String("domain", "", "domain of the node")
 	hostname := flag.String("hostname", "", "hostname of the node")
-	i := flag.String("iface", "", "iface of the node")
+	ipStr := flag.String("ip", "", "ip of the node")
+	ifaceStr := flag.String("iface", "", "iface of the node")
 	flag.Parse()
 
-	iface, err := net.InterfaceByName(*i)
+	if *name == "" || *ipStr == "" || *domain == "" || *ifaceStr == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	iface, err := net.InterfaceByName(*ifaceStr)
 	if err != nil {
 		return err
 	}
 
-	addr := net.ParseIP(*ip)
-	if addr == nil {
-		return fmt.Errorf("invalid ip: %s", *ip)
+	ip := net.ParseIP(*ipStr)
+	if ip == nil {
+		return fmt.Errorf("invalid ip: %s", *ipStr)
 	}
 
 	stop, err := cluster.Advertise(cluster.AdvertiseOpts{
@@ -37,7 +42,7 @@ func run() error {
 		Domain:    *domain,
 		Hostname:  *hostname,
 		Interface: iface,
-		IPs:       []net.IP{addr},
+		IPs:       []net.IP{ip},
 	})
 	if err != nil {
 		return err
@@ -50,21 +55,10 @@ func run() error {
 			log.Println("advertising stopped")
 		}
 	}()
-	fmt.Printf("advertising ip: %v\n", addr)
+	fmt.Printf("advertising ip: %v\n", ip)
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
-	defer func() {
-		signal.Stop(signals)
-		close(signals)
-	}()
-
-	// cancel context when we get a signal
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-signals
-		cancel()
-	}()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -79,13 +73,11 @@ func run() error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// looks weird, but we want to fail early if the context is canceled
-			// and the ticker happened to win the select
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-			}
+		}
+
+		// fail early even if the ticker won the select
+		if ctx.Err() != nil {
+			return nil
 		}
 
 		ips, err := cluster.Discover(ctx, opts)

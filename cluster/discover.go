@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -44,7 +45,16 @@ type DiscoverOpts struct {
 	Interface *net.Interface
 }
 
-func Discover(ctx context.Context, opts DiscoverOpts) ([]net.IP, error) {
+type UntrustedPeer struct {
+	IP   net.IP
+	Port int
+}
+
+func (up *UntrustedPeer) String() string {
+	return fmt.Sprintf("%v:%d", up.IP, up.Port)
+}
+
+func Discover(ctx context.Context, opts DiscoverOpts) ([]UntrustedPeer, error) {
 	// reasonably large buffer, since the mdns library will drop entries if we
 	// cannot process them fast enough
 	//
@@ -57,12 +67,15 @@ func Discover(ctx context.Context, opts DiscoverOpts) ([]net.IP, error) {
 	params.Domain = opts.Domain
 	params.Logger = log.New(io.Discard, "", 0)
 
-	var ips []net.IP
+	var peers []UntrustedPeer
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for entry := range ch {
-			ips = append(ips, entry.AddrV4)
+			peers = append(peers, UntrustedPeer{
+				IP:   entry.AddrV4,
+				Port: entry.Port,
+			})
 		}
 	}()
 
@@ -75,5 +88,5 @@ func Discover(ctx context.Context, opts DiscoverOpts) ([]net.IP, error) {
 	close(ch)
 	<-done
 
-	return ips, nil
+	return peers, nil
 }
