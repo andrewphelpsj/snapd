@@ -63,10 +63,6 @@ type UntrustedPeer struct {
 	Port int
 }
 
-func (up *UntrustedPeer) String() string {
-	return fmt.Sprintf("%v:%d", up.IP, up.Port)
-}
-
 func Discover(ctx context.Context, opts DiscoverOpts) ([]UntrustedPeer, error) {
 	// reasonably large buffer, since the mdns library will drop entries if we
 	// cannot process them fast enough
@@ -163,7 +159,7 @@ type route struct {
 	to   string
 }
 
-func (r *routes) add(rt route) {
+func (r *routes) addRoute(rt route) {
 	if !contains(r.devices, rt.from) {
 		r.devices = append(r.devices, rt.from)
 	}
@@ -178,6 +174,12 @@ func (r *routes) add(rt route) {
 
 	if !contains(r.routes, rt) {
 		r.routes = append(r.routes, rt)
+	}
+}
+
+func (r *routes) addAddress(addr string) {
+	if !contains(r.addresses, addr) {
+		r.addresses = append(r.addresses, addr)
 	}
 }
 
@@ -239,7 +241,7 @@ func (r *routes) merge(ar AssembleRoutes) error {
 	}
 
 	for _, rt := range routes {
-		r.add(rt)
+		r.addRoute(rt)
 	}
 
 	return nil
@@ -325,12 +327,12 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 	}
 	a.trusted[auth.RDT] = peer
 
-	updates := make(chan AssembleRoutes)
+	updates := make(chan AssembleRoutes, 1024)
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 
-		var previous AssembleRoutes
+		// var previous AssembleRoutes
 		var pending *AssembleRoutes
 		backoff := time.Second
 
@@ -355,15 +357,20 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 				update = u
 			}
 
+			// make sure that we include the route from this node to the peer
 			ensureRoute(&update, a.me, peer)
 
 			if err := sendNoResponse(ctx, &a.client, peer.IP, peer.Port, "assemble-routes", update); err != nil {
+				if a.errors != nil {
+					a.errors(err)
+				}
+
 				pending = &update
 				backoff = min(backoff*2, time.Minute)
 				continue
 			}
 
-			previous = update
+			// previous = update
 			backoff = time.Second
 		}
 	}()
@@ -424,13 +431,18 @@ func ensureRoute(ar *AssembleRoutes, src TrustedPeer, dest TrustedPeer) {
 		destIndex = len(ar.Devices) - 1
 	}
 
-	destAddress := fmt.Sprintf("%s:%d", dest.IP, dest.Port)
+	destAddress := peerAddress(dest.IP, dest.Port)
 	var routeIndex int
 	if i := slices.Index(ar.Addresses, destAddress); i >= 0 {
 		routeIndex = i
 	} else {
 		ar.Addresses = append(ar.Addresses, destAddress)
 		routeIndex = len(ar.Addresses) - 1
+	}
+
+	srcAddress := peerAddress(src.IP, src.Port)
+	if !slices.Contains(ar.Addresses, srcAddress) {
+		ar.Addresses = append(ar.Addresses, srcAddress)
 	}
 
 	srcToDest := []int{srcIndex, destIndex, routeIndex}
@@ -442,6 +454,10 @@ func ensureRoute(ar *AssembleRoutes, src TrustedPeer, dest TrustedPeer) {
 	}
 
 	ar.Routes = append(ar.Routes, srcToDest...)
+}
+
+func peerAddress(ip net.IP, port int) string {
+	return fmt.Sprintf("%s:%d", ip, port)
 }
 
 func calculateFP(conn *tls.ConnectionState) ([]byte, error) {
@@ -542,6 +558,9 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) ([]Tr
 
 	gossip := make(chan []UntrustedPeer)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	assembler := newAssembler(opts.Secret, "TODO", opts.ListenIP, opts.ListenPort)
 	defer assembler.stop()
 
@@ -589,11 +608,12 @@ func peerNotifier(ctx context.Context, discover Discoverer, period time.Duration
 
 		var copied []UntrustedPeer
 		for _, p := range peers {
-			if seen[p.String()] {
+			addr := peerAddress(p.IP, p.Port)
+			if seen[addr] {
 				continue
 			}
 
-			seen[p.String()] = true
+			seen[addr] = true
 			copied = append(copied, p)
 		}
 
