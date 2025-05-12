@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -276,50 +277,6 @@ func (r *routes) export() AssembleRoutes {
 	}
 }
 
-// func (r *routes) merge(ar AssembleRoutes) error {
-// 	if len(ar.Routes)%3 != 0 {
-// 		return errors.New("length of routes list in assemble-routes must be a multiple of three")
-// 	}
-//
-// 	var routes []route
-// 	for i := 0; i+2 < len(ar.Routes); i += 3 {
-// 		if ar.Routes[i] < 0 || ar.Routes[i+1] < 0 || ar.Routes[i+2] < 0 {
-// 			return errors.New("invalid index in assemble-routes")
-// 		}
-//
-// 		if ar.Routes[i] > len(ar.Devices) || ar.Routes[i+1] > len(ar.Devices) || ar.Routes[i+2] > len(ar.Addresses) {
-// 			return errors.New("invalid index in assemble-routes")
-// 		}
-//
-// 		routes = append(routes, route{
-// 			from: ar.Devices[ar.Routes[i]],
-// 			to:   ar.Devices[ar.Routes[i+1]],
-// 			via:  ar.Addresses[ar.Routes[i+2]],
-// 		})
-// 	}
-//
-// 	// TODO: consider if this is actually what we want to do here
-// 	for _, other := range routes {
-// 		for _, rt := range r.routes {
-// 			if rt.from == other.from && rt.to == other.to && rt.via != other.via {
-// 				return fmt.Errorf(
-// 					"route inconsistency found: %s -> %s via both %s and %s",
-// 					rt.from,
-// 					rt.to,
-// 					rt.via,
-// 					other.via,
-// 				)
-// 			}
-// 		}
-// 	}
-//
-// 	for _, rt := range routes {
-// 		r.addRoute(rt)
-// 	}
-//
-// 	return nil
-// }
-
 func createCert(ip net.IP) (tls.Certificate, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -331,11 +288,14 @@ func createCert(ip net.IP) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 
+	// TODO: rotation, renewal? don't worry about it? for now make it last until
+	// the next century.
+	now := time.Now()
 	template := x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "localhost-ed25519"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
+		NotBefore:    now,
+		NotAfter:     now.AddDate(100, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		IPAddresses:  []net.IP{ip},
@@ -358,13 +318,10 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 		return nil, err
 	}
 
-	ln, err := net.Listen("tcp", ":8443")
-	if err != nil {
-		return nil, err
-	}
-	defer ln.Close()
-
+	addr := peerAddress(ip, port)
 	a := assembler{
+		// TODO: consider creating clients for each peer that can only be used
+		// to communicate wit that peer
 		client: http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -388,11 +345,18 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 			log.Printf("cluster assemble error: %v\n", err)
 		},
 		trusted: make(map[string]TrustedPeer),
-		server: &http.Server{
-			Addr:      peerAddress(ip, port),
-			Handler:   nil,
-			TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
-		},
+	}
+
+	a.server = &http.Server{
+		Addr:      addr,
+		Handler:   http.HandlerFunc(a.handle),
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+	}
+
+	// this will be closed by assembler.stop
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
 	}
 
 	go func() {
@@ -406,6 +370,50 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 
 	return &a, nil
 
+}
+
+func (a *assembler) handle(w http.ResponseWriter, r *http.Request) {
+	if r.TLS == nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	peerFP, err := calculateFP(r.TLS)
+	if err != nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	a.lock.Lock()
+	defer a.lock.Unlock()
+
+	// if this peer isn't trusted, then we only allow
+	tp, ok := a.trusted[hex.EncodeToString(peerFP)]
+	if !ok {
+		a.handleAuth(w, r, peerFP)
+		return
+	}
+
+	type message struct {
+		Kind string `json:"kind"`
+		json.RawMessage
+	}
+}
+
+func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request, peerFP []byte) {
+	// set a max size so a malicious peer can't send some insane JSON
+	const maxAuthSize = 1024 * 4
+	var auth AssembleAuth
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxAuthSize)).Decode(&auth); err != nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	expectedHMAC := calculateHMAC(auth.RDT, peerFP, a.secret)
+	if !hmac.Equal(expectedHMAC, auth.HMAC) {
+		w.WriteHeader(403)
+		return
+	}
 }
 
 func (a *assembler) stop() {
@@ -461,7 +469,7 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 		IP:   up.IP,
 		Port: up.Port,
 	}
-	a.trusted[auth.RDT] = peer
+	a.trusted[hex.EncodeToString(peerFP)] = peer
 
 	updates := make(chan routes, 1024)
 	a.wg.Add(1)
@@ -506,7 +514,7 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 			}
 
 			message := routes.export()
-			if err := sendNoResponse(ctx, &a.client, peer.IP, peer.Port, "assemble-routes", message); err != nil {
+			if err := sendCheckOK(ctx, &a.client, peer.IP, peer.Port, "assemble-routes", message); err != nil {
 				pending = &routes
 				backoff = min(backoff*2, time.Minute)
 
@@ -579,7 +587,7 @@ func calculateHMAC(rdt string, fp []byte, secret string) []byte {
 	return mac.Sum(nil)
 }
 
-func sendNoResponse(ctx context.Context, client *http.Client, ip net.IP, port int, kind string, data any) error {
+func sendCheckOK(ctx context.Context, client *http.Client, ip net.IP, port int, kind string, data any) error {
 	res, err := send(ctx, client, ip, port, kind, data)
 	if err != nil {
 		return err
