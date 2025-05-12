@@ -3,15 +3,21 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"sort"
@@ -119,9 +125,9 @@ type AssembleOpts struct {
 
 type assembler struct {
 	client http.Client
+	server *http.Server
 	secret string
-	host   string
-	me     TrustedPeer
+	local  TrustedPeer
 
 	lock sync.Mutex
 
@@ -141,59 +147,126 @@ type assembler struct {
 	// peer. Additionally, we will include our address as well.
 	verified routes
 
-	peers []chan<- AssembleRoutes
+	peers []chan<- routes
 	wg    sync.WaitGroup
 
 	errors func(error)
 }
 
 type routes struct {
-	devices   []string
-	addresses []string
-	routes    []route
+	devices   map[string]*device
+	addresses map[string]struct{}
 }
 
-type route struct {
-	from string
-	via  string
-	to   string
-}
-
-func (r *routes) addRoute(rt route) {
-	if !contains(r.devices, rt.from) {
-		r.devices = append(r.devices, rt.from)
-	}
-
-	if !contains(r.devices, rt.to) {
-		r.devices = append(r.devices, rt.to)
-	}
-
-	if !contains(r.addresses, rt.via) {
-		r.addresses = append(r.addresses, rt.via)
-	}
-
-	if !contains(r.routes, rt) {
-		r.routes = append(r.routes, rt)
+func newRoutes() routes {
+	return routes{
+		devices:   make(map[string]*device),
+		addresses: make(map[string]struct{}),
 	}
 }
 
-func (r *routes) addAddress(addr string) {
-	if !contains(r.addresses, addr) {
-		r.addresses = append(r.addresses, addr)
+type device struct {
+	rdt         string
+	connections map[string]*device
+}
+
+func (r *routes) add(from, to, via string) error {
+	if _, ok := r.devices[from]; !ok {
+		r.devices[from] = &device{
+			rdt:         from,
+			connections: make(map[string]*device),
+		}
 	}
+
+	if _, ok := r.devices[to]; !ok {
+		r.devices[to] = &device{
+			rdt:         to,
+			connections: make(map[string]*device),
+		}
+	}
+
+	if peer, ok := r.devices[from].connections[via]; ok && peer != r.devices[to] {
+		return errors.New("cannot overwrite already existing route with new destination")
+	}
+
+	r.devices[from].connections[via] = r.devices[to]
+	r.addresses[via] = struct{}{}
+
+	return nil
+}
+
+func (r *routes) equals(other routes) bool {
+	if !maps.Equal(r.addresses, other.addresses) {
+		return false
+	}
+
+	if len(r.devices) != len(other.devices) {
+		return false
+	}
+
+	for rdt, d := range r.devices {
+		otherDevice, ok := other.devices[rdt]
+		if !ok {
+			return false
+		}
+
+		if len(d.connections) != len(otherDevice.connections) {
+			return false
+		}
+
+		for via, to := range d.connections {
+			otherPeer, ok := otherDevice.connections[via]
+			if !ok {
+				return false
+			}
+
+			if otherPeer.rdt != to.rdt {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func (r *routes) clone() routes {
+	cloned := routes{
+		addresses: maps.Clone(r.addresses),
+		devices:   make(map[string]*device, len(r.devices)),
+	}
+
+	for _, d := range r.devices {
+		cloned.devices[d.rdt] = &device{
+			rdt:         d.rdt,
+			connections: make(map[string]*device, len(d.connections)),
+		}
+	}
+
+	for _, from := range r.devices {
+		for via, to := range from.connections {
+			cloned.devices[from.rdt].connections[via] = cloned.devices[to.rdt]
+		}
+	}
+
+	return cloned
 }
 
 func (r *routes) export() AssembleRoutes {
-	devices := sort.StringSlice(r.devices)
-	addresses := sort.StringSlice(r.addresses)
+	devices := slices.Sorted(maps.Keys(r.devices))
+	addresses := slices.Sorted(maps.Keys(r.addresses))
 
 	var routes []int
-	for _, rt := range r.routes {
-		routes = append(routes, []int{
-			sort.SearchStrings(devices, rt.from),
-			sort.SearchStrings(devices, rt.to),
-			sort.SearchStrings(addresses, rt.via),
-		}...)
+	for _, from := range devices {
+		from := r.devices[from]
+		connections := slices.Sorted(maps.Keys(from.connections))
+		for _, via := range connections {
+			to := from.connections[via]
+			routes = append(routes, []int{
+				sort.SearchStrings(devices, from.rdt),
+				sort.SearchStrings(devices, to.rdt),
+				sort.SearchStrings(addresses, via),
+			}...)
+		}
 	}
 
 	return AssembleRoutes{
@@ -203,56 +276,95 @@ func (r *routes) export() AssembleRoutes {
 	}
 }
 
-func (r *routes) merge(ar AssembleRoutes) error {
-	if len(ar.Routes)%3 != 0 {
-		return errors.New("length of routes list in assemble-routes must be a multiple of three")
+// func (r *routes) merge(ar AssembleRoutes) error {
+// 	if len(ar.Routes)%3 != 0 {
+// 		return errors.New("length of routes list in assemble-routes must be a multiple of three")
+// 	}
+//
+// 	var routes []route
+// 	for i := 0; i+2 < len(ar.Routes); i += 3 {
+// 		if ar.Routes[i] < 0 || ar.Routes[i+1] < 0 || ar.Routes[i+2] < 0 {
+// 			return errors.New("invalid index in assemble-routes")
+// 		}
+//
+// 		if ar.Routes[i] > len(ar.Devices) || ar.Routes[i+1] > len(ar.Devices) || ar.Routes[i+2] > len(ar.Addresses) {
+// 			return errors.New("invalid index in assemble-routes")
+// 		}
+//
+// 		routes = append(routes, route{
+// 			from: ar.Devices[ar.Routes[i]],
+// 			to:   ar.Devices[ar.Routes[i+1]],
+// 			via:  ar.Addresses[ar.Routes[i+2]],
+// 		})
+// 	}
+//
+// 	// TODO: consider if this is actually what we want to do here
+// 	for _, other := range routes {
+// 		for _, rt := range r.routes {
+// 			if rt.from == other.from && rt.to == other.to && rt.via != other.via {
+// 				return fmt.Errorf(
+// 					"route inconsistency found: %s -> %s via both %s and %s",
+// 					rt.from,
+// 					rt.to,
+// 					rt.via,
+// 					other.via,
+// 				)
+// 			}
+// 		}
+// 	}
+//
+// 	for _, rt := range routes {
+// 		r.addRoute(rt)
+// 	}
+//
+// 	return nil
+// }
+
+func createCert(ip net.IP) (tls.Certificate, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
 	}
 
-	var routes []route
-	for i := 0; i+2 < len(ar.Routes); i += 3 {
-		if ar.Routes[i] < 0 || ar.Routes[i+1] < 0 || ar.Routes[i+2] < 0 {
-			return errors.New("invalid index in assemble-routes")
-		}
-
-		if ar.Routes[i] > len(ar.Devices) || ar.Routes[i+1] > len(ar.Devices) || ar.Routes[i+2] > len(ar.Addresses) {
-			return errors.New("invalid index in assemble-routes")
-		}
-
-		routes = append(routes, route{
-			from: ar.Devices[ar.Routes[i]],
-			to:   ar.Devices[ar.Routes[i+1]],
-			via:  ar.Addresses[ar.Routes[i+2]],
-		})
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return tls.Certificate{}, err
 	}
 
-	// TODO: consider if this is actually what we want to do here
-	for _, other := range routes {
-		for _, rt := range r.routes {
-			if rt.from == other.from && rt.to == other.to && rt.via != other.via {
-				return fmt.Errorf(
-					"route inconsistency found: %s -> %s via both %s and %s",
-					rt.from,
-					rt.to,
-					rt.via,
-					other.via,
-				)
-			}
-		}
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "localhost-ed25519"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{ip},
 	}
 
-	for _, rt := range routes {
-		r.addRoute(rt)
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, pub, priv)
+	if err != nil {
+		return tls.Certificate{}, err
 	}
 
-	return nil
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv.Seed()})
+
+	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-func contains[S ~[]E, E comparable](s S, v E) bool {
-	return slices.Contains(s, v)
-}
+func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, error) {
+	cert, err := createCert(ip)
+	if err != nil {
+		return nil, err
+	}
 
-func newAssembler(secret string, rdt string, ip net.IP, port int) *assembler {
-	return &assembler{
+	ln, err := net.Listen("tcp", ":8443")
+	if err != nil {
+		return nil, err
+	}
+	defer ln.Close()
+
+	a := assembler{
 		client: http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -264,14 +376,36 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) *assembler {
 			},
 			Timeout: time.Second * 10,
 		},
-		me: TrustedPeer{
+		local: TrustedPeer{
 			IP:   ip,
 			Port: port,
 			RDT:  rdt,
 		},
-		secret:  secret,
+		secret:     secret,
+		unverified: newRoutes(),
+		verified:   newRoutes(),
+		errors: func(err error) {
+			log.Printf("cluster assemble error: %v\n", err)
+		},
 		trusted: make(map[string]TrustedPeer),
+		server: &http.Server{
+			Addr:      peerAddress(ip, port),
+			Handler:   nil,
+			TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+		},
 	}
+
+	go func() {
+		defer a.wg.Done()
+
+		listener := tls.NewListener(ln, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		})
+		a.server.Serve(listener)
+	}()
+
+	return &a, nil
+
 }
 
 func (a *assembler) stop() {
@@ -282,13 +416,15 @@ func (a *assembler) stop() {
 		close(ch)
 	}
 
+	a.server.Shutdown(context.Background())
+
 	a.wg.Wait()
 }
 
 func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 	res, err := send(ctx, &a.client, up.IP, up.Port, "assemble-auth", AssembleAuth{
 		HMAC: []byte("TODO"),
-		RDT:  a.me.RDT,
+		RDT:  a.local.RDT,
 	})
 	if err != nil {
 		return err
@@ -327,60 +463,69 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 	}
 	a.trusted[auth.RDT] = peer
 
-	updates := make(chan AssembleRoutes, 1024)
+	updates := make(chan routes, 1024)
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 
-		// var previous AssembleRoutes
-		var pending *AssembleRoutes
+		previous := newRoutes()
+		var pending *routes
 		backoff := time.Second
 
 		for {
-			var update AssembleRoutes
+			var routes routes
 			if pending != nil {
 				select {
-				case u, ok := <-updates:
+				case r, ok := <-updates:
 					if !ok {
 						return
 					}
-					update = u
+					routes = r
 				case <-time.After(backoff):
-					update = *pending
+					routes = *pending
 				}
 				pending = nil
 			} else {
-				u, ok := <-updates
+				r, ok := <-updates
 				if !ok {
 					return
 				}
-				update = u
+				routes = r
 			}
 
-			// make sure that we include the route from this node to the peer
-			ensureRoute(&update, a.me, peer)
-
-			if err := sendNoResponse(ctx, &a.client, peer.IP, peer.Port, "assemble-routes", update); err != nil {
-				if a.errors != nil {
-					a.errors(err)
-				}
-
-				pending = &update
-				backoff = min(backoff*2, time.Minute)
+			if err := routes.add(a.local.RDT, peer.RDT, peerAddress(peer.IP, peer.Port)); err != nil {
+				a.errors(err)
 				continue
 			}
 
-			// previous = update
+			routes.addresses[peerAddress(a.local.IP, a.local.Port)] = struct{}{}
+
+			// if we're just sending the same thing again, don't bother
+			if routes.equals(previous) {
+				continue
+			}
+
+			message := routes.export()
+			if err := sendNoResponse(ctx, &a.client, peer.IP, peer.Port, "assemble-routes", message); err != nil {
+				pending = &routes
+				backoff = min(backoff*2, time.Minute)
+
+				a.errors(err)
+				continue
+			}
+
+			previous = routes
 			backoff = time.Second
 		}
 	}()
 
 	a.peers = append(a.peers, updates)
 
-	// the first update here might be entirely empty, but the thread interfacing
-	// with the peer is responsible for adding the route from this node to
-	// destination peer
-	updates <- a.verified.export()
+	// the first update to the first peer will be entirely empty, but the thread
+	// interfacing with the peer is responsible for adding the route from this
+	// node to destination peer. we won't officially add the route until we see
+	// an assemble-devices message from the peer
+	updates <- a.verified.clone()
 
 	// once this happens, we will notify all peers that we have new info? what
 	// is that new info. for each peer, generate a assemble-routes message.
@@ -391,9 +536,9 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 	// we can make all of the routes from us on our own, via this verified
 	// mapping above (we know our advertised ip, so we can make the full tuple)
 	//
-	// all the other routes we need to combine info from the other peers.
-	// we will consider what all the peers have sent us, and filter out routes
-	// for devices we haven't seen an assemble-known-devices message about. of
+	// all the other routes we need to combine info from the other peers. we
+	// will consider what all the peers have sent us, and filter out routes for
+	// devices we haven't seen an assemble-known-devices message about. of
 	// course we can include the peer itself when sending an assemble-routes to
 	// that peer, since they know about themselves
 
@@ -412,48 +557,6 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 	// client
 
 	return nil
-}
-
-func ensureRoute(ar *AssembleRoutes, src TrustedPeer, dest TrustedPeer) {
-	var srcIndex int
-	if i := slices.Index(ar.Devices, src.RDT); i >= 0 {
-		srcIndex = i
-	} else {
-		ar.Devices = append(ar.Devices, src.RDT)
-		srcIndex = len(ar.Devices) - 1
-	}
-
-	var destIndex int
-	if i := slices.Index(ar.Devices, dest.RDT); i >= 0 {
-		destIndex = i
-	} else {
-		ar.Devices = append(ar.Devices, dest.RDT)
-		destIndex = len(ar.Devices) - 1
-	}
-
-	destAddress := peerAddress(dest.IP, dest.Port)
-	var routeIndex int
-	if i := slices.Index(ar.Addresses, destAddress); i >= 0 {
-		routeIndex = i
-	} else {
-		ar.Addresses = append(ar.Addresses, destAddress)
-		routeIndex = len(ar.Addresses) - 1
-	}
-
-	srcAddress := peerAddress(src.IP, src.Port)
-	if !slices.Contains(ar.Addresses, srcAddress) {
-		ar.Addresses = append(ar.Addresses, srcAddress)
-	}
-
-	srcToDest := []int{srcIndex, destIndex, routeIndex}
-	for i := 0; i+2 < len(ar.Routes); i += 3 {
-		route := []int{ar.Routes[i], ar.Routes[i+1], ar.Routes[i+2]}
-		if slices.Equal(route, srcToDest) {
-			return
-		}
-	}
-
-	ar.Routes = append(ar.Routes, srcToDest...)
 }
 
 func peerAddress(ip net.IP, port int) string {
@@ -524,23 +627,6 @@ type AssembleRoutes struct {
 	Routes    []int
 }
 
-func (a AssembleRoutes) clone() AssembleRoutes {
-	devices := make([]string, len(a.Devices))
-	copy(devices, a.Devices)
-
-	addresses := make([]string, len(a.Addresses))
-	copy(addresses, a.Addresses)
-
-	routes := make([]int, len(a.Routes))
-	copy(routes, a.Routes)
-
-	return AssembleRoutes{
-		Devices:   devices,
-		Addresses: addresses,
-		Routes:    routes,
-	}
-}
-
 func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) ([]TrustedPeer, error) {
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = func(err error) {
@@ -561,7 +647,10 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) ([]Tr
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	assembler := newAssembler(opts.Secret, "TODO", opts.ListenIP, opts.ListenPort)
+	assembler, err := newAssembler(opts.Secret, "TODO", opts.ListenIP, opts.ListenPort)
+	if err != nil {
+		return nil, err
+	}
 	defer assembler.stop()
 
 outer:
