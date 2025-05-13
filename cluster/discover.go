@@ -10,7 +10,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -74,7 +73,7 @@ func Discover(ctx context.Context, opts DiscoverOpts) ([]UntrustedPeer, error) {
 	// reasonably large buffer, since the mdns library will drop entries if we
 	// cannot process them fast enough
 	//
-	// TODO: we could patch that if we do fork this library
+	// TODO: we could patch that if we fork this library
 	ch := make(chan *mdns.ServiceEntry, 1024)
 
 	params := mdns.DefaultParams(ServiceType)
@@ -107,12 +106,6 @@ func Discover(ctx context.Context, opts DiscoverOpts) ([]UntrustedPeer, error) {
 	return peers, nil
 }
 
-type TrustedPeer struct {
-	RDT  string
-	IP   net.IP
-	Port int
-}
-
 type Discoverer = func(context.Context) ([]UntrustedPeer, error)
 
 type AssembleOpts struct {
@@ -128,13 +121,16 @@ type assembler struct {
 	client http.Client
 	server *http.Server
 	secret string
-	local  TrustedPeer
+	rdt    string
+	hmac   []byte
+	port   int
+	ip     net.IP
 
 	lock sync.Mutex
 
 	// trusted is a mapping of verifed peer RDTs to a [TrustedPeer] that describes that
 	// peer. This will be used to verify incoming messages from trusted.
-	trusted map[string]TrustedPeer
+	trusted map[[64]byte]string
 
 	// unverified keeps track of routes that we know about for which we haven't
 	// seen an assemble-devices message for all devices involved.
@@ -192,6 +188,33 @@ func (r *routes) add(from, to, via string) error {
 
 	r.devices[from].connections[via] = r.devices[to]
 	r.addresses[via] = struct{}{}
+
+	return nil
+}
+
+func (r *routes) merge(ar AssembleRoutes) error {
+	if len(ar.Routes)%3 != 0 {
+		return errors.New("length of routes list in assemble-routes must be a multiple of three")
+	}
+
+	// TODO: some sort of pending system here for routes???
+	for i := 0; i+2 < len(ar.Routes); i += 3 {
+		if ar.Routes[i] < 0 || ar.Routes[i+1] < 0 || ar.Routes[i+2] < 0 {
+			return errors.New("invalid index in assemble-routes")
+		}
+
+		if ar.Routes[i] > len(ar.Devices) || ar.Routes[i+1] > len(ar.Devices) || ar.Routes[i+2] > len(ar.Addresses) {
+			return errors.New("invalid index in assemble-routes")
+		}
+
+		if err := r.add(
+			ar.Devices[ar.Routes[i]],
+			ar.Devices[ar.Routes[i+1]],
+			ar.Addresses[ar.Routes[i+2]],
+		); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -333,18 +356,17 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 			},
 			Timeout: time.Second * 10,
 		},
-		local: TrustedPeer{
-			IP:   ip,
-			Port: port,
-			RDT:  rdt,
-		},
+		ip:         ip,
+		port:       port,
+		rdt:        rdt,
+		hmac:       calculateHMAC(rdt, [64]byte{}, secret),
 		secret:     secret,
 		unverified: newRoutes(),
 		verified:   newRoutes(),
 		errors: func(err error) {
 			log.Printf("cluster assemble error: %v\n", err)
 		},
-		trusted: make(map[string]TrustedPeer),
+		trusted: make(map[[64]byte]string),
 	}
 
 	a.server = &http.Server{
@@ -374,22 +396,21 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 
 func (a *assembler) handle(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil {
-		w.WriteHeader(500)
+		w.WriteHeader(400)
 		return
 	}
 
 	peerFP, err := calculateFP(r.TLS)
 	if err != nil {
-		w.WriteHeader(500)
+		w.WriteHeader(400)
 		return
 	}
 
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	// if this peer isn't trusted, then we only allow
-	tp, ok := a.trusted[hex.EncodeToString(peerFP)]
-	if !ok {
+	// if this peer isn't trusted, we only accept assemble-auth
+	if _, ok := a.trusted[peerFP]; !ok {
 		a.handleAuth(w, r, peerFP)
 		return
 	}
@@ -398,22 +419,64 @@ func (a *assembler) handle(w http.ResponseWriter, r *http.Request) {
 		Kind string `json:"kind"`
 		json.RawMessage
 	}
+
+	var msg message
+	if err := json.NewDecoder(r.Body); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	switch msg.Kind {
+	case "assemble-routes":
+		var ar AssembleRoutes
+		if err := json.Unmarshal(msg.RawMessage, &ar); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+
+		// TODO: consider the routes here and put them in their places
+
+		// TODO: respond with an assemble-unknown-devices message? this is maybe
+		// a little weird but makes the implementation simpler, since we don't
+		// have to talk to another thread that will send it. this would create
+		// this relationship:
+		//   * POST assemble-auth <- assemble-auth (sent by disco thread, can
+		//     maybe short-circuited if we see that we've already gotten one?)
+		//   * POST assemble-routes <- assemble-unknown-devices (sent by per-peer thread)
+		//   * POST assemble-devices <- OK (who sends this?)
+		//
+		// an alternative is to multiplex different types of messages over the
+		// "peers" channel?
+	default:
+		w.WriteHeader(501)
+		return
+	}
 }
 
-func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request, peerFP []byte) {
+func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request, peerFP [64]byte) {
 	// set a max size so a malicious peer can't send some insane JSON
 	const maxAuthSize = 1024 * 4
-	var auth AssembleAuth
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxAuthSize)).Decode(&auth); err != nil {
+	var aa AssembleAuth
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxAuthSize)).Decode(&aa); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	expectedHMAC := calculateHMAC(aa.RDT, peerFP, a.secret)
+	if !hmac.Equal(expectedHMAC, aa.HMAC) {
+		w.WriteHeader(403)
+		return
+	}
+
+	if err := json.NewEncoder(w).Encode(AssembleAuth{
+		HMAC: a.hmac,
+		RDT:  a.rdt,
+	}); err != nil {
 		w.WriteHeader(500)
 		return
 	}
 
-	expectedHMAC := calculateHMAC(auth.RDT, peerFP, a.secret)
-	if !hmac.Equal(expectedHMAC, auth.HMAC) {
-		w.WriteHeader(403)
-		return
-	}
+	a.trusted[peerFP] = aa.RDT
 }
 
 func (a *assembler) stop() {
@@ -429,10 +492,13 @@ func (a *assembler) stop() {
 	a.wg.Wait()
 }
 
-func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
+func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
+	// TODO: we're doing double work here, consider first checking if we have
+	// already gotten an assemble-auth from this peer, and using the trust that
+	// we've already established with this peer
 	res, err := send(ctx, &a.client, up.IP, up.Port, "assemble-auth", AssembleAuth{
-		HMAC: []byte("TODO"),
-		RDT:  a.local.RDT,
+		HMAC: a.hmac,
+		RDT:  a.rdt,
 	})
 	if err != nil {
 		return err
@@ -463,16 +529,22 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	// TODO: check that these don't already exist and handle those conflicts
-	peer := TrustedPeer{
+	// TODO: check that these don't already exist and handle conflicts?
+	a.trusted[peerFP] = auth.RDT
+
+	updates := make(chan routes, 1024)
+	a.wg.Add(1)
+
+	peer := struct {
+		RDT  string
+		IP   net.IP
+		Port int
+	}{
 		RDT:  auth.RDT,
 		IP:   up.IP,
 		Port: up.Port,
 	}
-	a.trusted[hex.EncodeToString(peerFP)] = peer
 
-	updates := make(chan routes, 1024)
-	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 
@@ -501,12 +573,12 @@ func (a *assembler) trust(ctx context.Context, up UntrustedPeer) error {
 				routes = r
 			}
 
-			if err := routes.add(a.local.RDT, peer.RDT, peerAddress(peer.IP, peer.Port)); err != nil {
+			if err := routes.add(a.rdt, peer.RDT, peerAddress(peer.IP, peer.Port)); err != nil {
 				a.errors(err)
 				continue
 			}
 
-			routes.addresses[peerAddress(a.local.IP, a.local.Port)] = struct{}{}
+			routes.addresses[peerAddress(a.ip, a.port)] = struct{}{}
 
 			// if we're just sending the same thing again, don't bother
 			if routes.equals(previous) {
@@ -571,18 +643,17 @@ func peerAddress(ip net.IP, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
-func calculateFP(conn *tls.ConnectionState) ([]byte, error) {
+func calculateFP(conn *tls.ConnectionState) ([64]byte, error) {
 	if len(conn.PeerCertificates) != 1 {
-		return nil, fmt.Errorf("exactly one peer certificate expected, got %d", len(conn.PeerCertificates))
+		return [64]byte{}, fmt.Errorf("exactly one peer certificate expected, got %d", len(conn.PeerCertificates))
 	}
 
-	hash := sha512.Sum512(conn.PeerCertificates[0].Raw)
-	return bytes.Clone(hash[:]), nil
+	return sha512.Sum512(conn.PeerCertificates[0].Raw), nil
 }
 
-func calculateHMAC(rdt string, fp []byte, secret string) []byte {
+func calculateHMAC(rdt string, fp [64]byte, secret string) []byte {
 	mac := hmac.New(sha512.New, []byte(secret))
-	mac.Write(fp)
+	mac.Write(fp[:])
 	mac.Write([]byte(rdt))
 	return mac.Sum(nil)
 }
@@ -635,7 +706,7 @@ type AssembleRoutes struct {
 	Routes    []int
 }
 
-func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) ([]TrustedPeer, error) {
+func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error {
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = func(err error) {
 			log.Printf("cluster assemble error: %v\n", err)
@@ -657,7 +728,7 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) ([]Tr
 
 	assembler, err := newAssembler(opts.Secret, "TODO", opts.ListenIP, opts.ListenPort)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer assembler.stop()
 
@@ -671,14 +742,17 @@ outer:
 			break outer
 		}
 
+		// TODO: rather than filtering based on if we've seen it before, we
+		// should filter based on if we've actually spawned a thread for this
+		// peer. this will help us handle retries.
 		for _, up := range untrusted {
-			if err := assembler.trust(ctx, up); err != nil {
+			if err := assembler.verify(ctx, up); err != nil {
 				opts.ErrorHandler(err)
 			}
 		}
 	}
 
-	return nil, nil
+	return nil
 }
 
 func sink[T any](ch <-chan T, fn func(T)) func() {
