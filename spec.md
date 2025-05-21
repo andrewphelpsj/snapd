@@ -102,8 +102,10 @@ the shared secret, since all other pieces of the HMAC are provided. The RDT is g
 itself in the `rdt` field, and the device's TLS certificate is provided due to the nature of the TLS
 connection.
 
-Once these messages are exchanged, data that arrives via a connection that uses the received TLS
-certificate can be trusted and associated with the RDT provided in the original message.
+Once these messages are exchanged, data that arrives via a connection that uses
+the received TLS certificate can be trusted and associated with the RDT provided
+in the original message. Other routes will drop any attempted connections from
+unknown TLS certificates.
 
 This route is unique due to the fact that it includes a response body. While not required for the
 protocol to function, this simplifies the process required to achieve mutual trust*.
@@ -188,9 +190,7 @@ POST /assemble/unknown
 200 OK
 ```
 
-The 
-
-Receipt of a `assemble-unknown-devices` message should result in the receiving device sending an
+The receipt of a `assemble-unknown-devices` message should result in the receiving device sending an
 `assemble-devices` message.
 
 ### assemble-devices
