@@ -159,7 +159,7 @@ func newGraph() *graph {
 	}
 }
 
-func (r *graph) add(from, to, via string) error {
+func (r *graph) connect(from, to, via string) error {
 	if _, ok := r.devices[from]; !ok {
 		r.devices[from] = &device{
 			rdt:         from,
@@ -200,7 +200,7 @@ func (r *graph) known(from, to, via string) bool {
 	return r.devices[from].connections[via] == r.devices[to]
 }
 
-func (r *graph) merge(ar AssembleRoutes) error {
+func (r *graph) add(ar AssembleRoutes) error {
 	if len(ar.Routes)%3 != 0 {
 		return errors.New("length of routes list in assemble-routes must be a multiple of three")
 	}
@@ -215,7 +215,7 @@ func (r *graph) merge(ar AssembleRoutes) error {
 			return errors.New("invalid index in assemble-routes")
 		}
 
-		if err := r.add(
+		if err := r.connect(
 			ar.Devices[ar.Routes[i]],
 			ar.Devices[ar.Routes[i+1]],
 			ar.Addresses[ar.Routes[i+2]],
@@ -259,28 +259,6 @@ func (r *graph) Equals(other *graph) bool {
 	}
 
 	return true
-}
-
-func (r *graph) clone() *graph {
-	cloned := graph{
-		addresses: maps.Clone(r.addresses),
-		devices:   make(map[string]*device, len(r.devices)),
-	}
-
-	for _, d := range r.devices {
-		cloned.devices[d.rdt] = &device{
-			rdt:         d.rdt,
-			connections: make(map[string]*device, len(d.connections)),
-		}
-	}
-
-	for _, from := range r.devices {
-		for via, to := range from.connections {
-			cloned.devices[from.rdt].connections[via] = cloned.devices[to.rdt]
-		}
-	}
-
-	return &cloned
 }
 
 func (r *graph) export() AssembleRoutes {
@@ -351,13 +329,12 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 
 	// TODO: eventually we'll need to be able to resume the assemble process
 	state := &AssembleState{
-		secret:    secret,
-		rdt:       rdt,
-		ip:        ip,
-		port:      port,
-		published: make(map[FP]*graph),
-		routes:    make(map[FP]*graph),
-		verified:  newGraph(),
+		secret:   secret,
+		rdt:      rdt,
+		ip:       ip,
+		port:     port,
+		views:    make(map[FP]*graph),
+		verified: newGraph(),
 		identities: map[string]DeviceIdentity{
 			rdt: {
 				RDT: rdt,
@@ -482,7 +459,10 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 		return
 	}
 
-	if err := a.state.UpdatePeerView(peerFP, ar); err != nil {
+	// since we are importing new routes here, we have to recalculate what
+	// routes we should be publishing to our peers
+	const reverify = true
+	if err := a.state.UpdateKnownRoutes(peerFP, ar, true); err != nil {
 		w.WriteHeader(400)
 		return
 	}
@@ -491,23 +471,32 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 	defer a.lock.Unlock()
 
 	for fp, peer := range a.peers {
-		// any new routes from this peer
+		// any new routes from this peer don't need to be sent back to that
+		// peer, since they already have them
 		if fp == peerFP {
 			continue
 		}
-	}
 
-	// TODO:
-	// * put routes that we know about all the devices involved into our verified
-	//   routes that we will use to send peers
-	// * put routes that we don't know about all the devices involved into our
-	//   unverified routes
-	// * store all addresses somewhere
-	// * notify peer threads that they should publish updates due to a change
-	//   from this peer
+		// wake up the routines interfacing with each peer, let them know that
+		// there is new data to publish.
+		peer.publish <- struct{}{}
+	}
 }
 
 func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerFP FP) {
+	var au AssembleUnknownDevices
+	if err := json.NewDecoder(r.Body).Decode(&au); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	devices := a.state.Devices(au)
+	if err := json.NewEncoder(w).Encode(AssembleDevices{
+		Devices: devices,
+	}); err != nil {
+		w.WriteHeader(500)
+		return
+	}
 }
 
 func (a *assembler) stop() {
@@ -529,13 +518,10 @@ type AssembleState struct {
 	ip     net.IP
 	port   int
 
-	// published keeps track of what we've sent to each peer. This must be kept
-	// in the state so that we can resume updates in the case that our node
-	// restarts.
-	published map[FP]*graph
-
-	// routes keeps track of the routes each peer has sent to us.
-	routes map[FP]*graph
+	// views keeps track of what this node believes each other node knows of
+	// the cluster. This information is a combination of views that we have
+	// sent each peer and the views that each peer has sent us.
+	views map[FP]*graph
 
 	// verified keeps track of the routes for which we know all devices involved
 	// in the route.
@@ -545,19 +531,6 @@ type AssembleState struct {
 
 	lock sync.Mutex
 }
-
-type AssembleDevices struct {
-	Devices []DeviceIdentity `json:"devices"`
-}
-
-type DeviceIdentity struct {
-	RDT         string   `json:"rdt"`
-	FP          FP       `json:"fp"`
-	Serial      string   `json:"serial"`
-	SerialProof [64]byte `json:"serial-proof"`
-}
-
-type FP = [64]byte
 
 // TODO: is it going to be safe to store this in state? maybe when rejoining, we
 // need the admin to provide the secret again?
@@ -573,56 +546,11 @@ func (as *AssembleState) LocalAddress() string {
 	return peerAddress(as.ip, as.port)
 }
 
-func (as *AssembleState) Published(fp FP, ar AssembleRoutes) error {
-	as.lock.Lock()
-	defer as.lock.Unlock()
-
-	if _, ok := as.published[fp]; !ok {
-		as.published[fp] = newGraph()
-	}
-
-	return as.published[fp].merge(ar)
-}
-
-func (as *AssembleState) Unpublished(fp FP) (*graph, error) {
-	as.lock.Lock()
-	defer as.lock.Unlock()
-
-	if _, ok := as.published[fp]; !ok {
-		as.published[fp] = newGraph()
-	}
-
-	published := as.published[fp]
-	unpublished := newGraph()
-
-	for _, d := range as.verified.devices {
-		for via, peer := range d.connections {
-			if published.known(d.rdt, peer.rdt, via) {
-				continue
-			}
-
-			if err := unpublished.add(d.rdt, peer.rdt, via); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	for addr := range as.verified.addresses {
-		if _, ok := published.addresses[addr]; ok {
-			continue
-		}
-
-		unpublished.addresses[addr] = struct{}{}
-	}
-
-	return unpublished, nil
-}
-
 func (as *AssembleState) Trusted(fp FP) bool {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
-	if _, ok := as.routes[fp]; ok {
+	if _, ok := as.views[fp]; ok {
 		return true
 	}
 	return false
@@ -632,32 +560,77 @@ func (as *AssembleState) Trust(fp FP) {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
-	if _, ok := as.routes[fp]; !ok {
-		as.routes[fp] = newGraph()
+	if _, ok := as.views[fp]; !ok {
+		as.views[fp] = newGraph()
 	}
 }
 
-func (as *AssembleState) UpdatePeerView(fp FP, ar AssembleRoutes) error {
+func (as *AssembleState) UnknownRoutes(fp FP) (*graph, error) {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
-	g, ok := as.routes[fp]
+	if _, ok := as.views[fp]; !ok {
+		return nil, errors.New("peer is untrusted")
+	}
+
+	known := as.views[fp]
+	unknown := newGraph()
+
+	for _, d := range as.verified.devices {
+		for via, peer := range d.connections {
+			if known.known(d.rdt, peer.rdt, via) {
+				continue
+			}
+
+			if err := unknown.connect(d.rdt, peer.rdt, via); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for addr := range as.verified.addresses {
+		if _, ok := known.addresses[addr]; ok {
+			continue
+		}
+
+		unknown.addresses[addr] = struct{}{}
+	}
+
+	return unknown, nil
+}
+
+func (as *AssembleState) UpdateKnownRoutes(fp FP, ar AssembleRoutes, reverify bool) error {
+	as.lock.Lock()
+	defer as.lock.Unlock()
+
+	g, ok := as.views[fp]
 	if !ok {
 		return errors.New("cannot update unknown peer's view of cluster")
 	}
 
-	if err := g.merge(ar); err != nil {
+	if err := g.add(ar); err != nil {
 		return err
 	}
 
-	return as.reverify()
+	if reverify {
+		return as.reverify()
+	}
+	return nil
+}
+
+func (as *AssembleState) Devices(au AssembleUnknownDevices) []DeviceIdentity {
+	devices := make([]DeviceIdentity, 0, len(au.Devices))
+	for _, id := range as.identities {
+		devices = append(devices, id)
+	}
+	return devices
 }
 
 // reverify updates our internal view of what routes we can publish to other
 // peers. This should be called whenever we see a new set of routes from another
 // peer and when we see a new set of device identities.
 func (as *AssembleState) reverify() error {
-	for _, g := range as.routes {
+	for _, g := range as.views {
 		for _, d := range g.devices {
 			if _, ok := as.identities[d.rdt]; !ok {
 				continue
@@ -668,7 +641,7 @@ func (as *AssembleState) reverify() error {
 					continue
 				}
 
-				if err := as.verified.add(d.rdt, peer.rdt, via); err != nil {
+				if err := as.verified.connect(d.rdt, peer.rdt, via); err != nil {
 					return err
 				}
 			}
@@ -749,6 +722,7 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 type peer struct {
 	state   *AssembleState
 	publish chan struct{}
+	query   chan struct{}
 	wg      sync.WaitGroup
 	errors  func(error)
 }
@@ -757,6 +731,7 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 	p := &peer{
 		state:   state,
 		publish: make(chan struct{}, 1024),
+		query:   make(chan struct{}, 1024),
 	}
 
 	client := http.Client{
@@ -804,7 +779,7 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 				}
 			}
 
-			unpublished, err := state.Unpublished(fp)
+			unknown, err := state.UnknownRoutes(fp)
 			if err != nil {
 				p.errors(err)
 				continue
@@ -813,7 +788,7 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 			// manually add the route from this peer to the receiving peer as a
 			// special case. this is a special case, since we might not have
 			// seen an assemble-devices message that includes the receiving peer
-			if err := unpublished.add(state.RDT(), rdt, peerAddress(ip, port)); err != nil {
+			if err := unknown.connect(state.RDT(), rdt, peerAddress(ip, port)); err != nil {
 				p.errors(err)
 				continue
 			}
@@ -821,10 +796,10 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 			// similarly, make sure that the route back to this node is always
 			// present, even if it might not be involved in any of the routes we
 			// are sending
-			unpublished.addresses[state.LocalAddress()] = struct{}{}
+			unknown.addresses[state.LocalAddress()] = struct{}{}
 
-			msg := unpublished.export()
-			if err := send(context.Background(), &client, ip, port, "routes", unpublished.export()); err != nil {
+			msg := unknown.export()
+			if err := send(context.Background(), &client, ip, port, "routes", unknown.export()); err != nil {
 				retry = true
 				p.errors(err)
 				continue
@@ -833,23 +808,23 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 			// a successful update resets the retry backoff
 			backoff = time.Millisecond * 500
 
-			if err := state.Published(fp, msg); err != nil {
+			// we don't need to reverify the routes here since we know that
+			// we're not introducing any new devices/routes into the state
+			const reverify = false
+			if err := state.UpdateKnownRoutes(fp, msg, reverify); err != nil {
 				p.errors(err)
 			}
 		}
 	}()
 
+	// jump-start the first update to this peer
 	p.publish <- struct{}{}
 
-	// one thread will be responsible for sending assemble-unknown-devices.
+	// another thread will be responsible for sending assemble-unknown-devices
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 	}()
-
-	// NOTE: whenever someone sends me an assemble-routes, i need to keep a copy
-	// of exactly that. that is the only way i can know about who knows about
-	// who, and who i should ask about unknown devices
 
 	return p
 }
@@ -920,10 +895,30 @@ type AssembleAuth struct {
 	RDT  string `json:"rdt"`
 }
 
+type AssembleUnknownDevices struct {
+	Devices []string `json:"devices"`
+}
+
 type AssembleRoutes struct {
 	Devices   []string `json:"devices"`
 	Addresses []string `json:"addresses"`
 	Routes    []int    `json:"routes"`
+}
+
+type AssembleDevices struct {
+	Devices []DeviceIdentity `json:"devices"`
+}
+
+type (
+	FP    [64]byte
+	Proof [64]byte
+)
+
+type DeviceIdentity struct {
+	RDT         string `json:"rdt"`
+	FP          FP     `json:"fp"`
+	Serial      string `json:"serial"`
+	SerialProof Proof  `json:"serial-proof"`
 }
 
 func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error {
@@ -938,10 +933,9 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error
 	}
 
 	discoveries := peerNotifier(ctx, discover, opts.DiscoveryPeriod, opts.ErrorHandler)
-
 	gossip := make(chan []UntrustedPeer)
 
-	// TODO: eventually, this will be lazy-initialized into the state we pass in
+	// TODO: eventually, this will be lazy-initialized from the state we pass in
 	rdt, err := newRDT()
 	if err != nil {
 		return err
