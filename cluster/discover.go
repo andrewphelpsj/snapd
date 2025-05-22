@@ -88,5 +88,3 @@ func Discover(ctx context.Context, opts DiscoverOpts) ([]UntrustedPeer, error) {
 
 	return peers, nil
 }
-
-type Discoverer = func(context.Context) ([]UntrustedPeer, error)
