@@ -21,7 +21,6 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -30,15 +29,15 @@ import (
 
 type AssembleAuth struct {
 	HMAC []byte `json:"hmac"`
-	RDT  string `json:"rdt"`
+	RDT  RDT    `json:"rdt"`
 }
 
 type AssembleUnknownDevices struct {
-	Devices []string `json:"devices"`
+	Devices []RDT `json:"devices"`
 }
 
 type AssembleRoutes struct {
-	Devices   []string `json:"devices"`
+	Devices   []RDT    `json:"devices"`
 	Addresses []string `json:"addresses"`
 	Routes    []int    `json:"routes"`
 }
@@ -50,11 +49,12 @@ type AssembleDevices struct {
 type (
 	FP    [64]byte
 	Proof [64]byte
+	RDT   string
 )
 
 type DeviceIdentity struct {
-	RDT string `json:"rdt"`
-	FP  FP     `json:"fp"`
+	RDT RDT `json:"rdt"`
+	FP  FP  `json:"fp"`
 
 	// TODO: we're not using these yet, but we eventually will
 	Serial      string `json:"serial"`
@@ -135,7 +135,7 @@ outer:
 // graph contains a device's view of the cluster.
 type graph struct {
 	// devices is a mapping of device RDTs to devices.
-	devices map[string]*device
+	devices map[RDT]*device
 
 	// addresses is a set of addresses involved in the cluster. This might
 	// include addresses that are not an edge in the graph.
@@ -145,7 +145,7 @@ type graph struct {
 // device represents a device in the cluster.
 type device struct {
 	// rdt is the RDT of this device.
-	rdt string
+	rdt RDT
 
 	// connections contains all routes that originate from this device. It is a
 	// mapping of addresses to other devices.
@@ -154,14 +154,14 @@ type device struct {
 
 func newGraph() *graph {
 	return &graph{
-		devices:   make(map[string]*device),
+		devices:   make(map[RDT]*device),
 		addresses: make(map[string]struct{}),
 	}
 }
 
 // connect create a connection in the graph using the given device RDTs and
 // address.
-func (r *graph) connect(from, to, via string) error {
+func (r *graph) connect(from, to RDT, via string) error {
 	if _, ok := r.devices[from]; !ok {
 		r.devices[from] = &device{
 			rdt:         from,
@@ -187,7 +187,7 @@ func (r *graph) connect(from, to, via string) error {
 }
 
 // contains checks if this graph contains of the the given route.
-func (r *graph) contains(from, to, via string) bool {
+func (r *graph) contains(from, to RDT, via string) bool {
 	if _, ok := r.devices[from]; !ok {
 		return false
 	}
@@ -233,7 +233,7 @@ func (r *graph) add(ar AssembleRoutes) error {
 
 // export deterministically converts this graph to a respresentation that is
 // suitable to send to other peers.
-func (r *graph) export() AssembleRoutes {
+func (r *graph) export() (AssembleRoutes, error) {
 	devices := slices.Sorted(maps.Keys(r.devices))
 	addresses := slices.Sorted(maps.Keys(r.addresses))
 
@@ -243,11 +243,23 @@ func (r *graph) export() AssembleRoutes {
 		connections := slices.Sorted(maps.Keys(from.connections))
 		for _, via := range connections {
 			to := from.connections[via]
-			routes = append(routes, []int{
-				sort.SearchStrings(devices, from.rdt),
-				sort.SearchStrings(devices, to.rdt),
-				sort.SearchStrings(addresses, via),
-			}...)
+
+			fromIndex, ok := slices.BinarySearch(devices, from.rdt)
+			if !ok {
+				return AssembleRoutes{}, errors.New("internal error: graph contains a connection from a missing device")
+			}
+
+			toIndex, ok := slices.BinarySearch(devices, to.rdt)
+			if !ok {
+				return AssembleRoutes{}, errors.New("internal error: graph contains a connection to a missing device")
+			}
+
+			addrIndex, ok := slices.BinarySearch(addresses, via)
+			if !ok {
+				return AssembleRoutes{}, errors.New("internal error: graph contains a connection via a missing address")
+			}
+
+			routes = append(routes, fromIndex, toIndex, addrIndex)
 		}
 	}
 
@@ -255,14 +267,15 @@ func (r *graph) export() AssembleRoutes {
 		Devices:   devices,
 		Addresses: addresses,
 		Routes:    routes,
-	}
+	}, nil
 }
 
-// AssembleState contains this device's knowledge of the state of an assembly
-// session.
-type AssembleState struct {
+// ClusterView contains this device's knowledge of the state of an assembly
+// session. Eventually, this'll read and write from a state.State instance. That
+// is why some things are methods when they really don't need to be.
+type ClusterView struct {
 	secret string
-	rdt    string
+	rdt    RDT
 	hmac   []byte
 	ip     net.IP
 	port   int
@@ -281,7 +294,7 @@ type AssembleState struct {
 	views map[FP]*graph
 
 	// queries keeps track of device queries that we've gotten from each peer.
-	queries map[FP]map[string]struct{}
+	queries map[FP]map[RDT]struct{}
 
 	// verified keeps track of the routes for which we have identifying
 	// information for both devices involved in the route. The routes here can
@@ -290,29 +303,29 @@ type AssembleState struct {
 
 	// identities keeps track of device identities that we've received from
 	// other trusted peers.
-	identities map[string]DeviceIdentity
+	identities map[RDT]DeviceIdentity
 }
 
 // Secret returns the shared secret used for this assembly session.
-func (as *AssembleState) Secret() string {
+func (as *ClusterView) Secret() string {
 	return as.secret
 }
 
 // RDT returns the RDT that this local node is using.
-func (as *AssembleState) RDT() string {
+func (as *ClusterView) RDT() RDT {
 	return as.rdt
 }
 
 // HMAC returns the HMAC that this local node should use in assemble-auth
 // messages.
-func (as *AssembleState) HMAC() []byte {
+func (as *ClusterView) HMAC() []byte {
 	return as.hmac
 }
 
 // Trusted returns true if the given TLS certificate fingerprint has already
 // been associated with a device that we have established trust with, via the
 // shared secret.
-func (as *AssembleState) Trusted(fp FP) bool {
+func (as *ClusterView) Trusted(fp FP) bool {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
@@ -324,7 +337,7 @@ func (as *AssembleState) Trusted(fp FP) bool {
 
 // Trust indicates that we can trust the device using the given TLS certificate
 // fingerprint.
-func (as *AssembleState) Trust(fp FP) {
+func (as *ClusterView) Trust(fp FP) {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
@@ -338,7 +351,7 @@ func (as *AssembleState) Trust(fp FP) {
 // fingerprint. If any devices are unknown, no devices are added to the queue
 // and an error is returned. If this local node is queried for devices that we
 // do not know, either this local node or the requesting peer has a bug.
-func (as *AssembleState) RecordPeerDeviceQueries(fp FP, devices []string) error {
+func (as *ClusterView) RecordPeerDeviceQueries(fp FP, devices []RDT) error {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
@@ -353,7 +366,7 @@ func (as *AssembleState) RecordPeerDeviceQueries(fp FP, devices []string) error 
 	}
 
 	if _, ok := as.queries[fp]; !ok {
-		as.queries[fp] = make(map[string]struct{})
+		as.queries[fp] = make(map[RDT]struct{})
 	}
 
 	for _, rdt := range devices {
@@ -366,7 +379,7 @@ func (as *AssembleState) RecordPeerDeviceQueries(fp FP, devices []string) error 
 // RecordPeerRoutes updates our view of what the device associated with the
 // given TLS fingerprint knows about the cluster. Additionally we recalculate
 // our view of the verified routes in the cluster.
-func (as *AssembleState) RecordPeerRoutes(fp FP, ar AssembleRoutes) error {
+func (as *ClusterView) RecordPeerRoutes(fp FP, ar AssembleRoutes) error {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
@@ -385,7 +398,7 @@ func (as *AssembleState) RecordPeerRoutes(fp FP, ar AssembleRoutes) error {
 // RecordIdentities records the given device identities. All new device
 // identities are recorded. For any devices that we are already aware of, we
 // check that our view of the device's identity is consistent with the new data.
-func (as *AssembleState) RecordIdentities(ad AssembleDevices) error {
+func (as *ClusterView) RecordIdentities(ad AssembleDevices) error {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
@@ -413,7 +426,7 @@ func (as *AssembleState) RecordIdentities(ad AssembleDevices) error {
 // reverify updates our internal view of what routes we can publish to other
 // peers. This should be called whenever we see a new set of routes from another
 // peer and when we see a new set of device identities.
-func (as *AssembleState) reverify() error {
+func (as *ClusterView) reverify() error {
 	for _, g := range as.views {
 		for _, d := range g.devices {
 			if _, ok := as.identities[d.rdt]; !ok {
@@ -437,7 +450,7 @@ func (as *AssembleState) reverify() error {
 // PeerView returns a [PeerView], which can be used to fetch and record
 // information about what this local node believes the given peer knows about
 // the cluster.
-func (as *AssembleState) PeerView(fp FP, rdt string, ip net.IP, port int) (*PeerView, error) {
+func (as *ClusterView) PeerView(fp FP, rdt RDT, ip net.IP, port int) (*PeerView, error) {
 	as.lock.Lock()
 	defer as.lock.Unlock()
 
@@ -454,11 +467,11 @@ func (as *AssembleState) PeerView(fp FP, rdt string, ip net.IP, port int) (*Peer
 	}, nil
 }
 
-// PeerView provides a view into [AssembleState], providing access to what the
-// peer that this structure represents knows about the cluster.
+// PeerView provides a peer's view into [ClusterView], providing access to what
+// we think the peer that this structure represents knows about the cluster.
 type PeerView struct {
-	as   *AssembleState
-	rdt  string
+	as   *ClusterView
+	rdt  RDT
 	ip   net.IP
 	port int
 	fp   FP
@@ -466,11 +479,13 @@ type PeerView struct {
 
 // UnidentifiedDevices returns a list of RDTs that our local node does not know
 // about, but this peer should have identifying information for.
-func (pv *PeerView) UnidentifiedDevices() []string {
+//
+// TODO: This could use name that is more clear.
+func (pv *PeerView) UnidentifiedDevices() []RDT {
 	pv.as.lock.Lock()
 	defer pv.as.lock.Unlock()
 
-	var unknown []string
+	var unknown []RDT
 	for _, d := range pv.as.views[pv.fp].devices {
 		if _, ok := pv.as.identities[d.rdt]; !ok {
 			unknown = append(unknown, d.rdt)
@@ -483,7 +498,7 @@ func (pv *PeerView) UnidentifiedDevices() []string {
 // UnknownRoutes returns routes that our local node has verified, but this peer
 // does not yet have knowledge of. All routes returned will only contain devices
 // that the local node has seen an assemble-devices message for.
-func (pv *PeerView) UnknownRoutes() (*graph, error) {
+func (pv *PeerView) UnknownRoutes() (AssembleRoutes, error) {
 	pv.as.lock.Lock()
 	defer pv.as.lock.Unlock()
 
@@ -497,7 +512,7 @@ func (pv *PeerView) UnknownRoutes() (*graph, error) {
 			}
 
 			if err := unknown.connect(d.rdt, peer.rdt, via); err != nil {
-				return nil, err
+				return AssembleRoutes{}, err
 			}
 		}
 	}
@@ -514,14 +529,14 @@ func (pv *PeerView) UnknownRoutes() (*graph, error) {
 	// special case, since we might not have seen an assemble-devices message
 	// that includes this peer
 	if err := unknown.connect(pv.as.rdt, pv.rdt, peerAddress(pv.ip, pv.port)); err != nil {
-		return nil, err
+		return AssembleRoutes{}, err
 	}
 
 	// similarly, make sure that the route back to our node is always present,
 	// even if it might not be involved in any of the routes we are sending
 	unknown.addresses[peerAddress(pv.as.ip, pv.as.port)] = struct{}{}
 
-	return unknown, nil
+	return unknown.export()
 }
 
 // AckRoutes updates this peer's view of the cluster, adding the given routes to
@@ -541,7 +556,7 @@ func (pv *PeerView) AckRoutes(ar AssembleRoutes) error {
 // UnknownDevices returns a list of device identities that this peer has
 // requested information for. Any devices that this local node doesn't know
 // about are skipped.
-func (pv *PeerView) UnknownDevices() ([]DeviceIdentity, error) {
+func (pv *PeerView) UnknownDevices() (AssembleDevices, error) {
 	pv.as.lock.Lock()
 	defer pv.as.lock.Unlock()
 
@@ -554,17 +569,17 @@ func (pv *PeerView) UnknownDevices() ([]DeviceIdentity, error) {
 		devices = append(devices, id)
 	}
 
-	return devices, nil
+	return AssembleDevices{Devices: devices}, nil
 }
 
 // AckDevices removes the given devices from the set of devices that this peer
 // has requested information for. This should be called once we've successfully
 // sent the given devices to this peer.
-func (pv *PeerView) AckDevices(devices []DeviceIdentity) {
+func (pv *PeerView) AckDevices(ad AssembleDevices) {
 	pv.as.lock.Lock()
 	defer pv.as.lock.Unlock()
 
-	for _, d := range devices {
+	for _, d := range ad.Devices {
 		delete(pv.as.queries[pv.fp], d.RDT)
 	}
 }
@@ -580,7 +595,7 @@ func (pv *PeerView) FP() FP {
 }
 
 type assembler struct {
-	state  *AssembleState
+	state  *ClusterView
 	server *http.Server
 
 	lock  sync.Mutex
@@ -590,7 +605,7 @@ type assembler struct {
 	errors func(error)
 }
 
-func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, error) {
+func newAssembler(secret string, rdt RDT, ip net.IP, port int) (*assembler, error) {
 	cert, err := createCert(ip)
 	if err != nil {
 		return nil, err
@@ -599,20 +614,20 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 	fp := calculateFP(cert.Certificate[0])
 
 	// TODO: eventually, we'll need to be able to resume the assemble process
-	state := &AssembleState{
+	state := &ClusterView{
 		secret:   secret,
 		rdt:      rdt,
 		ip:       ip,
 		port:     port,
 		views:    make(map[FP]*graph),
 		verified: newGraph(),
-		identities: map[string]DeviceIdentity{
+		identities: map[RDT]DeviceIdentity{
 			rdt: {
 				RDT: rdt,
 				FP:  fp,
 			},
 		},
-		queries: make(map[FP]map[string]struct{}),
+		queries: make(map[FP]map[RDT]struct{}),
 		hmac:    calculateHMAC(rdt, fp, secret),
 	}
 
@@ -959,8 +974,7 @@ func newPeer(ctx context.Context, pv *PeerView, cert tls.Certificate, errs func(
 				continue
 			}
 
-			msg := unknown.export()
-			if err := send(ctx, &client, pv.Address(), "routes", unknown.export()); err != nil {
+			if err := send(ctx, &client, pv.Address(), "routes", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
@@ -971,7 +985,7 @@ func newPeer(ctx context.Context, pv *PeerView, cert tls.Certificate, errs func(
 			}
 			backoff = time.Millisecond * 500
 
-			if err := pv.AckRoutes(msg); err != nil {
+			if err := pv.AckRoutes(unknown); err != nil {
 				p.errors(err)
 				continue
 			}
@@ -1039,20 +1053,18 @@ func newPeer(ctx context.Context, pv *PeerView, cert tls.Certificate, errs func(
 				}
 			}
 
-			devices, err := pv.UnknownDevices()
+			ad, err := pv.UnknownDevices()
 			if err != nil {
 				p.errors(err)
 				continue
 			}
 
-			if len(devices) == 0 {
+			if len(ad.Devices) == 0 {
 				retry = false
 				continue
 			}
 
-			if err := send(ctx, &client, pv.Address(), "devices", AssembleDevices{
-				Devices: devices,
-			}); err != nil {
+			if err := send(ctx, &client, pv.Address(), "devices", ad); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
@@ -1063,7 +1075,7 @@ func newPeer(ctx context.Context, pv *PeerView, cert tls.Certificate, errs func(
 			}
 			backoff = time.Millisecond * 500
 
-			pv.AckDevices(devices)
+			pv.AckDevices(ad)
 		}
 	}()
 	p.inform <- struct{}{}
@@ -1082,12 +1094,12 @@ func peerAddress(ip net.IP, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
-func newRDT() (string, error) {
+func newRDT() (RDT, error) {
 	uid, err := uuid.NewV7()
 	if err != nil {
 		return "", err
 	}
-	return uid.String(), nil
+	return RDT(uid.String()), nil
 }
 
 func calculateFP(cert []byte) FP {
@@ -1102,7 +1114,7 @@ func calculatePeerFP(conn *tls.ConnectionState) (FP, error) {
 	return calculateFP(conn.PeerCertificates[0].Raw), nil
 }
 
-func calculateHMAC(rdt string, fp FP, secret string) []byte {
+func calculateHMAC(rdt RDT, fp FP, secret string) []byte {
 	mac := hmac.New(sha512.New, []byte(secret))
 	mac.Write(fp[:])
 	mac.Write([]byte(rdt))
