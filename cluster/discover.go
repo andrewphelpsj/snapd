@@ -20,11 +20,10 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"slices"
 	"sort"
 	"sync"
 	"time"
-
-	"slices"
 
 	"github.com/google/uuid"
 	"github.com/snapcore/snapd/cluster/mdns"
@@ -121,16 +120,11 @@ type AssembleOpts struct {
 }
 
 type assembler struct {
-	state *AssembleState
-
-	client http.Client
-	hmac   []byte
+	state  *AssembleState
 	server *http.Server
-
-	lock  sync.Mutex
-	peers map[FP]*peer
-	wg    sync.WaitGroup
-
+	lock   sync.Mutex
+	peers  map[FP]*peer
+	wg     sync.WaitGroup
 	errors func(error)
 }
 
@@ -227,40 +221,6 @@ func (r *graph) add(ar AssembleRoutes) error {
 	return nil
 }
 
-func (r *graph) Equals(other *graph) bool {
-	if !maps.Equal(r.addresses, other.addresses) {
-		return false
-	}
-
-	if len(r.devices) != len(other.devices) {
-		return false
-	}
-
-	for rdt, d := range r.devices {
-		otherDevice, ok := other.devices[rdt]
-		if !ok {
-			return false
-		}
-
-		if len(d.connections) != len(otherDevice.connections) {
-			return false
-		}
-
-		for via, to := range d.connections {
-			otherPeer, ok := otherDevice.connections[via]
-			if !ok {
-				return false
-			}
-
-			if otherPeer.rdt != to.rdt {
-				return false
-			}
-		}
-	}
-
-	return true
-}
-
 func (r *graph) export() AssembleRoutes {
 	devices := slices.Sorted(maps.Keys(r.devices))
 	addresses := slices.Sorted(maps.Keys(r.addresses))
@@ -298,7 +258,7 @@ func createCert(ip net.IP) (tls.Certificate, error) {
 	}
 
 	// TODO: rotation, renewal? don't worry about it? for now make it last until
-	// the next century.
+	// the next century, when i'll be gone
 	now := time.Now()
 	template := x509.Certificate{
 		SerialNumber: serial,
@@ -327,36 +287,28 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 		return nil, err
 	}
 
-	// TODO: eventually we'll need to be able to resume the assemble process
+	fp := calculateFP(cert.Certificate[0])
+
+	// TODO: eventually, we'll need to be able to resume the assemble process
 	state := &AssembleState{
 		secret:   secret,
 		rdt:      rdt,
 		ip:       ip,
+		cert:     cert,
 		port:     port,
 		views:    make(map[FP]*graph),
 		verified: newGraph(),
 		identities: map[string]DeviceIdentity{
 			rdt: {
 				RDT: rdt,
+				FP:  fp,
 			},
 		},
+		hmac: calculateHMAC(rdt, fp, secret),
 	}
 
 	addr := peerAddress(ip, port)
 	a := assembler{
-		// TODO: consider creating clients for each peer that can only be used
-		// to communicate wit that peer
-		client: http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					InsecureSkipVerify: true,
-					VerifyPeerCertificate: func([][]byte, [][]*x509.Certificate) error {
-						return nil
-					},
-				},
-			},
-			Timeout: time.Second * 10,
-		},
 		errors: func(err error) {
 			log.Printf("cluster assemble error: %v\n", err)
 		},
@@ -367,6 +319,7 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 	mux.Handle("/assemble/auth", http.HandlerFunc(a.handleAuth))
 	mux.Handle("/assemble/routes", a.trustedHandler(a.handleRoutes))
 	mux.Handle("/assemble/unknown", a.trustedHandler(a.handleUnknown))
+	mux.Handle("/assemble/devices", a.trustedHandler(a.handleDevices))
 
 	a.server = &http.Server{
 		Addr:      addr,
@@ -394,12 +347,17 @@ func newAssembler(secret string, rdt string, ip net.IP, port int) (*assembler, e
 }
 
 func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		w.WriteHeader(400)
+		return
+	}
+
 	if r.TLS == nil {
 		w.WriteHeader(400)
 		return
 	}
 
-	peerFP, err := calculateFP(r.TLS)
+	peerFP, err := calculatePeerFP(r.TLS)
 	if err != nil {
 		w.WriteHeader(400)
 		return
@@ -420,7 +378,7 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(AssembleAuth{
-		HMAC: a.hmac,
+		HMAC: a.state.HMAC(),
 		RDT:  a.state.RDT(),
 	}); err != nil {
 		w.WriteHeader(500)
@@ -437,7 +395,7 @@ func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, FP
 			return
 		}
 
-		peerFP, err := calculateFP(r.TLS)
+		peerFP, err := calculatePeerFP(r.TLS)
 		if err != nil {
 			w.WriteHeader(400)
 			return
@@ -453,6 +411,11 @@ func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, FP
 }
 
 func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP FP) {
+	if r.Method != "POST" {
+		w.WriteHeader(400)
+		return
+	}
+
 	var ar AssembleRoutes
 	if err := json.NewDecoder(r.Body).Decode(&ar); err != nil {
 		w.WriteHeader(400)
@@ -470,9 +433,17 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
+	// start asking for new device information from this peer. note that this
+	// peer thread might not have started, depending on the order of operations.
+	// that is ok, we will query for this data later in that case.
+	if p, ok := a.peers[peerFP]; ok {
+		p.query <- struct{}{}
+	}
+
 	for fp, peer := range a.peers {
 		// any new routes from this peer don't need to be sent back to that
-		// peer, since they already have them
+		// peer, since they already have them. don't even bother waking that
+		// thread up
 		if fp == peerFP {
 			continue
 		}
@@ -484,18 +455,48 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 }
 
 func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerFP FP) {
+	if r.Method != "POST" {
+		w.WriteHeader(400)
+		return
+	}
+
 	var au AssembleUnknownDevices
 	if err := json.NewDecoder(r.Body).Decode(&au); err != nil {
 		w.WriteHeader(400)
 		return
 	}
 
-	devices := a.state.Devices(au)
-	if err := json.NewEncoder(w).Encode(AssembleDevices{
-		Devices: devices,
-	}); err != nil {
-		w.WriteHeader(500)
+	if p, ok := a.peers[peerFP]; ok {
+		p.query <- struct{}{}
+	}
+}
+
+func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerFP FP) {
+	if r.Method != "POST" {
+		w.WriteHeader(400)
 		return
+	}
+
+	var ad AssembleDevices
+	if err := json.NewDecoder(r.Body).Decode(&ad); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	if err := a.state.UpdateIdentities(ad); err != nil {
+		w.WriteHeader(400)
+		return
+	}
+
+	a.lock.Lock()
+	defer a.lock.Unlock()
+
+	for fp, p := range a.peers {
+		if fp == peerFP {
+			continue
+		}
+
+		p.publish <- struct{}{}
 	}
 }
 
@@ -515,13 +516,17 @@ func (a *assembler) stop() {
 type AssembleState struct {
 	secret string
 	rdt    string
+	hmac   []byte
 	ip     net.IP
 	port   int
+	cert   tls.Certificate
 
 	// views keeps track of what this node believes each other node knows of
 	// the cluster. This information is a combination of views that we have
 	// sent each peer and the views that each peer has sent us.
 	views map[FP]*graph
+
+	queries map[FP]map[string]struct{}
 
 	// verified keeps track of the routes for which we know all devices involved
 	// in the route.
@@ -540,6 +545,10 @@ func (as *AssembleState) Secret() string {
 
 func (as *AssembleState) RDT() string {
 	return as.rdt
+}
+
+func (as *AssembleState) HMAC() []byte {
+	return as.hmac
 }
 
 func (as *AssembleState) LocalAddress() string {
@@ -563,6 +572,77 @@ func (as *AssembleState) Trust(fp FP) {
 	if _, ok := as.views[fp]; !ok {
 		as.views[fp] = newGraph()
 	}
+}
+
+func (as *AssembleState) UnknownDevices(fp FP) ([]string, error) {
+	as.lock.Lock()
+	defer as.lock.Unlock()
+
+	if _, ok := as.views[fp]; !ok {
+		return nil, errors.New("peer is untrusted")
+	}
+
+	var unknown []string
+	for _, d := range as.views[fp].devices {
+		if _, ok := as.identities[d.rdt]; !ok {
+			unknown = append(unknown, d.rdt)
+		}
+	}
+
+	return unknown, nil
+}
+
+func (as *AssembleState) UpdateDeviceQueries(fp FP, devices []string) ([]string, error) {
+	as.lock.Lock()
+	defer as.lock.Unlock()
+
+	if _, ok := as.views[fp]; !ok {
+		return nil, errors.New("peer is untrusted")
+	}
+
+	if _, ok := as.queries[fp]; !ok {
+		as.queries[fp] = make(map[string]struct{})
+	}
+
+	for _, rdt := range devices {
+		as.queries[fp][rdt] = struct{}{}
+	}
+
+	return slices.Collect(maps.Keys(as.queries[fp])), nil
+}
+
+func (as *AssembleState) DeviceQueries(fp FP) ([]DeviceIdentity, error) {
+	as.lock.Lock()
+	defer as.lock.Unlock()
+
+	if _, ok := as.views[fp]; !ok {
+		return nil, errors.New("peer is untrusted")
+	}
+
+	devices := make([]DeviceIdentity, 0, len(as.queries[fp]))
+	for rdt := range as.queries[fp] {
+		id, ok := as.identities[rdt]
+		if !ok {
+			continue
+		}
+		devices = append(devices, id)
+	}
+
+	return devices, nil
+}
+
+func (as *AssembleState) AckDeviceQueries(fp FP, devices []DeviceIdentity) error {
+	as.lock.Lock()
+	defer as.lock.Unlock()
+
+	if _, ok := as.views[fp]; !ok {
+		return errors.New("peer is untrusted")
+	}
+
+	for _, d := range devices {
+		delete(as.queries[fp], d.RDT)
+	}
+	return nil
 }
 
 func (as *AssembleState) UnknownRoutes(fp FP) (*graph, error) {
@@ -618,14 +698,6 @@ func (as *AssembleState) UpdateKnownRoutes(fp FP, ar AssembleRoutes, reverify bo
 	return nil
 }
 
-func (as *AssembleState) Devices(au AssembleUnknownDevices) []DeviceIdentity {
-	devices := make([]DeviceIdentity, 0, len(au.Devices))
-	for _, id := range as.identities {
-		devices = append(devices, id)
-	}
-	return devices
-}
-
 // reverify updates our internal view of what routes we can publish to other
 // peers. This should be called whenever we see a new set of routes from another
 // peer and when we see a new set of device identities.
@@ -676,11 +748,18 @@ func (as *AssembleState) UpdateIdentities(ad AssembleDevices) error {
 }
 
 func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
-	// TODO: we're doing double work here, consider first checking if we have
-	// already gotten an assemble-auth from this peer, and using the trust that
-	// we've already established with this peer
-	res, err := sendWithResponse(ctx, &a.client, up.IP, up.Port, "auth", AssembleAuth{
-		HMAC: a.hmac,
+	client := http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				Certificates:       a.server.TLSConfig.Certificates,
+			},
+		},
+		Timeout: time.Second * 10,
+	}
+
+	res, err := sendWithResponse(ctx, &client, up.IP, up.Port, "auth", AssembleAuth{
+		HMAC: a.state.HMAC(),
 		RDT:  a.state.RDT(),
 	})
 	if err != nil {
@@ -692,7 +771,7 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 		return errors.New("cannot establish trust over unencrypted connection")
 	}
 
-	peerFP, err := calculateFP(res.TLS)
+	peerFP, err := calculatePeerFP(res.TLS)
 	if err != nil {
 		return err
 	}
@@ -714,7 +793,14 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	a.peers[peerFP] = newPeer(a.state, peerFP, auth.RDT, up.IP, up.Port)
+	a.peers[peerFP] = newPeer(
+		a.state,
+		peerFP,
+		auth.RDT,
+		up.IP,
+		up.Port,
+		a.server.TLSConfig.Certificates[0],
+	)
 
 	return nil
 }
@@ -723,11 +809,12 @@ type peer struct {
 	state   *AssembleState
 	publish chan struct{}
 	query   chan struct{}
+	inform  chan struct{}
 	wg      sync.WaitGroup
 	errors  func(error)
 }
 
-func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer {
+func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int, cert tls.Certificate) *peer {
 	p := &peer{
 		state:   state,
 		publish: make(chan struct{}, 1024),
@@ -748,8 +835,8 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 					}
 					return nil
 				},
+				Certificates: []tls.Certificate{cert},
 			},
-			// TODO: configure the client to use this device's TLS certs
 		},
 		Timeout: time.Second * 10,
 	}
@@ -805,7 +892,6 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 				continue
 			}
 
-			// a successful update resets the retry backoff
 			backoff = time.Millisecond * 500
 
 			// we don't need to reverify the routes here since we know that
@@ -816,15 +902,96 @@ func newPeer(state *AssembleState, fp FP, rdt string, ip net.IP, port int) *peer
 			}
 		}
 	}()
-
-	// jump-start the first update to this peer
 	p.publish <- struct{}{}
 
 	// another thread will be responsible for sending assemble-unknown-devices
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+
+		for {
+			// even if we haven't gotten any new data, should we run this loop
+			// periodically?
+			select {
+			case _, ok := <-p.query:
+				if !ok {
+					return
+				}
+			case <-time.After(time.Second * 30):
+			}
+
+			devices, err := state.UnknownDevices(fp)
+			if err != nil {
+				p.errors(err)
+				continue
+			}
+
+			if len(devices) == 0 {
+				continue
+			}
+
+			if err := send(context.Background(), &client, ip, port, "unknown", AssembleUnknownDevices{
+				Devices: devices,
+			}); err != nil {
+				p.errors(err)
+				continue
+			}
+		}
 	}()
+	p.query <- struct{}{}
+
+	// finally, another thread will be responsible for sending assemble-devices
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+
+		backoff := time.Millisecond * 500
+		retry := false
+		for {
+			if retry {
+				select {
+				case _, ok := <-p.inform:
+					if !ok {
+						return
+					}
+				case <-time.After(backoff):
+					retry = false
+					backoff = min(backoff*2, time.Second*30)
+				}
+			} else {
+				_, ok := <-p.inform
+				if !ok {
+					return
+				}
+			}
+
+			devices, err := state.DeviceQueries(fp)
+			if err != nil {
+				p.errors(err)
+				continue
+			}
+
+			if len(devices) == 0 {
+				retry = false
+				continue
+			}
+
+			if err := send(context.Background(), &client, ip, port, "devices", AssembleDevices{
+				Devices: devices,
+			}); err != nil {
+				retry = true
+				p.errors(err)
+				continue
+			}
+			backoff = time.Millisecond * 500
+
+			if err := state.AckDeviceQueries(fp, devices); err != nil {
+				p.errors(err)
+				continue
+			}
+		}
+	}()
+	p.inform <- struct{}{}
 
 	return p
 }
@@ -846,12 +1013,16 @@ func newRDT() (string, error) {
 	return uid.String(), nil
 }
 
-func calculateFP(conn *tls.ConnectionState) (FP, error) {
+func calculateFP(cert []byte) FP {
+	return sha512.Sum512(cert)
+}
+
+func calculatePeerFP(conn *tls.ConnectionState) (FP, error) {
 	if len(conn.PeerCertificates) != 1 {
 		return FP{}, fmt.Errorf("exactly one peer certificate expected, got %d", len(conn.PeerCertificates))
 	}
 
-	return sha512.Sum512(conn.PeerCertificates[0].Raw), nil
+	return calculateFP(conn.PeerCertificates[0].Raw), nil
 }
 
 func calculateHMAC(rdt string, fp FP, secret string) []byte {
@@ -915,8 +1086,10 @@ type (
 )
 
 type DeviceIdentity struct {
-	RDT         string `json:"rdt"`
-	FP          FP     `json:"fp"`
+	RDT string `json:"rdt"`
+	FP  FP     `json:"fp"`
+
+	// TODO: we're not using these yet
 	Serial      string `json:"serial"`
 	SerialProof Proof  `json:"serial-proof"`
 }
