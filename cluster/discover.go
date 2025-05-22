@@ -122,8 +122,10 @@ type AssembleOpts struct {
 type assembler struct {
 	state  *AssembleState
 	server *http.Server
-	lock   sync.Mutex
-	peers  map[FP]*peer
+
+	lock  sync.Mutex
+	peers map[FP]*peer
+
 	wg     sync.WaitGroup
 	errors func(error)
 }
@@ -494,6 +496,9 @@ func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerFP
 	defer a.lock.Unlock()
 
 	for fp, p := range a.peers {
+		// any new devices from this peer don't need to be sent back to that
+		// peer, since they already have them. don't even bother waking that
+		// thread up
 		if fp == peerFP {
 			continue
 		}
