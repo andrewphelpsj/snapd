@@ -196,7 +196,8 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	//
 	// adding the address in assemble-auth could make this better, maybe?
 	//
-	// for now, we will drop any messages from this peer until
+	// for now, we will drop any messages from this peer until we've
+	// "discovered" them
 }
 
 func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, as.RDT)) http.HandlerFunc {
@@ -385,7 +386,7 @@ type peer struct {
 // Retries are scheduled with an exponential back off. Incoming events are not
 // currently throttled, and might take precedence over an already scheduled
 // retry.
-func consumer(ctx context.Context, events <-chan struct{}, work func() bool) {
+func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
 	retry := false
 	backoff := time.Millisecond * 500
 	for {
@@ -448,11 +449,24 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, errs fu
 		Timeout: time.Second * 10,
 	}
 
+	// below we spawn a few goroutines that handle publishing data to this peer.
+	// each goroutine here blocks on a channel, and the HTTP handlers wake up
+	// the goroutines by writing to those channels. data isn't passed around in
+	// the channels themselves, since we need to make sure that everything that
+	// we know about the cluster is stored in persistent state.
+	//
+	// we could consider using just one channel and goroutine here. the channel
+	// would have to carry a message that indicates which type of data we should
+	// publish. the current implementation uses multiple goroutines to keep the
+	// retry loops independent, but we might not want that.
+
+	// this goroutine handles publishing routes to this peer that the local node
+	// doesn't think this peer knows about.
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
 		previous := as.Routes{}
-		consumer(ctx, p.routes, func() (retry bool) {
+		publisher(ctx, p.routes, func() (retry bool) {
 			unknown, err := pv.UnknownRoutes()
 			if err != nil {
 				p.errors(err)
@@ -481,10 +495,12 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, errs fu
 	}()
 	p.routes <- struct{}{}
 
+	// this goroutine handles requesting device information from this peer that
+	// the local node doesn't yet have.
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		consumer(ctx, p.unidentified, func() (retry bool) {
+		publisher(ctx, p.unidentified, func() (retry bool) {
 			unknown := pv.UnidentifiedDevices()
 			if len(unknown.Devices) == 0 {
 				return false
@@ -503,10 +519,12 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, errs fu
 	}()
 	p.unidentified <- struct{}{}
 
+	// this goroutine handles publishing device information that this peer has
+	// requested
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		consumer(ctx, p.devices, func() (retry bool) {
+		publisher(ctx, p.devices, func() (retry bool) {
 			devices, err := pv.UnknownDevices()
 			if err != nil {
 				p.errors(err)

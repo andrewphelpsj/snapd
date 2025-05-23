@@ -168,6 +168,8 @@ func (cv *ClusterView) RecordPeerDeviceQueries(peerRDT RDT, unknown UnknownDevic
 	}
 
 	for _, rdt := range unknown.Devices {
+		// TODO: should we just drop unanswerable queries? it would really be a
+		// bug if the other side is requesting data that we don't know about
 		if _, ok := cv.identities[rdt]; !ok {
 			return fmt.Errorf("unknown device: %s", rdt)
 		}
@@ -238,11 +240,11 @@ func (cv *ClusterView) reverify() error {
 			}
 
 			for via, peer := range d.connections {
-				if _, ok := cv.identities[peer.rdt]; !ok {
+				if _, ok := cv.identities[peer]; !ok {
 					continue
 				}
 
-				if err := cv.verified.connect(d.rdt, peer.rdt, via); err != nil {
+				if err := cv.verified.connect(d.rdt, peer, via); err != nil {
 					return err
 				}
 			}
@@ -351,12 +353,12 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	unknown := newGraph()
 
 	for _, d := range pv.cluster.verified.devices {
-		for via, peer := range d.connections {
-			if pv.graph.contains(d.rdt, peer.rdt, via) {
+		for via, peerRDT := range d.connections {
+			if pv.graph.contains(d.rdt, peerRDT, via) {
 				continue
 			}
 
-			if err := unknown.connect(d.rdt, peer.rdt, via); err != nil {
+			if err := unknown.connect(d.rdt, peerRDT, via); err != nil {
 				return Routes{}, err
 			}
 		}
@@ -445,7 +447,7 @@ func (pv *PeerView) RDT() RDT {
 	return pv.rdt
 }
 
-// graph contains a device's view of the cluster.
+// graph contains a view of the cluster.
 type graph struct {
 	// devices is a mapping of device RDTs to devices.
 	devices map[RDT]*device
@@ -461,8 +463,8 @@ type device struct {
 	rdt RDT
 
 	// connections contains all routes that originate from this device. It is a
-	// mapping of addresses to other devices.
-	connections map[string]*device
+	// mapping of addresses to other device RDTs.
+	connections map[string]RDT
 }
 
 func newGraph() *graph {
@@ -475,25 +477,29 @@ func newGraph() *graph {
 // connect create a connection in the graph using the given device RDTs and
 // address.
 func (r *graph) connect(from, to RDT, via string) error {
+	if from == to {
+		return errors.New("internal error: cannot connect an RDT to itself")
+	}
+
 	if _, ok := r.devices[from]; !ok {
 		r.devices[from] = &device{
 			rdt:         from,
-			connections: make(map[string]*device),
+			connections: make(map[string]RDT),
 		}
 	}
 
 	if _, ok := r.devices[to]; !ok {
 		r.devices[to] = &device{
 			rdt:         to,
-			connections: make(map[string]*device),
+			connections: make(map[string]RDT),
 		}
 	}
 
-	if peer, ok := r.devices[from].connections[via]; ok && peer != r.devices[to] {
+	if peer, ok := r.devices[from].connections[via]; ok && peer != r.devices[to].rdt {
 		return errors.New("cannot overwrite already existing route with new destination")
 	}
 
-	r.devices[from].connections[via] = r.devices[to]
+	r.devices[from].connections[via] = r.devices[to].rdt
 	r.addresses[via] = struct{}{}
 
 	return nil
@@ -513,7 +519,7 @@ func (r *graph) contains(from, to RDT, via string) bool {
 		return false
 	}
 
-	return r.devices[from].connections[via] == r.devices[to]
+	return r.devices[from].connections[via] == r.devices[to].rdt
 }
 
 // add adds all routes in the given [Routes] to this graph.
@@ -555,14 +561,14 @@ func (r *graph) export() (Routes, error) {
 		from := r.devices[from]
 		connections := slices.Sorted(maps.Keys(from.connections))
 		for _, via := range connections {
-			to := from.connections[via]
+			toRDT := from.connections[via]
 
 			fromIndex, ok := slices.BinarySearch(devices, from.rdt)
 			if !ok {
 				return Routes{}, errors.New("internal error: graph contains a connection from a missing device")
 			}
 
-			toIndex, ok := slices.BinarySearch(devices, to.rdt)
+			toIndex, ok := slices.BinarySearch(devices, toRDT)
 			if !ok {
 				return Routes{}, errors.New("internal error: graph contains a connection to a missing device")
 			}
