@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha512"
 	"crypto/tls"
@@ -112,7 +111,7 @@ type assembler struct {
 	server *http.Server
 
 	lock  sync.Mutex
-	peers map[as.FP]*peer
+	peers map[as.RDT]*peer
 
 	wg     sync.WaitGroup
 	errors func(error)
@@ -123,7 +122,7 @@ func newAssembler(view *as.ClusterView) (*assembler, error) {
 		errors: func(err error) {
 			log.Printf("cluster assemble error: %v\n", err)
 		},
-		peers: make(map[as.FP]*peer),
+		peers: make(map[as.RDT]*peer),
 		view:  view,
 	}
 
@@ -147,6 +146,7 @@ func newAssembler(view *as.ClusterView) (*assembler, error) {
 
 		listener := tls.NewListener(ln, &tls.Config{
 			Certificates: []tls.Certificate{view.Cert()},
+			ClientAuth:   tls.RequireAnyClientCert,
 		})
 		_ = a.server.Serve(listener)
 	}()
@@ -166,8 +166,7 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	peerFP, err := calculatePeerFP(r.TLS)
-	if err != nil {
+	if len(r.TLS.PeerCertificates) != 1 {
 		w.WriteHeader(400)
 		return
 	}
@@ -180,9 +179,7 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: some of these functions are duplicated
-	expectedHMAC := calculateHMAC(auth.RDT, peerFP, a.view.Secret())
-	if !hmac.Equal(expectedHMAC, auth.HMAC) {
+	if err := a.view.CheckAuth(auth, r.TLS.PeerCertificates[0].Raw); err != nil {
 		w.WriteHeader(403)
 		return
 	}
@@ -202,29 +199,29 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	// for now, we will drop any messages from this peer until
 }
 
-func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, as.FP)) http.HandlerFunc {
+func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, as.RDT)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil {
 			w.WriteHeader(400)
 			return
 		}
 
-		peerFP, err := calculatePeerFP(r.TLS)
-		if err != nil {
+		if len(r.TLS.PeerCertificates) != 1 {
 			w.WriteHeader(400)
 			return
 		}
 
-		if !a.view.Trusted(peerFP) {
+		rdt, err := a.view.Trusted(r.TLS.PeerCertificates[0].Raw)
+		if err != nil {
 			w.WriteHeader(403)
 			return
 		}
 
-		h(w, r, peerFP)
+		h(w, r, rdt)
 	}
 }
 
-func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP as.FP) {
+func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT as.RDT) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		return
@@ -236,7 +233,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 		return
 	}
 
-	if err := a.view.RecordPeerRoutes(peerFP, routes); err != nil {
+	if err := a.view.RecordPeerRoutes(peerRDT, routes); err != nil {
 		w.WriteHeader(400)
 		return
 	}
@@ -246,13 +243,13 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 
 	// wake up this peer's thread so that it'll request information for any
 	// devices we don't recognize
-	a.peers[peerFP].query <- struct{}{}
+	a.peers[peerRDT].unidentified <- struct{}{}
 
-	for fp, peer := range a.peers {
+	for rdt, peer := range a.peers {
 		// any new routes from this peer don't need to be sent back to that
 		// peer, since they already have them. don't even bother waking that
 		// thread up
-		if fp == peerFP {
+		if rdt == peerRDT {
 			continue
 		}
 
@@ -262,7 +259,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerFP 
 	}
 }
 
-func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerFP as.FP) {
+func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, rdt as.RDT) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		return
@@ -274,7 +271,7 @@ func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerFP
 		return
 	}
 
-	if err := a.view.RecordPeerDeviceQueries(peerFP, unknown); err != nil {
+	if err := a.view.RecordPeerDeviceQueries(rdt, unknown); err != nil {
 		w.WriteHeader(400)
 		return
 	}
@@ -282,10 +279,10 @@ func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerFP
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	a.peers[peerFP].inform <- struct{}{}
+	a.peers[rdt].devices <- struct{}{}
 }
 
-func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerFP as.FP) {
+func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, rdt as.RDT) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		return
@@ -346,9 +343,8 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 		return errors.New("cannot establish trust over unencrypted connection")
 	}
 
-	peerFP, err := calculatePeerFP(res.TLS)
-	if err != nil {
-		return err
+	if len(res.TLS.PeerCertificates) != 1 {
+		return fmt.Errorf("exactly one peer certificate expected, got %d", len(res.TLS.PeerCertificates))
 	}
 
 	// set a max size so an untrusted peer can't send some massive JSON
@@ -358,7 +354,7 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 		return err
 	}
 
-	pv, err := a.view.Authenticate(auth, peerFP, up.IP, up.Port)
+	pv, err := a.view.Authenticate(auth, res.TLS.PeerCertificates[0].Raw, up.IP, up.Port)
 	if err != nil {
 		return err
 	}
@@ -366,25 +362,70 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	a.peers[peerFP] = newPeer(ctx, pv, a.server.TLSConfig.Certificates[0], a.errors)
+	a.peers[pv.RDT()] = newPeer(ctx, pv, a.server.TLSConfig.Certificates[0], a.errors)
 
 	return nil
 }
 
 type peer struct {
-	routes chan struct{}
-	query  chan struct{}
-	inform chan struct{}
-	wg     sync.WaitGroup
-	errors func(error)
+	routes       chan struct{}
+	unidentified chan struct{}
+	devices      chan struct{}
+	wg           sync.WaitGroup
+	errors       func(error)
+}
+
+// consumer orchestrates a loop that is either driver my an event source (the
+// given channel), or by a periodic retry.
+//
+// The given "work" function is called when either the channel is read from, or
+// when the work should be retried. If the "work" function returns true, then a
+// retry will be scheduled.
+
+// Retries are scheduled with an exponential back off. Incoming events are not
+// currently throttled, and might take precedence over an already scheduled
+// retry.
+func consumer(ctx context.Context, events <-chan struct{}, work func() bool) {
+	retry := false
+	backoff := time.Millisecond * 500
+	for {
+		if retry {
+			retry = false
+			select {
+			case _, ok := <-events:
+				if !ok {
+					return
+				}
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+		} else {
+			select {
+			case _, ok := <-events:
+				if !ok {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		if work() {
+			backoff = min(backoff*2, time.Second*30)
+			retry = true
+			continue
+		}
+		backoff = time.Millisecond * 500
+	}
 }
 
 func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, errs func(error)) *peer {
 	p := &peer{
-		routes: make(chan struct{}, 1024),
-		query:  make(chan struct{}, 1024),
-		inform: make(chan struct{}, 1024),
-		errors: errs,
+		routes:       make(chan struct{}, 1024),
+		unidentified: make(chan struct{}, 1024),
+		devices:      make(chan struct{}, 1024),
+		errors:       errs,
 	}
 
 	client := http.Client{
@@ -407,182 +448,102 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, errs fu
 		Timeout: time.Second * 10,
 	}
 
-	// TODO: either deduplicate the code here, or make it so that all incoming
-	// messages are multiplexed into one goroutine. this might be hard, since we
-	// probably want to retry failed POSTs.
-
-	// one thread will be responsible for sending assemble-routes
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-
 		previous := as.Routes{}
-		backoff := time.Millisecond * 500
-		retry := false
-		for {
-			if retry {
-				retry = false
-				select {
-				case _, ok := <-p.routes:
-					if !ok {
-						return
-					}
-				case <-time.After(backoff):
-					backoff = min(backoff*2, time.Second*30)
-				}
-			} else {
-				_, ok := <-p.routes
-				if !ok {
-					return
-				}
-			}
-
+		consumer(ctx, p.routes, func() (retry bool) {
 			unknown, err := pv.UnknownRoutes()
 			if err != nil {
 				p.errors(err)
-				continue
+				return false
 			}
 
 			if routesEqual(previous, unknown) {
-				continue
+				return false
 			}
 
 			if err := send(ctx, &client, pv.Address(), "routes", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
-					return
+					return false
 				}
 
-				retry = true
 				p.errors(err)
-				continue
+				return true
 			}
-			previous = unknown
-			backoff = time.Millisecond * 500
 
 			if err := pv.AckRoutes(unknown); err != nil {
 				p.errors(err)
-				continue
+				return false
 			}
-		}
+			return false
+		})
 	}()
 	p.routes <- struct{}{}
 
-	// another thread will be responsible for sending assemble-unknown-devices
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-
-		for {
-			// even if we haven't gotten any new data, should we run this loop
-			// periodically?
-			select {
-			case _, ok := <-p.query:
-				if !ok {
-					return
-				}
-			case <-time.After(time.Second * 30):
-			}
-
+		consumer(ctx, p.unidentified, func() (retry bool) {
 			unknown := pv.UnidentifiedDevices()
 			if len(unknown.Devices) == 0 {
-				continue
+				return false
 			}
 
 			if err := send(ctx, &client, pv.Address(), "unknown", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
-					return
+					return false
 				}
 
 				p.errors(err)
-				continue
+				return true
 			}
-		}
+			return false
+		})
 	}()
-	p.query <- struct{}{}
+	p.unidentified <- struct{}{}
 
-	// finally, another thread will be responsible for sending assemble-devices
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-
-		backoff := time.Millisecond * 500
-		retry := false
-		for {
-			if retry {
-				select {
-				case _, ok := <-p.inform:
-					if !ok {
-						return
-					}
-				case <-time.After(backoff):
-					retry = false
-					backoff = min(backoff*2, time.Second*30)
-				}
-			} else {
-				_, ok := <-p.inform
-				if !ok {
-					return
-				}
-			}
-
-			ad, err := pv.UnknownDevices()
+		consumer(ctx, p.devices, func() (retry bool) {
+			devices, err := pv.UnknownDevices()
 			if err != nil {
 				p.errors(err)
-				continue
+				return false
 			}
 
-			if len(ad.Devices) == 0 {
-				retry = false
-				continue
+			if len(devices.Devices) == 0 {
+				return false
 			}
 
-			if err := send(ctx, &client, pv.Address(), "devices", ad); err != nil {
+			if err := send(ctx, &client, pv.Address(), "devices", devices); err != nil {
 				if errors.Is(err, context.Canceled) {
-					return
+					return false
 				}
 
-				retry = true
 				p.errors(err)
-				continue
+				return true
 			}
-			backoff = time.Millisecond * 500
 
-			pv.AckDevices(ad)
-		}
+			pv.AckDevices(devices)
+			return false
+		})
 	}()
-	p.inform <- struct{}{}
+	p.devices <- struct{}{}
 
 	return p
 }
 
 func (p *peer) stop() {
 	close(p.routes)
-	close(p.query)
-	close(p.inform)
+	close(p.unidentified)
+	close(p.devices)
 	p.wg.Wait()
 }
 
 func peerAddress(ip net.IP, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
-}
-
-func calculateFP(cert []byte) as.FP {
-	return sha512.Sum512(cert)
-}
-
-func calculatePeerFP(conn *tls.ConnectionState) (as.FP, error) {
-	if len(conn.PeerCertificates) != 1 {
-		return as.FP{}, fmt.Errorf("exactly one peer certificate expected, got %d", len(conn.PeerCertificates))
-	}
-
-	return calculateFP(conn.PeerCertificates[0].Raw), nil
-}
-
-func calculateHMAC(rdt as.RDT, fp as.FP, secret string) []byte {
-	mac := hmac.New(sha512.New, []byte(secret))
-	mac.Write(fp[:])
-	mac.Write([]byte(rdt))
-	return mac.Sum(nil)
 }
 
 func send(ctx context.Context, client *http.Client, addr string, kind string, data any) error {
