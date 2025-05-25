@@ -79,14 +79,13 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error
 	defer stop()
 
 	verified := make(map[string]bool)
-outer:
 	for {
 		var untrusted []UntrustedPeer
 		// TODO: handle another source of discoveries
 		select {
 		case untrusted = <-discoveries:
 		case <-ctx.Done():
-			break outer
+			return nil
 		}
 
 		for _, up := range untrusted {
@@ -102,8 +101,6 @@ outer:
 			}
 		}
 	}
-
-	return nil
 }
 
 type assembler struct {
