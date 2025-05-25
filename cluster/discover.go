@@ -62,6 +62,7 @@ func Discover(ctx context.Context, opts DiscoverOpts) ([]UntrustedPeer, error) {
 	params.Entries = ch
 	params.Domain = opts.Domain
 	params.Logger = log.New(io.Discard, "", 0)
+	params.DisableIPv6 = true
 
 	var peers []UntrustedPeer
 

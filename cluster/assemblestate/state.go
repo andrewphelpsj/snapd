@@ -375,14 +375,20 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// manually add the route from the local node to the receiving peer. this is
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
-	if err := unknown.connect(pv.cluster.rdt, pv.rdt, peerAddress(pv.ip, pv.port)); err != nil {
-		return Routes{}, err
+	addr := pv.Address()
+	if !pv.graph.contains(pv.cluster.rdt, pv.rdt, addr) {
+		if err := unknown.connect(pv.cluster.rdt, pv.rdt, addr); err != nil {
+			return Routes{}, err
+		}
 	}
 
 	// similarly, make sure that the route back to the local node is always
 	// present, even if it might not be involved in any of the routes we are
 	// sending
-	unknown.addresses[peerAddress(pv.cluster.ip, pv.cluster.port)] = struct{}{}
+	localAddr := pv.cluster.Address()
+	if _, ok := pv.graph.addresses[localAddr]; !ok {
+		unknown.addresses[localAddr] = struct{}{}
+	}
 
 	return unknown.export()
 }
