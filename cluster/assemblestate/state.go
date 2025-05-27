@@ -76,6 +76,12 @@ type ClusterView struct {
 	// they are associated with.
 	trusted map[FP]RDT
 
+	// addresses keeps track of which address we can reach each device at. This
+	// data isn't kept in the set of [PeerView] structs because we might receive
+	// and trust information from a peer before we know how to talk back to
+	// them.
+	addresses map[RDT]string
+
 	// views keeps track of what the local node believes each trusted peer knows
 	// of the cluster. This information is a combination of routes that we have
 	// successfully sent each peer and the routes that each peer has sent us.
@@ -102,21 +108,22 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 
 	fp := calculateFP(cert.Certificate[0])
 	return &ClusterView{
-		secret:   secret,
-		rdt:      rdt,
-		ip:       ip,
-		port:     port,
-		cert:     cert,
-		views:    make(map[RDT]*PeerView),
-		trusted:  make(map[FP]RDT),
-		verified: NewGraph(),
+		secret:    secret,
+		rdt:       rdt,
+		ip:        ip,
+		port:      port,
+		cert:      cert,
+		hmac:      calculateHMAC(rdt, fp, secret),
+		verified:  NewGraph(),
+		views:     make(map[RDT]*PeerView),
+		trusted:   make(map[FP]RDT),
+		addresses: make(map[RDT]string),
 		identities: map[RDT]Identity{
 			rdt: {
 				RDT: rdt,
 				FP:  fp,
 			},
 		},
-		hmac: calculateHMAC(rdt, fp, secret),
 	}, nil
 }
 
@@ -267,13 +274,13 @@ func (cv *ClusterView) reverify() error {
 
 // Authenticate checks that the given [Auth] message is valid and proves
 // knowledge of the shared secert. If this check is passed, this [ClusterView]
-// will start accepting updates that are associated with the given [FP]. An
-// error is returned if the message's HMAC is found to be invalid.
+// will start accepting updates that are associated with the given RDT. An error
+// is returned if the message's HMAC is found to be invalid.
 //
 // On success, a [PeerView] is returned. This can be used to fetch and record
 // information about what this local node believes the given peer knows about
 // the cluster.
-func (cv *ClusterView) Authenticate(auth Auth, cert []byte, ip net.IP, port int) (*PeerView, error) {
+func (cv *ClusterView) Authenticate(auth Auth, cert []byte, address string) (*PeerView, error) {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
@@ -292,32 +299,23 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, ip net.IP, port int)
 		cv.trusted[fp] = auth.RDT
 	}
 
+	// TODO: this kinda sucks, is it possible that assemble-auth could contain
+	// the return address?
+	if address != "" {
+		cv.addresses[auth.RDT] = address
+	}
+
 	if _, ok := cv.views[auth.RDT]; !ok {
 		cv.views[auth.RDT] = &PeerView{
 			cluster: cv,
 			fp:      fp,
 			rdt:     auth.RDT,
-			ip:      ip,
-			port:    port,
 			queries: make(map[RDT]struct{}),
 			graph:   NewGraph(),
 		}
 	}
 
 	return cv.views[auth.RDT], nil
-}
-
-// CheckAuth checks if the given [Auth] message proves knowledge of the shared
-// secret. An error is returned if the HMAC cannot be verified and the peer
-// should not be trusted. This method doesn't change the internal state of our
-// view of the cluster.
-func (cv *ClusterView) CheckAuth(auth Auth, cert []byte) error {
-	fp := calculateFP(cert)
-	expectedHMAC := calculateHMAC(auth.RDT, fp, cv.secret)
-	if !hmac.Equal(expectedHMAC, auth.HMAC) {
-		return errors.New("received invalid HMAC from peer")
-	}
-	return nil
 }
 
 // PeerView provides a peer's view into [ClusterView], providing access to what
@@ -327,9 +325,6 @@ type PeerView struct {
 	graph   Graph
 	rdt     RDT
 	fp      FP
-	ip      net.IP
-	port    int
-
 	cluster *ClusterView
 }
 
@@ -380,10 +375,14 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 		unknown.addresses[addr] = struct{}{}
 	}
 
+	peerAddr, ok := pv.cluster.addresses[pv.rdt]
+	if !ok {
+		return Routes{}, fmt.Errorf("unable to list unknown routes for peer %q with undiscovered address", pv.rdt)
+	}
+
 	// manually add the route from the local node to the receiving peer. this is
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
-	peerAddr := pv.Address()
 	if !pv.graph.Contains(pv.cluster.rdt, pv.rdt, peerAddr) {
 		if err := unknown.Connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
 			return Routes{}, err
@@ -412,7 +411,7 @@ func (pv *PeerView) AckRoutes(routes Routes) error {
 		return err
 	}
 
-	return pv.cluster.reverify()
+	return nil
 }
 
 // UnknownDevices returns a list of device identities that this peer has
@@ -446,11 +445,6 @@ func (pv *PeerView) AckDevices(devices Devices) {
 	}
 }
 
-// Address returns the address of this peer.
-func (pv *PeerView) Address() string {
-	return peerAddress(pv.ip, pv.port)
-}
-
 // FP returns the TLS certificate fingerprint that is associated with this peer.
 func (pv *PeerView) FP() FP {
 	return pv.fp
@@ -459,6 +453,14 @@ func (pv *PeerView) FP() FP {
 // FP returns the RDT that is associated with this peer.
 func (pv *PeerView) RDT() RDT {
 	return pv.rdt
+}
+
+func (pv *PeerView) Address() (string, bool) {
+	pv.cluster.lock.Lock()
+	defer pv.cluster.lock.Unlock()
+
+	addr, ok := pv.cluster.addresses[pv.rdt]
+	return addr, ok
 }
 
 // Graph contains a view of the cluster.

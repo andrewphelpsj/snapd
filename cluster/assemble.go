@@ -100,6 +100,10 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 			return assembler.stop()
 		}
 
+		if ctx.Err() != nil {
+			return assembler.stop()
+		}
+
 		for _, up := range untrusted {
 			addr := peerAddress(up.IP, up.Port)
 			if verified[addr] || (up.IP.Equal(opts.ListenIP) && up.Port == opts.ListenPort) {
@@ -196,7 +200,12 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.view.CheckAuth(auth, r.TLS.PeerCertificates[0].Raw); err != nil {
+	// we don't yet know the return address here. we maybe could get the return
+	// IP, but the port isn't known. we can auth this peer, and we'll start
+	// queuing up data for them. but we won't publish any data for this until
+	// the local node has "discovered" them
+	const addr = ""
+	if _, err := a.view.Authenticate(auth, r.TLS.PeerCertificates[0].Raw, ""); err != nil {
 		w.WriteHeader(403)
 		return
 	}
@@ -207,16 +216,6 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.logger.Debug("got valid auth message", "peer-rdt", auth.RDT)
-
-	// TODO: technically we could authenticate the peer here as well, and start
-	// receiving data for them. however, it is annoying as we cannot fully
-	// constuct the peer's identity, since we don't have their port available.
-	// we maybe could introspect the ip of the sender, but not the port.
-	//
-	// adding the address in assemble-auth could make this better, maybe?
-	//
-	// for now, we will drop any messages from this peer until we've
-	// "discovered" them
 }
 
 func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, as.RDT)) http.HandlerFunc {
@@ -266,7 +265,9 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 
 	// wake up this peer's thread so that it'll request information for any
 	// devices we don't recognize
-	a.peers[peerRDT].unidentified <- struct{}{}
+	if p, ok := a.peers[peerRDT]; ok {
+		p.unidentified <- struct{}{}
+	}
 
 	for rdt, peer := range a.peers {
 		// any new routes from this peer don't need to be sent back to that
@@ -304,7 +305,9 @@ func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerRD
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	a.peers[peerRDT].devices <- struct{}{}
+	if p, ok := a.peers[peerRDT]; ok {
+		p.devices <- struct{}{}
+	}
 }
 
 func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRDT as.RDT) {
@@ -363,10 +366,11 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) (as.RDT, error
 				Certificates:       []tls.Certificate{cert},
 			},
 		},
-		Timeout: time.Second * 10,
+		Timeout: time.Minute,
 	}
 
-	res, err := sendWithResponse(ctx, &client, peerAddress(up.IP, up.Port), "auth", a.view.Auth())
+	addr := peerAddress(up.IP, up.Port)
+	res, err := sendWithResponse(ctx, &client, addr, "auth", a.view.Auth())
 	if err != nil {
 		return "", err
 	}
@@ -387,7 +391,7 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) (as.RDT, error
 		return "", err
 	}
 
-	pv, err := a.view.Authenticate(auth, res.TLS.PeerCertificates[0].Raw, up.IP, up.Port)
+	pv, err := a.view.Authenticate(auth, res.TLS.PeerCertificates[0].Raw, addr)
 	if err != nil {
 		return "", err
 	}
@@ -396,7 +400,12 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) (as.RDT, error
 	defer a.lock.Unlock()
 
 	rdt := pv.RDT()
-	a.peers[rdt] = newPeer(ctx, pv, cert, a.logger, a.errors)
+	peer, err := newPeer(ctx, pv, cert, a.logger, a.errors)
+	if err != nil {
+		return "", err
+	}
+
+	a.peers[rdt] = peer
 
 	return rdt, nil
 }
@@ -454,7 +463,7 @@ func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
 	}
 }
 
-func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger slog.Logger, errs func(error)) *peer {
+func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger slog.Logger, errs func(error)) (*peer, error) {
 	p := &peer{
 		routes:       make(chan struct{}, 1024),
 		unidentified: make(chan struct{}, 1024),
@@ -479,7 +488,12 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				Certificates: []tls.Certificate{cert},
 			},
 		},
-		// TODO: timeout
+		Timeout: time.Minute,
+	}
+
+	addr, ok := pv.Address()
+	if !ok {
+		return nil, fmt.Errorf("cannot communicate with peer %q without an address", pv.RDT())
 	}
 
 	// below we spawn a few goroutines that handle publishing data to this peer.
@@ -510,7 +524,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return false
 			}
 
-			if err := send(ctx, &client, pv.Address(), "routes", unknown); err != nil {
+			if err := send(ctx, &client, addr, "routes", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -519,7 +533,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return true
 			}
 
-			logger.Debug("sent routes update", "peer-rdt", pv.RDT(), "routes", unknown)
+			logger.Debug("sent routes update", "peer-rdt", pv.RDT())
 			previous = unknown
 
 			if err := pv.AckRoutes(unknown); err != nil {
@@ -542,7 +556,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return false
 			}
 
-			if err := send(ctx, &client, pv.Address(), "unknown", unknown); err != nil {
+			if err := send(ctx, &client, addr, "unknown", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -571,7 +585,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return false
 			}
 
-			if err := send(ctx, &client, pv.Address(), "devices", devices); err != nil {
+			if err := send(ctx, &client, addr, "devices", devices); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -586,7 +600,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 	}()
 	p.devices <- struct{}{}
 
-	return p
+	return p, nil
 }
 
 func (p *peer) stop() {

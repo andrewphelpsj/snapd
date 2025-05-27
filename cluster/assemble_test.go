@@ -3,9 +3,10 @@ package cluster_test
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
+	"os"
+	"os/signal"
 	"reflect"
 	"strconv"
 	"sync"
@@ -22,7 +23,7 @@ func TestAssemble(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const total = 20
+	const total = 32
 
 	for i := range total {
 		stop, err := cluster.Advertise(cluster.AdvertiseOpts{
@@ -43,7 +44,7 @@ func TestAssemble(t *testing.T) {
 		})
 	}
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+	debug := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey && len(groups) == 0 {
@@ -53,13 +54,14 @@ func TestAssemble(t *testing.T) {
 		},
 	}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	collected := make([]assemblestate.Routes, total)
 	var wg sync.WaitGroup
 	for i := range total {
 		wg.Add(1)
+
 		go func() {
 			defer wg.Done()
 			routes, err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
@@ -68,13 +70,15 @@ func TestAssemble(t *testing.T) {
 				ListenIP:        net.ParseIP("127.0.0.1"),
 				ListenPort:      8001 + i,
 				RDTOverride:     strconv.Itoa(i),
-				Logger:          logger,
+				Logger:          debug,
 			})
 			if err != nil {
 				t.Errorf("assemble failed: %v", err)
 			}
 
 			collected[i] = routes
+
+			fmt.Println("DONE")
 		}()
 	}
 
