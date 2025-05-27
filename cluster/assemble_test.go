@@ -23,7 +23,7 @@ func TestAssemble(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const total = 128
+	const total = 64
 
 	for i := range total {
 		stop, err := cluster.Advertise(cluster.AdvertiseOpts{

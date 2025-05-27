@@ -257,17 +257,17 @@ func (cv *ClusterView) RecordIdentities(devices Devices) error {
 // peer and when we see a new set of device identities.
 func (cv *ClusterView) reverify() error {
 	for _, pv := range cv.views {
-		for _, d := range pv.graph.devices {
-			if _, ok := cv.identities[d.rdt]; !ok {
+		for from, connections := range pv.graph.devices {
+			if _, ok := cv.identities[from]; !ok {
 				continue
 			}
 
-			for via, peer := range d.connections {
-				if _, ok := cv.identities[peer]; !ok {
+			for via, to := range connections {
+				if _, ok := cv.identities[to]; !ok {
 					continue
 				}
 
-				if _, err := cv.verified.Connect(d.rdt, peer, via); err != nil {
+				if _, err := cv.verified.Connect(from, to, via); err != nil {
 					return err
 				}
 			}
@@ -341,9 +341,9 @@ func (pv *PeerView) UnidentifiedDevices() UnknownDevices {
 	defer pv.cluster.lock.Unlock()
 
 	var unknown []RDT
-	for _, d := range pv.graph.devices {
-		if _, ok := pv.cluster.identities[d.rdt]; !ok {
-			unknown = append(unknown, d.rdt)
+	for rdt := range pv.graph.devices {
+		if _, ok := pv.cluster.identities[rdt]; !ok {
+			unknown = append(unknown, rdt)
 		}
 	}
 
@@ -359,13 +359,13 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 
 	unknown := NewGraph()
 
-	for _, d := range pv.cluster.verified.devices {
-		for via, peerRDT := range d.connections {
-			if pv.graph.Contains(d.rdt, peerRDT, via) {
+	for from, connections := range pv.cluster.verified.devices {
+		for via, to := range connections {
+			if pv.graph.Contains(from, to, via) {
 				continue
 			}
 
-			if _, err := unknown.Connect(d.rdt, peerRDT, via); err != nil {
+			if _, err := unknown.Connect(from, to, via); err != nil {
 				return Routes{}, err
 			}
 		}
@@ -469,27 +469,18 @@ func (pv *PeerView) Address() (string, bool) {
 
 // Graph contains a view of the cluster.
 type Graph struct {
-	// devices is a mapping of device RDTs to devices.
-	devices map[RDT]device
+	// devices is a mapping of device RDTs to a mapping of edges to other device
+	// RDTs
+	devices map[RDT]map[string]RDT
 
 	// addresses is a set of addresses involved in the cluster. This might
 	// include addresses that are not an edge in the graph.
 	addresses map[string]struct{}
 }
 
-// device represents a device in the cluster.
-type device struct {
-	// rdt is the RDT of this device.
-	rdt RDT
-
-	// connections contains all routes that originate from this device. It is a
-	// mapping of addresses to other device RDTs.
-	connections map[string]RDT
-}
-
 func NewGraph() Graph {
 	return Graph{
-		devices:   make(map[RDT]device),
+		devices:   make(map[RDT]map[string]RDT),
 		addresses: make(map[string]struct{}),
 	}
 }
@@ -502,27 +493,21 @@ func (r *Graph) Connect(from, to RDT, via string) (bool, error) {
 	}
 
 	if _, ok := r.devices[from]; !ok {
-		r.devices[from] = device{
-			rdt:         from,
-			connections: make(map[string]RDT),
-		}
+		r.devices[from] = make(map[string]RDT)
 	}
 
 	if _, ok := r.devices[to]; !ok {
-		r.devices[to] = device{
-			rdt:         to,
-			connections: make(map[string]RDT),
-		}
+		r.devices[to] = make(map[string]RDT)
 	}
 
-	if peer, ok := r.devices[from].connections[via]; ok {
-		if peer != r.devices[to].rdt {
+	if peer, ok := r.devices[from][via]; ok {
+		if peer != to {
 			return false, errors.New("cannot overwrite already existing route with new destination")
 		}
 		return false, nil
 	}
 
-	r.devices[from].connections[via] = r.devices[to].rdt
+	r.devices[from][via] = to
 	r.addresses[via] = struct{}{}
 
 	return true, nil
@@ -542,7 +527,7 @@ func (r *Graph) Contains(from, to RDT, via string) bool {
 		return false
 	}
 
-	return r.devices[from].connections[via] == r.devices[to].rdt
+	return r.devices[from][via] == to
 }
 
 // Add adds all routes in the given [Routes] to this graph.
@@ -585,17 +570,16 @@ func (r *Graph) Export() (Routes, error) {
 
 	var routes []int
 	for _, from := range devices {
-		from := r.devices[from]
-		connections := slices.Sorted(maps.Keys(from.connections))
-		for _, via := range connections {
-			toRDT := from.connections[via]
+		connections := r.devices[from]
+		for _, via := range slices.Sorted(maps.Keys(connections)) {
+			to := connections[via]
 
-			fromIndex, ok := slices.BinarySearch(devices, from.rdt)
+			fromIndex, ok := slices.BinarySearch(devices, from)
 			if !ok {
 				return Routes{}, errors.New("internal error: graph contains a connection from a missing device")
 			}
 
-			toIndex, ok := slices.BinarySearch(devices, toRDT)
+			toIndex, ok := slices.BinarySearch(devices, to)
 			if !ok {
 				return Routes{}, errors.New("internal error: graph contains a connection to a missing device")
 			}
