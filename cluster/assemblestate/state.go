@@ -31,7 +31,7 @@ type Routes struct {
 }
 
 type Devices struct {
-	Devices []Device `json:"devices"`
+	Devices []Identity `json:"devices"`
 }
 
 type (
@@ -40,7 +40,7 @@ type (
 	RDT   string
 )
 
-type Device struct {
+type Identity struct {
 	RDT RDT `json:"rdt"`
 	FP  FP  `json:"fp"`
 
@@ -92,10 +92,10 @@ type ClusterView struct {
 
 	// identities keeps track of device identities that we've received from
 	// other trusted peers.
-	identities map[RDT]Device
+	identities map[RDT]Identity
 }
 
-func NewView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certificate) (*ClusterView, error) {
+func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certificate) (*ClusterView, error) {
 	if len(cert.Certificate) != 1 {
 		return nil, fmt.Errorf("exactly one certificate expected, got %d", len(cert.Certificate))
 	}
@@ -110,7 +110,7 @@ func NewView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certificate) 
 		views:    make(map[RDT]*PeerView),
 		trusted:  make(map[FP]RDT),
 		verified: newGraph(),
-		identities: map[RDT]Device{
+		identities: map[RDT]Identity{
 			rdt: {
 				RDT: rdt,
 				FP:  fp,
@@ -118,6 +118,18 @@ func NewView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certificate) 
 		},
 		hmac: calculateHMAC(rdt, fp, secret),
 	}, nil
+}
+
+func (cv *ClusterView) Export() (Routes, error) {
+	cv.lock.Lock()
+	defer cv.lock.Unlock()
+
+	rs, err := cv.verified.export()
+	if err != nil {
+		return Routes{}, err
+	}
+
+	return rs, nil
 }
 
 // Auth returns the [Auth] message that we should send to other peers to prove
@@ -371,9 +383,9 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// manually add the route from the local node to the receiving peer. this is
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
-	addr := pv.Address()
-	if !pv.graph.contains(pv.cluster.rdt, pv.rdt, addr) {
-		if err := unknown.connect(pv.cluster.rdt, pv.rdt, addr); err != nil {
+	peerAddr := pv.Address()
+	if !pv.graph.contains(pv.cluster.rdt, pv.rdt, peerAddr) {
+		if err := unknown.connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
 			return Routes{}, err
 		}
 	}
@@ -400,7 +412,7 @@ func (pv *PeerView) AckRoutes(routes Routes) error {
 		return err
 	}
 
-	return nil
+	return pv.cluster.reverify()
 }
 
 // UnknownDevices returns a list of device identities that this peer has
@@ -410,7 +422,7 @@ func (pv *PeerView) UnknownDevices() (Devices, error) {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	devices := make([]Device, 0, len(pv.queries))
+	devices := make([]Identity, 0, len(pv.queries))
 	for rdt := range pv.queries {
 		id, ok := pv.cluster.identities[rdt]
 		if !ok {

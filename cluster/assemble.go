@@ -37,7 +37,7 @@ type AssembleOpts struct {
 
 type Discoverer = func(context.Context) ([]UntrustedPeer, error)
 
-func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error {
+func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.Routes, error) {
 	if opts.DiscoveryPeriod == 0 {
 		opts.DiscoveryPeriod = time.Second * 3
 	}
@@ -56,7 +56,7 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error
 	// TODO: eventually, this will be lazy-initialized from the state we pass in
 	rdt, err := as.NewRDT()
 	if err != nil {
-		return err
+		return as.Routes{}, err
 	}
 
 	if opts.RDTOverride != "" {
@@ -67,17 +67,17 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error
 
 	cert, err := createCert(opts.ListenIP)
 	if err != nil {
-		return err
+		return as.Routes{}, err
 	}
 
-	view, err := as.NewView(opts.Secret, rdt, opts.ListenIP, opts.ListenPort, cert)
+	view, err := as.NewClusterView(opts.Secret, rdt, opts.ListenIP, opts.ListenPort, cert)
 	if err != nil {
-		return err
+		return as.Routes{}, err
 	}
 
 	assembler, err := newAssembler(view, *logger, opts.ErrorHandler)
 	if err != nil {
-		return err
+		return as.Routes{}, err
 	}
 	defer assembler.stop()
 
@@ -97,7 +97,7 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) error
 		select {
 		case untrusted = <-discoveries:
 		case <-ctx.Done():
-			return nil
+			return assembler.stop()
 		}
 
 		for _, up := range untrusted {
@@ -124,8 +124,9 @@ type assembler struct {
 	view   *as.ClusterView
 	server *http.Server
 
-	lock  sync.Mutex
-	peers map[as.RDT]*peer
+	lock    sync.Mutex
+	peers   map[as.RDT]*peer
+	stopped bool
 
 	wg     sync.WaitGroup
 	errors func(error)
@@ -335,17 +336,22 @@ func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRD
 	}
 }
 
-func (a *assembler) stop() {
+func (a *assembler) stop() (as.Routes, error) {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	for _, p := range a.peers {
-		p.stop()
+	if !a.stopped {
+		for _, p := range a.peers {
+			p.stop()
+		}
+
+		_ = a.server.Shutdown(context.Background())
+		a.wg.Wait()
+
+		a.stopped = true
 	}
 
-	_ = a.server.Shutdown(context.Background())
-
-	a.wg.Wait()
+	return a.view.Export()
 }
 
 func (a *assembler) verify(ctx context.Context, up UntrustedPeer) (as.RDT, error) {
@@ -680,17 +686,6 @@ func discoveryNotifier(ctx context.Context, discover Discoverer, period time.Dur
 		ticker := time.NewTicker(period)
 		defer ticker.Stop()
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-
-			// fail early even if the ticker won the select
-			if ctx.Err() != nil {
-				return
-			}
-
 			peers, err := discover(ctx)
 			if err != nil {
 				errs(err)
@@ -704,6 +699,17 @@ func discoveryNotifier(ctx context.Context, discover Discoverer, period time.Dur
 			select {
 			case outputs <- peers:
 			case <-ctx.Done():
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			// fail early even if the ticker won the select
+			if ctx.Err() != nil {
 				return
 			}
 		}

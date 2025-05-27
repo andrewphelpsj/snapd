@@ -2,6 +2,7 @@ package cluster_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -48,7 +49,7 @@ func TestAssemble(t *testing.T) {
 
 	const secret = "secret"
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -65,34 +66,40 @@ func TestAssemble(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
-			DiscoveryPeriod: time.Second * 1,
-			Secret:          "secret",
+		routes, err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
+			DiscoveryPeriod: time.Millisecond * 500,
+			Secret:          secret,
 			ListenIP:        net.ParseIP("127.0.0.1"),
 			ListenPort:      8001,
-			Logger:          logger,
 			RDTOverride:     "one",
-		}); err != nil {
+			Logger:          logger,
+		})
+		if err != nil {
 			t.Errorf("assemble failed: %v", err)
 		}
+
+		fmt.Println(routes)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
-			DiscoveryPeriod: time.Second * 1,
-			Secret:          "secret",
+		routes, err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
+			DiscoveryPeriod: time.Millisecond * 500,
+			Secret:          secret,
 			ListenIP:        net.ParseIP("127.0.0.1"),
 			ListenPort:      8002,
-			Logger:          logger,
 			RDTOverride:     "two",
-		}); err != nil {
+			Logger:          logger,
+		})
+		if err != nil {
 			t.Errorf("assemble failed: %v", err)
 		}
+
+		fmt.Println(routes)
 	}()
 
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 3)
 
 	stop, err = cluster.Advertise(cluster.AdvertiseOpts{
 		Instance:  "three",
@@ -108,16 +115,19 @@ func TestAssemble(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
-			DiscoveryPeriod: time.Second * 1,
-			Secret:          "secret",
+		routes, err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
+			DiscoveryPeriod: time.Millisecond * 500,
+			Secret:          secret,
 			ListenIP:        net.ParseIP("127.0.0.1"),
 			ListenPort:      8003,
-			Logger:          logger,
 			RDTOverride:     "three",
-		}); err != nil {
+			Logger:          logger,
+		})
+		if err != nil {
 			t.Errorf("assemble failed: %v", err)
 		}
+
+		fmt.Println(routes)
 	}()
 
 	wg.Wait()
