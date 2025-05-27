@@ -90,9 +90,12 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 	discoveries, stop := discoveryNotifier(ctx, discover, opts.DiscoveryPeriod, opts.ErrorHandler)
 	defer stop()
 
+	defer logger.Info("assemble stopped")
+
 	verified := make(map[string]bool)
 	for {
 		var untrusted []UntrustedPeer
+
 		// TODO: handle another source of discoveries
 		select {
 		case untrusted = <-discoveries:
@@ -110,7 +113,7 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 				continue
 			}
 
-			logger.Debug("discovered peer", "peer-address", addr)
+			logger.Info("discovered peer", "peer-address", addr)
 
 			rdt, err := assembler.verify(ctx, up)
 			if err != nil {
@@ -119,7 +122,7 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 			}
 
 			verified[addr] = true
-			logger.Debug("established trust with peer", "peer-address", addr, "peer-rdt", rdt)
+			logger.Info("established trust with peer", "peer-address", addr, "peer-rdt", rdt)
 		}
 	}
 }
@@ -128,9 +131,9 @@ type assembler struct {
 	view   *as.ClusterView
 	server *http.Server
 
+	stopped bool
 	lock    sync.Mutex
 	peers   map[as.RDT]*peer
-	stopped bool
 
 	wg     sync.WaitGroup
 	errors func(error)
@@ -266,7 +269,10 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 	// wake up this peer's thread so that it'll request information for any
 	// devices we don't recognize
 	if p, ok := a.peers[peerRDT]; ok {
-		p.unidentified <- struct{}{}
+		select {
+		case p.unidentified <- struct{}{}:
+		default:
+		}
 	}
 
 	for rdt, peer := range a.peers {
@@ -279,7 +285,10 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 
 		// let all the other peer threads know that there is new data that they
 		// might need to publish
-		peer.routes <- struct{}{}
+		select {
+		case peer.routes <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -306,7 +315,10 @@ func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerRD
 	defer a.lock.Unlock()
 
 	if p, ok := a.peers[peerRDT]; ok {
-		p.devices <- struct{}{}
+		select {
+		case p.devices <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -335,23 +347,25 @@ func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRD
 	// new information about devices could enable us to publish more routes to
 	// our peers
 	for _, p := range a.peers {
-		p.routes <- struct{}{}
+		select {
+		case p.routes <- struct{}{}:
+		default:
+		}
 	}
 }
 
 func (a *assembler) stop() (as.Routes, error) {
-	a.lock.Lock()
-	defer a.lock.Unlock()
-
 	if !a.stopped {
-		for _, p := range a.peers {
-			p.stop()
-		}
+		a.stopped = true
 
 		_ = a.server.Shutdown(context.Background())
 		a.wg.Wait()
 
-		a.stopped = true
+		a.lock.Lock()
+		defer a.lock.Unlock()
+		for _, p := range a.peers {
+			p.stop()
+		}
 	}
 
 	return a.view.Export()
@@ -454,6 +468,10 @@ func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
 			}
 		}
 
+		if ctx.Err() != nil {
+			return
+		}
+
 		if work() {
 			backoff = min(backoff*2, time.Second*30)
 			retry = true
@@ -465,9 +483,9 @@ func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
 
 func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger slog.Logger, errs func(error)) (*peer, error) {
 	p := &peer{
-		routes:       make(chan struct{}, 1024),
-		unidentified: make(chan struct{}, 1024),
-		devices:      make(chan struct{}, 1024),
+		routes:       make(chan struct{}, 1),
+		unidentified: make(chan struct{}, 1),
+		devices:      make(chan struct{}, 1),
 		errors:       errs,
 	}
 
@@ -604,9 +622,6 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 }
 
 func (p *peer) stop() {
-	close(p.routes)
-	close(p.unidentified)
-	close(p.devices)
 	p.wg.Wait()
 }
 
@@ -700,8 +715,23 @@ func discoveryNotifier(ctx context.Context, discover Discoverer, period time.Dur
 		ticker := time.NewTicker(period)
 		defer ticker.Stop()
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			// fail early even if the ticker won the select
+			if ctx.Err() != nil {
+				return
+			}
+
 			peers, err := discover(ctx)
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+
 				errs(err)
 				continue
 			}
@@ -713,17 +743,6 @@ func discoveryNotifier(ctx context.Context, discover Discoverer, period time.Dur
 			select {
 			case outputs <- peers:
 			case <-ctx.Done():
-				return
-			}
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-
-			// fail early even if the ticker won the select
-			if ctx.Err() != nil {
 				return
 			}
 		}

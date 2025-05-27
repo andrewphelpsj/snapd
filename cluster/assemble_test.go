@@ -23,7 +23,7 @@ func TestAssemble(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const total = 32
+	const total = 64
 
 	for i := range total {
 		stop, err := cluster.Advertise(cluster.AdvertiseOpts{
@@ -44,8 +44,8 @@ func TestAssemble(t *testing.T) {
 		})
 	}
 
-	debug := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey && len(groups) == 0 {
 				return slog.Attr{}
@@ -70,15 +70,13 @@ func TestAssemble(t *testing.T) {
 				ListenIP:        net.ParseIP("127.0.0.1"),
 				ListenPort:      8001 + i,
 				RDTOverride:     strconv.Itoa(i),
-				Logger:          debug,
+				Logger:          logger,
 			})
 			if err != nil {
 				t.Errorf("assemble failed: %v", err)
 			}
 
 			collected[i] = routes
-
-			fmt.Println("DONE")
 		}()
 	}
 
