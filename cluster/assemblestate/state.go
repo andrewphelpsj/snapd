@@ -88,7 +88,7 @@ type ClusterView struct {
 	// verified keeps track of the routes for which we have identifying
 	// information for both devices involved in the route. The routes here can
 	// be safely published to other peers.
-	verified graph
+	verified Graph
 
 	// identities keeps track of device identities that we've received from
 	// other trusted peers.
@@ -109,7 +109,7 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 		cert:     cert,
 		views:    make(map[RDT]*PeerView),
 		trusted:  make(map[FP]RDT),
-		verified: newGraph(),
+		verified: NewGraph(),
 		identities: map[RDT]Identity{
 			rdt: {
 				RDT: rdt,
@@ -124,7 +124,7 @@ func (cv *ClusterView) Export() (Routes, error) {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
-	rs, err := cv.verified.export()
+	rs, err := cv.verified.Export()
 	if err != nil {
 		return Routes{}, err
 	}
@@ -206,7 +206,7 @@ func (cv *ClusterView) RecordPeerRoutes(peerRDT RDT, routes Routes) error {
 		return errors.New("peer is untrusted")
 	}
 
-	if err := pv.graph.add(routes); err != nil {
+	if err := pv.graph.Add(routes); err != nil {
 		return err
 	}
 
@@ -256,7 +256,7 @@ func (cv *ClusterView) reverify() error {
 					continue
 				}
 
-				if err := cv.verified.connect(d.rdt, peer, via); err != nil {
+				if err := cv.verified.Connect(d.rdt, peer, via); err != nil {
 					return err
 				}
 			}
@@ -300,7 +300,7 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, ip net.IP, port int)
 			ip:      ip,
 			port:    port,
 			queries: make(map[RDT]struct{}),
-			graph:   newGraph(),
+			graph:   NewGraph(),
 		}
 	}
 
@@ -324,7 +324,7 @@ func (cv *ClusterView) CheckAuth(auth Auth, cert []byte) error {
 // we think the peer that this structure represents knows about the cluster.
 type PeerView struct {
 	queries map[RDT]struct{}
-	graph   graph
+	graph   Graph
 	rdt     RDT
 	fp      FP
 	ip      net.IP
@@ -358,15 +358,15 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	unknown := newGraph()
+	unknown := NewGraph()
 
 	for _, d := range pv.cluster.verified.devices {
 		for via, peerRDT := range d.connections {
-			if pv.graph.contains(d.rdt, peerRDT, via) {
+			if pv.graph.Contains(d.rdt, peerRDT, via) {
 				continue
 			}
 
-			if err := unknown.connect(d.rdt, peerRDT, via); err != nil {
+			if err := unknown.Connect(d.rdt, peerRDT, via); err != nil {
 				return Routes{}, err
 			}
 		}
@@ -384,8 +384,8 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
 	peerAddr := pv.Address()
-	if !pv.graph.contains(pv.cluster.rdt, pv.rdt, peerAddr) {
-		if err := unknown.connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
+	if !pv.graph.Contains(pv.cluster.rdt, pv.rdt, peerAddr) {
+		if err := unknown.Connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
 			return Routes{}, err
 		}
 	}
@@ -398,7 +398,7 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 		unknown.addresses[localAddr] = struct{}{}
 	}
 
-	return unknown.export()
+	return unknown.Export()
 }
 
 // AckRoutes updates this peer's view of the cluster, adding the given routes to
@@ -408,7 +408,7 @@ func (pv *PeerView) AckRoutes(routes Routes) error {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	if err := pv.graph.add(routes); err != nil {
+	if err := pv.graph.Add(routes); err != nil {
 		return err
 	}
 
@@ -461,8 +461,8 @@ func (pv *PeerView) RDT() RDT {
 	return pv.rdt
 }
 
-// graph contains a view of the cluster.
-type graph struct {
+// Graph contains a view of the cluster.
+type Graph struct {
 	// devices is a mapping of device RDTs to devices.
 	devices map[RDT]device
 
@@ -481,16 +481,16 @@ type device struct {
 	connections map[string]RDT
 }
 
-func newGraph() graph {
-	return graph{
+func NewGraph() Graph {
+	return Graph{
 		devices:   make(map[RDT]device),
 		addresses: make(map[string]struct{}),
 	}
 }
 
-// connect create a connection in the graph using the given device RDTs and
+// Connect create a connection in the graph using the given device RDTs and
 // address.
-func (r *graph) connect(from, to RDT, via string) error {
+func (r *Graph) Connect(from, to RDT, via string) error {
 	if from == to {
 		return errors.New("internal error: cannot connect an RDT to itself")
 	}
@@ -519,8 +519,8 @@ func (r *graph) connect(from, to RDT, via string) error {
 	return nil
 }
 
-// contains checks if this graph contains of the the given route.
-func (r *graph) contains(from, to RDT, via string) bool {
+// Contains checks if this graph Contains of the the given route.
+func (r *Graph) Contains(from, to RDT, via string) bool {
 	if _, ok := r.devices[from]; !ok {
 		return false
 	}
@@ -536,8 +536,8 @@ func (r *graph) contains(from, to RDT, via string) bool {
 	return r.devices[from].connections[via] == r.devices[to].rdt
 }
 
-// add adds all routes in the given [Routes] to this graph.
-func (r *graph) add(ar Routes) error {
+// Add adds all routes in the given [Routes] to this graph.
+func (r *Graph) Add(ar Routes) error {
 	if len(ar.Routes)%3 != 0 {
 		return errors.New("length of routes list in assemble-routes must be a multiple of three")
 	}
@@ -552,7 +552,7 @@ func (r *graph) add(ar Routes) error {
 			return errors.New("invalid index in assemble-routes")
 		}
 
-		if err := r.connect(
+		if err := r.Connect(
 			ar.Devices[ar.Routes[i]],
 			ar.Devices[ar.Routes[i+1]],
 			ar.Addresses[ar.Routes[i+2]],
@@ -564,9 +564,9 @@ func (r *graph) add(ar Routes) error {
 	return nil
 }
 
-// export deterministically converts this graph to a respresentation that is
+// Export deterministically converts this graph to a respresentation that is
 // suitable to send to other peers.
-func (r *graph) export() (Routes, error) {
+func (r *Graph) Export() (Routes, error) {
 	devices := slices.Sorted(maps.Keys(r.devices))
 	addresses := slices.Sorted(maps.Keys(r.addresses))
 
