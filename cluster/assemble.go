@@ -92,7 +92,7 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 
 	defer logger.Info("assemble stopped")
 
-	verified := make(map[string]bool)
+	var joined sync.Map
 	for {
 		var untrusted []UntrustedPeer
 
@@ -107,23 +107,34 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 			return assembler.stop()
 		}
 
+		var wg sync.WaitGroup
 		for _, up := range untrusted {
 			addr := peerAddress(up.IP, up.Port)
-			if verified[addr] || (up.IP.Equal(opts.ListenIP) && up.Port == opts.ListenPort) {
+			if _, ok := joined.Load(addr); ok {
 				continue
 			}
 
-			logger.Info("discovered peer", "peer-address", addr)
-
-			rdt, err := assembler.verify(ctx, up)
-			if err != nil {
-				opts.ErrorHandler(fmt.Errorf("verifying discovered peer: %w", err))
+			if up.IP.Equal(opts.ListenIP) && up.Port == opts.ListenPort {
 				continue
 			}
 
-			verified[addr] = true
-			logger.Info("established trust with peer", "peer-address", addr, "peer-rdt", rdt)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				logger.Info("discovered peer", "peer-address", addr)
+
+				rdt, err := assembler.verify(ctx, up)
+				if err != nil {
+					opts.ErrorHandler(fmt.Errorf("verifying discovered peer: %w", err))
+					return
+				}
+
+				joined.Store(addr, true)
+				logger.Info("established trust with peer", "peer-address", addr, "peer-rdt", rdt)
+			}()
 		}
+		wg.Wait()
 	}
 }
 

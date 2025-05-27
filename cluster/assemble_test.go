@@ -54,6 +54,16 @@ func TestAssemble(t *testing.T) {
 		},
 	}))
 
+	debug := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey && len(groups) == 0 {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}))
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -61,6 +71,11 @@ func TestAssemble(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range total {
 		wg.Add(1)
+
+		l := logger
+		if i == 0 {
+			l = debug
+		}
 
 		go func() {
 			defer wg.Done()
@@ -70,7 +85,7 @@ func TestAssemble(t *testing.T) {
 				ListenIP:        net.ParseIP("127.0.0.1"),
 				ListenPort:      8001 + i,
 				RDTOverride:     strconv.Itoa(i),
-				Logger:          logger,
+				Logger:          l,
 			})
 			if err != nil {
 				t.Errorf("assemble failed: %v", err)
