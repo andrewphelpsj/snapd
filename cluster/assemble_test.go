@@ -96,7 +96,7 @@ func TestAssemble(t *testing.T) {
 			from := assemblestate.RDT(strconv.Itoa(i))
 			to := assemblestate.RDT(strconv.Itoa(peer))
 			via := fmt.Sprintf("127.0.0.1:%d", 8001+peer)
-			if err := g.Connect(from, to, via); err != nil {
+			if _, err := g.Connect(from, to, via); err != nil {
 				t.Fatal(err)
 			}
 		}

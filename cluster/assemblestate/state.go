@@ -213,11 +213,15 @@ func (cv *ClusterView) RecordPeerRoutes(peerRDT RDT, routes Routes) error {
 		return errors.New("peer is untrusted")
 	}
 
-	if err := pv.graph.Add(routes); err != nil {
+	changed, err := pv.graph.Add(routes)
+	if err != nil {
 		return err
 	}
 
-	return cv.reverify()
+	if changed {
+		return cv.reverify()
+	}
+	return nil
 }
 
 // RecordIdentities records the given device identities. All new device
@@ -263,7 +267,7 @@ func (cv *ClusterView) reverify() error {
 					continue
 				}
 
-				if err := cv.verified.Connect(d.rdt, peer, via); err != nil {
+				if _, err := cv.verified.Connect(d.rdt, peer, via); err != nil {
 					return err
 				}
 			}
@@ -361,7 +365,7 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 				continue
 			}
 
-			if err := unknown.Connect(d.rdt, peerRDT, via); err != nil {
+			if _, err := unknown.Connect(d.rdt, peerRDT, via); err != nil {
 				return Routes{}, err
 			}
 		}
@@ -384,7 +388,7 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
 	if !pv.graph.Contains(pv.cluster.rdt, pv.rdt, peerAddr) {
-		if err := unknown.Connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
+		if _, err := unknown.Connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
 			return Routes{}, err
 		}
 	}
@@ -407,7 +411,7 @@ func (pv *PeerView) AckRoutes(routes Routes) error {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	if err := pv.graph.Add(routes); err != nil {
+	if _, err := pv.graph.Add(routes); err != nil {
 		return err
 	}
 
@@ -492,9 +496,9 @@ func NewGraph() Graph {
 
 // Connect create a connection in the graph using the given device RDTs and
 // address.
-func (r *Graph) Connect(from, to RDT, via string) error {
+func (r *Graph) Connect(from, to RDT, via string) (bool, error) {
 	if from == to {
-		return errors.New("internal error: cannot connect an RDT to itself")
+		return false, errors.New("internal error: cannot connect an RDT to itself")
 	}
 
 	if _, ok := r.devices[from]; !ok {
@@ -511,14 +515,17 @@ func (r *Graph) Connect(from, to RDT, via string) error {
 		}
 	}
 
-	if peer, ok := r.devices[from].connections[via]; ok && peer != r.devices[to].rdt {
-		return errors.New("cannot overwrite already existing route with new destination")
+	if peer, ok := r.devices[from].connections[via]; ok {
+		if peer != r.devices[to].rdt {
+			return false, errors.New("cannot overwrite already existing route with new destination")
+		}
+		return false, nil
 	}
 
 	r.devices[from].connections[via] = r.devices[to].rdt
 	r.addresses[via] = struct{}{}
 
-	return nil
+	return true, nil
 }
 
 // Contains checks if this graph Contains of the the given route.
@@ -539,31 +546,35 @@ func (r *Graph) Contains(from, to RDT, via string) bool {
 }
 
 // Add adds all routes in the given [Routes] to this graph.
-func (r *Graph) Add(ar Routes) error {
+func (r *Graph) Add(ar Routes) (bool, error) {
 	if len(ar.Routes)%3 != 0 {
-		return errors.New("length of routes list in assemble-routes must be a multiple of three")
+		return false, errors.New("length of routes list in assemble-routes must be a multiple of three")
 	}
 
 	// TODO: some sort of pending system here for routes???
+	changed := false
 	for i := 0; i+2 < len(ar.Routes); i += 3 {
 		if ar.Routes[i] < 0 || ar.Routes[i+1] < 0 || ar.Routes[i+2] < 0 {
-			return errors.New("invalid index in assemble-routes")
+			return false, errors.New("invalid index in assemble-routes")
 		}
 
 		if ar.Routes[i] >= len(ar.Devices) || ar.Routes[i+1] >= len(ar.Devices) || ar.Routes[i+2] >= len(ar.Addresses) {
-			return errors.New("invalid index in assemble-routes")
+			return false, errors.New("invalid index in assemble-routes")
 		}
 
-		if err := r.Connect(
+		ch, err := r.Connect(
 			ar.Devices[ar.Routes[i]],
 			ar.Devices[ar.Routes[i+1]],
 			ar.Addresses[ar.Routes[i+2]],
-		); err != nil {
-			return err
+		)
+		if err != nil {
+			return false, err
 		}
+
+		changed = changed || ch
 	}
 
-	return nil
+	return changed, nil
 }
 
 // Export deterministically converts this graph to a respresentation that is
