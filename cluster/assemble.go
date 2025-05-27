@@ -280,10 +280,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 	// wake up this peer's thread so that it'll request information for any
 	// devices we don't recognize
 	if p, ok := a.peers[peerRDT]; ok {
-		select {
-		case p.unidentified <- struct{}{}:
-		default:
-		}
+		notify(p.unidentified)
 	}
 
 	for rdt, peer := range a.peers {
@@ -296,10 +293,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 
 		// let all the other peer threads know that there is new data that they
 		// might need to publish
-		select {
-		case peer.routes <- struct{}{}:
-		default:
-		}
+		notify(peer.routes)
 	}
 }
 
@@ -326,10 +320,7 @@ func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerRD
 	defer a.lock.Unlock()
 
 	if p, ok := a.peers[peerRDT]; ok {
-		select {
-		case p.devices <- struct{}{}:
-		default:
-		}
+		notify(p.devices)
 	}
 }
 
@@ -358,10 +349,7 @@ func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRD
 	// new information about devices could enable us to publish more routes to
 	// our peers
 	for _, p := range a.peers {
-		select {
-		case p.routes <- struct{}{}:
-		default:
-		}
+		notify(p.routes)
 	}
 }
 
@@ -492,6 +480,13 @@ func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
 	}
 }
 
+func notify(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
 func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger slog.Logger, errs func(error)) (*peer, error) {
 	p := &peer{
 		routes:       make(chan struct{}, 1),
@@ -572,7 +567,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 			return false
 		})
 	}()
-	p.routes <- struct{}{}
+	notify(p.routes)
 
 	// this goroutine handles requesting device information from this peer that
 	// the local node doesn't yet have.
@@ -596,7 +591,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 			return false
 		})
 	}()
-	p.unidentified <- struct{}{}
+	notify(p.unidentified)
 
 	// this goroutine handles publishing device information that this peer has
 	// requested
@@ -627,7 +622,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 			return false
 		})
 	}()
-	p.devices <- struct{}{}
+	notify(p.devices)
 
 	return p, nil
 }
