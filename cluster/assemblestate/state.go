@@ -88,7 +88,7 @@ type ClusterView struct {
 	// verified keeps track of the routes for which we have identifying
 	// information for both devices involved in the route. The routes here can
 	// be safely published to other peers.
-	verified *graph
+	verified graph
 
 	// identities keeps track of device identities that we've received from
 	// other trusted peers.
@@ -300,11 +300,7 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, ip net.IP, port int)
 // should not be trusted. This method doesn't change the internal state of our
 // view of the cluster.
 func (cv *ClusterView) CheckAuth(auth Auth, cert []byte) error {
-	cv.lock.Lock()
-	defer cv.lock.Unlock()
-
 	fp := calculateFP(cert)
-
 	expectedHMAC := calculateHMAC(auth.RDT, fp, cv.secret)
 	if !hmac.Equal(expectedHMAC, auth.HMAC) {
 		return errors.New("received invalid HMAC from peer")
@@ -316,7 +312,7 @@ func (cv *ClusterView) CheckAuth(auth Auth, cert []byte) error {
 // we think the peer that this structure represents knows about the cluster.
 type PeerView struct {
 	queries map[RDT]struct{}
-	graph   *graph
+	graph   graph
 	rdt     RDT
 	fp      FP
 	ip      net.IP
@@ -456,7 +452,7 @@ func (pv *PeerView) RDT() RDT {
 // graph contains a view of the cluster.
 type graph struct {
 	// devices is a mapping of device RDTs to devices.
-	devices map[RDT]*device
+	devices map[RDT]device
 
 	// addresses is a set of addresses involved in the cluster. This might
 	// include addresses that are not an edge in the graph.
@@ -473,9 +469,9 @@ type device struct {
 	connections map[string]RDT
 }
 
-func newGraph() *graph {
-	return &graph{
-		devices:   make(map[RDT]*device),
+func newGraph() graph {
+	return graph{
+		devices:   make(map[RDT]device),
 		addresses: make(map[string]struct{}),
 	}
 }
@@ -488,14 +484,14 @@ func (r *graph) connect(from, to RDT, via string) error {
 	}
 
 	if _, ok := r.devices[from]; !ok {
-		r.devices[from] = &device{
+		r.devices[from] = device{
 			rdt:         from,
 			connections: make(map[string]RDT),
 		}
 	}
 
 	if _, ok := r.devices[to]; !ok {
-		r.devices[to] = &device{
+		r.devices[to] = device{
 			rdt:         to,
 			connections: make(map[string]RDT),
 		}
