@@ -213,14 +213,25 @@ func (cv *ClusterView) RecordPeerRoutes(peerRDT RDT, routes Routes) error {
 		return errors.New("peer is untrusted")
 	}
 
-	changed, err := pv.graph.Add(routes)
+	changes, err := pv.graph.Add(routes)
 	if err != nil {
 		return err
 	}
 
-	if changed {
-		return cv.reverify()
+	for _, e := range changes {
+		if _, ok := cv.identities[e.From]; !ok {
+			continue
+		}
+
+		if _, ok := cv.identities[e.To]; !ok {
+			continue
+		}
+
+		if _, err := cv.verified.Connect(e); err != nil {
+			return err
+		}
 	}
+
 	return nil
 }
 
@@ -244,35 +255,28 @@ func (cv *ClusterView) RecordIdentities(devices Devices) error {
 		dirty = true
 	}
 
-	// if we don't see any new peers, then we don't need to recalculate what we
-	// can publish to other peers
-	if dirty {
-		return cv.reverify()
+	if !dirty {
+		return nil
 	}
-	return nil
-}
 
-// reverify updates our internal view of what routes we can publish to other
-// peers. This should be called whenever we see a new set of routes from another
-// peer and when we see a new set of device identities.
-func (cv *ClusterView) reverify() error {
+	// if we got some new devices, we need to add all of routes from our peers
+	// that aren't yet verified that involve those routes
 	for _, pv := range cv.views {
-		for from, connections := range pv.graph.devices {
-			if _, ok := cv.identities[from]; !ok {
+		for edge := range pv.graph.edges {
+			if _, ok := cv.identities[edge.From]; !ok {
 				continue
 			}
 
-			for via, to := range connections {
-				if _, ok := cv.identities[to]; !ok {
-					continue
-				}
+			if _, ok := cv.identities[edge.To]; !ok {
+				continue
+			}
 
-				if _, err := cv.verified.Connect(from, to, via); err != nil {
-					return err
-				}
+			if _, err := cv.verified.Connect(edge); err != nil {
+				return err
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -341,9 +345,13 @@ func (pv *PeerView) UnidentifiedDevices() UnknownDevices {
 	defer pv.cluster.lock.Unlock()
 
 	var unknown []RDT
-	for rdt := range pv.graph.devices {
-		if _, ok := pv.cluster.identities[rdt]; !ok {
-			unknown = append(unknown, rdt)
+	for edge := range pv.graph.edges {
+		if _, ok := pv.cluster.identities[edge.From]; !ok {
+			unknown = append(unknown, edge.From)
+		}
+
+		if _, ok := pv.cluster.identities[edge.To]; !ok {
+			unknown = append(unknown, edge.To)
 		}
 	}
 
@@ -359,24 +367,22 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 
 	unknown := NewGraph()
 
-	for from, connections := range pv.cluster.verified.devices {
-		for via, to := range connections {
-			if pv.graph.Contains(from, to, via) {
-				continue
-			}
+	for edge := range pv.cluster.verified.edges {
+		if pv.graph.Contains(edge) {
+			continue
+		}
 
-			if _, err := unknown.Connect(from, to, via); err != nil {
-				return Routes{}, err
-			}
+		if _, err := unknown.Connect(edge); err != nil {
+			return Routes{}, err
 		}
 	}
 
 	for addr := range pv.cluster.verified.addresses {
-		if _, ok := pv.graph.addresses[addr]; ok {
+		if pv.graph.addresses[addr] {
 			continue
 		}
 
-		unknown.addresses[addr] = struct{}{}
+		unknown.addresses[addr] = true
 	}
 
 	peerAddr, ok := pv.cluster.addresses[pv.rdt]
@@ -387,8 +393,9 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// manually add the route from the local node to the receiving peer. this is
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
-	if !pv.graph.Contains(pv.cluster.rdt, pv.rdt, peerAddr) {
-		if _, err := unknown.Connect(pv.cluster.rdt, pv.rdt, peerAddr); err != nil {
+	edge := Edge{From: pv.cluster.rdt, To: pv.rdt, Via: peerAddr}
+	if !pv.graph.Contains(edge) {
+		if _, err := unknown.Connect(edge); err != nil {
 			return Routes{}, err
 		}
 	}
@@ -397,8 +404,8 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// present, even if it might not be involved in any of the routes we are
 	// sending
 	localAddr := pv.cluster.Address()
-	if _, ok := pv.graph.addresses[localAddr]; !ok {
-		unknown.addresses[localAddr] = struct{}{}
+	if !pv.graph.addresses[localAddr] {
+		unknown.addresses[localAddr] = true
 	}
 
 	return unknown.Export()
@@ -469,128 +476,124 @@ func (pv *PeerView) Address() (string, bool) {
 
 // Graph contains a view of the cluster.
 type Graph struct {
-	// devices is a mapping of device RDTs to a mapping of edges to other device
-	// RDTs
-	devices map[RDT]map[string]RDT
+	edges map[Edge]bool
 
 	// addresses is a set of addresses involved in the cluster. This might
 	// include addresses that are not an edge in the graph.
-	addresses map[string]struct{}
+	addresses map[string]bool
+}
+
+type Edge struct {
+	From RDT
+	To   RDT
+	Via  string
 }
 
 func NewGraph() Graph {
 	return Graph{
-		devices:   make(map[RDT]map[string]RDT),
-		addresses: make(map[string]struct{}),
+		edges:     make(map[Edge]bool),
+		addresses: make(map[string]bool),
 	}
 }
 
-// Connect create a connection in the graph using the given device RDTs and
-// address.
-func (r *Graph) Connect(from, to RDT, via string) (bool, error) {
-	if from == to {
+func (g *Graph) Connect(edge Edge) (bool, error) {
+	if edge.From == edge.To {
 		return false, errors.New("internal error: cannot connect an RDT to itself")
 	}
 
-	if _, ok := r.devices[from]; !ok {
-		r.devices[from] = make(map[string]RDT)
-	}
-
-	if _, ok := r.devices[to]; !ok {
-		r.devices[to] = make(map[string]RDT)
-	}
-
-	if peer, ok := r.devices[from][via]; ok {
-		if peer != to {
-			return false, errors.New("cannot overwrite already existing route with new destination")
-		}
+	if g.edges[edge] {
 		return false, nil
 	}
 
-	r.devices[from][via] = to
-	r.addresses[via] = struct{}{}
+	g.edges[edge] = true
+	g.addresses[edge.Via] = true
 
 	return true, nil
 }
 
 // Contains checks if this graph Contains of the the given route.
-func (r *Graph) Contains(from, to RDT, via string) bool {
-	if _, ok := r.devices[from]; !ok {
-		return false
-	}
-
-	if _, ok := r.devices[to]; !ok {
-		return false
-	}
-
-	if _, ok := r.addresses[via]; !ok {
-		return false
-	}
-
-	return r.devices[from][via] == to
+func (r *Graph) Contains(edge Edge) bool {
+	return r.edges[edge]
 }
 
 // Add adds all routes in the given [Routes] to this graph.
-func (r *Graph) Add(ar Routes) (bool, error) {
+func (r *Graph) Add(ar Routes) ([]Edge, error) {
 	if len(ar.Routes)%3 != 0 {
-		return false, errors.New("length of routes list in assemble-routes must be a multiple of three")
+		return nil, errors.New("length of routes list in assemble-routes must be a multiple of three")
 	}
 
-	// TODO: some sort of pending system here for routes???
-	changed := false
+	var changes []Edge
 	for i := 0; i+2 < len(ar.Routes); i += 3 {
 		if ar.Routes[i] < 0 || ar.Routes[i+1] < 0 || ar.Routes[i+2] < 0 {
-			return false, errors.New("invalid index in assemble-routes")
+			return nil, errors.New("invalid index in assemble-routes")
 		}
 
 		if ar.Routes[i] >= len(ar.Devices) || ar.Routes[i+1] >= len(ar.Devices) || ar.Routes[i+2] >= len(ar.Addresses) {
-			return false, errors.New("invalid index in assemble-routes")
+			return nil, errors.New("invalid index in assemble-routes")
 		}
 
-		ch, err := r.Connect(
-			ar.Devices[ar.Routes[i]],
-			ar.Devices[ar.Routes[i+1]],
-			ar.Addresses[ar.Routes[i+2]],
-		)
+		edge := Edge{
+			From: ar.Devices[ar.Routes[i]],
+			To:   ar.Devices[ar.Routes[i+1]],
+			Via:  ar.Addresses[ar.Routes[i+2]],
+		}
+
+		changed, err := r.Connect(edge)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 
-		changed = changed || ch
+		if changed {
+			changes = append(changes, edge)
+		}
+
 	}
 
-	return changed, nil
+	return changes, nil
 }
 
 // Export deterministically converts this graph to a respresentation that is
 // suitable to send to other peers.
-func (r *Graph) Export() (Routes, error) {
-	devices := slices.Sorted(maps.Keys(r.devices))
-	addresses := slices.Sorted(maps.Keys(r.addresses))
+func (g *Graph) Export() (Routes, error) {
+	devs := make(map[RDT]struct{}, len(g.edges)*2)
+	for e := range g.edges {
+		devs[e.From] = struct{}{}
+		devs[e.To] = struct{}{}
+	}
 
-	var routes []int
-	for _, from := range devices {
-		connections := r.devices[from]
-		for _, via := range slices.Sorted(maps.Keys(connections)) {
-			to := connections[via]
-
-			fromIndex, ok := slices.BinarySearch(devices, from)
-			if !ok {
-				return Routes{}, errors.New("internal error: graph contains a connection from a missing device")
-			}
-
-			toIndex, ok := slices.BinarySearch(devices, to)
-			if !ok {
-				return Routes{}, errors.New("internal error: graph contains a connection to a missing device")
-			}
-
-			addrIndex, ok := slices.BinarySearch(addresses, via)
-			if !ok {
-				return Routes{}, errors.New("internal error: graph contains a connection via a missing address")
-			}
-
-			routes = append(routes, fromIndex, toIndex, addrIndex)
+	devices := slices.Sorted(maps.Keys(devs))
+	addresses := slices.Sorted(maps.Keys(g.addresses))
+	edges := slices.SortedFunc(maps.Keys(g.edges), func(a, b Edge) int {
+		if a.From < b.From {
+			return -1
 		}
+		if a.From > b.From {
+			return 1
+		}
+
+		if a.To < b.To {
+			return -1
+		}
+		if a.To > b.To {
+			return 1
+		}
+
+		if a.Via < b.Via {
+			return -1
+		}
+		if a.Via > b.Via {
+			return 1
+		}
+		return 0
+	})
+
+	routes := make([]int, 0, len(g.edges)*3)
+	for _, e := range edges {
+		routes = append(routes,
+			slices.Index(devices, e.From),
+			slices.Index(devices, e.To),
+			slices.Index(addresses, e.Via),
+		)
 	}
 
 	return Routes{

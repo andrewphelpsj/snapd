@@ -289,7 +289,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 		return
 	}
 
-	a.logger.Debug("got routes update", "peer-rdt", peerRDT)
+	a.logger.Debug("got routes update", "peer-rdt", peerRDT, "routes-count", len(routes.Routes)/3)
 
 	a.lock.Lock()
 	defer a.lock.Unlock()

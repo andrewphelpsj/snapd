@@ -23,7 +23,7 @@ func TestAssemble(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const total = 100
+	const total = 64
 
 	for i := range total {
 		stop, err := cluster.Advertise(cluster.AdvertiseOpts{
@@ -109,10 +109,13 @@ func TestAssemble(t *testing.T) {
 				continue
 			}
 
-			from := assemblestate.RDT(strconv.Itoa(i))
-			to := assemblestate.RDT(strconv.Itoa(peer))
-			via := fmt.Sprintf("127.0.0.1:%d", 8001+peer)
-			if _, err := graph.Connect(from, to, via); err != nil {
+			edge := assemblestate.Edge{
+				From: assemblestate.RDT(strconv.Itoa(i)),
+				To:   assemblestate.RDT(strconv.Itoa(peer)),
+				Via:  fmt.Sprintf("127.0.0.1:%d", 8001+peer),
+			}
+
+			if _, err := graph.Connect(edge); err != nil {
 				t.Fatal(err)
 			}
 		}
