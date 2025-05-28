@@ -37,6 +37,11 @@ type AssembleOpts struct {
 
 type Discoverer = func(context.Context) ([]UntrustedPeer, error)
 
+type Observer interface {
+	Error(error)
+	Update(*as.Graph)
+}
+
 func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.Routes, error) {
 	if opts.DiscoveryPeriod == 0 {
 		opts.DiscoveryPeriod = time.Second * 3
@@ -92,7 +97,9 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 
 	defer logger.Info("assemble stopped")
 
-	var joined sync.Map
+	joined := make(map[string]bool)
+	var lock sync.Mutex
+outer:
 	for {
 		var untrusted []UntrustedPeer
 
@@ -100,17 +107,17 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 		select {
 		case untrusted = <-discoveries:
 		case <-ctx.Done():
-			return assembler.stop()
+			break outer
 		}
 
 		if ctx.Err() != nil {
-			return assembler.stop()
+			break outer
 		}
 
 		var wg sync.WaitGroup
 		for _, up := range untrusted {
 			addr := peerAddress(up.IP, up.Port)
-			if _, ok := joined.Load(addr); ok {
+			if _, ok := joined[addr]; ok {
 				continue
 			}
 
@@ -129,13 +136,18 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 					opts.ErrorHandler(fmt.Errorf("verifying discovered peer: %w", err))
 					return
 				}
-
-				joined.Store(addr, true)
 				logger.Info("established trust with peer", "peer-address", addr, "peer-rdt", rdt)
+
+				lock.Lock()
+				defer lock.Unlock()
+
+				joined[addr] = true
 			}()
 		}
 		wg.Wait()
 	}
+
+	return assembler.stop()
 }
 
 type assembler struct {
@@ -152,6 +164,7 @@ type assembler struct {
 }
 
 func newAssembler(view *as.ClusterView, logger slog.Logger, errs func(error)) (*assembler, error) {
+	// TODO: handle a concept of an expected size
 	a := assembler{
 		errors: errs,
 		peers:  make(map[as.RDT]*peer),

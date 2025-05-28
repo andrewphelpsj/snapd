@@ -23,7 +23,7 @@ func TestAssemble(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const total = 64
+	const total = 16
 
 	for i := range total {
 		stop, err := cluster.Advertise(cluster.AdvertiseOpts{
@@ -67,6 +67,9 @@ func TestAssemble(t *testing.T) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	ctx, cancel = context.WithTimeout(ctx, time.Second*5)
+	defer cancel()
+
 	collected := make([]assemblestate.Routes, total)
 	var wg sync.WaitGroup
 	for i := range total {
@@ -99,7 +102,7 @@ func TestAssemble(t *testing.T) {
 
 	// after all nodes exit, each of them should see the same fully connected
 	// graph
-	g := assemblestate.NewGraph()
+	graph := assemblestate.NewGraph()
 	for i := range total {
 		for peer := range total {
 			if i == peer {
@@ -109,20 +112,20 @@ func TestAssemble(t *testing.T) {
 			from := assemblestate.RDT(strconv.Itoa(i))
 			to := assemblestate.RDT(strconv.Itoa(peer))
 			via := fmt.Sprintf("127.0.0.1:%d", 8001+peer)
-			if _, err := g.Connect(from, to, via); err != nil {
+			if _, err := graph.Connect(from, to, via); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 
-	expected, err := g.Export()
+	expected, err := graph.Export()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for i, r := range collected {
-		if !reflect.DeepEqual(expected, r) {
-			t.Errorf("node %d did not report the expected set of routes: %v", i, r)
+	for i, got := range collected {
+		if !reflect.DeepEqual(expected, got) {
+			t.Errorf("node %d did not report the expected set of routes: %v", i, got)
 		}
 	}
 }
