@@ -146,7 +146,7 @@ outer:
 		wg.Wait()
 	}
 
-	return assembler.stop()
+	return assembler.stop(), nil
 }
 
 type assembler struct {
@@ -370,7 +370,7 @@ func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRD
 	}
 }
 
-func (a *assembler) stop() (as.Routes, error) {
+func (a *assembler) stop() as.Routes {
 	if !a.stopped {
 		a.stopped = true
 
@@ -670,7 +670,7 @@ func send(ctx context.Context, client *http.Client, limiter *rate.Limiter, addr 
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
-		return fmt.Errorf("expected status code 200, got %d", res.StatusCode)
+		return fmt.Errorf("response to '%s' message contains status code %d", kind, res.StatusCode)
 	}
 
 	return nil

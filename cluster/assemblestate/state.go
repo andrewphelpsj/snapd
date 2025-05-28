@@ -91,14 +91,7 @@ type ClusterView struct {
 	// which peer should be queried for identifying device information.
 	views map[RDT]*PeerView
 
-	// verified keeps track of the routes for which we have identifying
-	// information for both devices involved in the route. The routes here can
-	// be safely published to other peers.
-	verified Graph
-
-	// identities keeps track of device identities that we've received from
-	// other trusted peers.
-	identities map[RDT]Identity
+	tracker *RouteTracker
 }
 
 func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certificate) (*ClusterView, error) {
@@ -107,6 +100,12 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 	}
 
 	fp := calculateFP(cert.Certificate[0])
+	tracker := NewRouteTracker()
+	tracker.IdentifyDevices([]Identity{{
+		RDT: rdt,
+		FP:  fp,
+	}})
+
 	return &ClusterView{
 		secret:    secret,
 		rdt:       rdt,
@@ -114,29 +113,18 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 		port:      port,
 		cert:      cert,
 		hmac:      calculateHMAC(rdt, fp, secret),
-		verified:  NewGraph(),
 		views:     make(map[RDT]*PeerView),
 		trusted:   make(map[FP]RDT),
 		addresses: make(map[RDT]string),
-		identities: map[RDT]Identity{
-			rdt: {
-				RDT: rdt,
-				FP:  fp,
-			},
-		},
+		tracker:   tracker,
 	}, nil
 }
 
-func (cv *ClusterView) Export() (Routes, error) {
+func (cv *ClusterView) Export() Routes {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
-	rs, err := cv.verified.Export()
-	if err != nil {
-		return Routes{}, err
-	}
-
-	return rs, nil
+	return edgesToRoutes(cv.tracker.Verified())
 }
 
 // Auth returns the [Auth] message that we should send to other peers to prove
@@ -187,9 +175,7 @@ func (cv *ClusterView) RecordPeerDeviceQueries(peerRDT RDT, unknown UnknownDevic
 	}
 
 	for _, rdt := range unknown.Devices {
-		// TODO: should we just drop unanswerable queries? it would really be a
-		// bug if the other side is requesting data that we don't know about
-		if _, ok := cv.identities[rdt]; !ok {
+		if _, ok := cv.tracker.DeviceID(rdt); !ok {
 			return fmt.Errorf("unknown device: %s", rdt)
 		}
 	}
@@ -208,29 +194,17 @@ func (cv *ClusterView) RecordPeerRoutes(peerRDT RDT, routes Routes) error {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
-	pv, ok := cv.views[peerRDT]
+	_, ok := cv.views[peerRDT]
 	if !ok {
 		return errors.New("peer is untrusted")
 	}
 
-	changes, err := pv.graph.Add(routes)
+	edges, err := routesToEdges(routes)
 	if err != nil {
 		return err
 	}
 
-	for _, e := range changes {
-		if _, ok := cv.identities[e.From]; !ok {
-			continue
-		}
-
-		if _, ok := cv.identities[e.To]; !ok {
-			continue
-		}
-
-		if _, err := cv.verified.Connect(e); err != nil {
-			return err
-		}
-	}
+	cv.tracker.RecordEdges(peerRDT, edges)
 
 	return nil
 }
@@ -242,40 +216,7 @@ func (cv *ClusterView) RecordIdentities(devices Devices) error {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
-	var dirty bool
-	for _, d := range devices.Devices {
-		if known, ok := cv.identities[d.RDT]; ok {
-			if d != known {
-				return fmt.Errorf("inconsistent knowledge of device with RDT %q", d.RDT)
-			}
-			continue
-		}
-
-		cv.identities[d.RDT] = d
-		dirty = true
-	}
-
-	if !dirty {
-		return nil
-	}
-
-	// if we got some new devices, we need to add all of routes from our peers
-	// that aren't yet verified that involve those routes
-	for _, pv := range cv.views {
-		for edge := range pv.graph.edges {
-			if _, ok := cv.identities[edge.From]; !ok {
-				continue
-			}
-
-			if _, ok := cv.identities[edge.To]; !ok {
-				continue
-			}
-
-			if _, err := cv.verified.Connect(edge); err != nil {
-				return err
-			}
-		}
-	}
+	cv.tracker.IdentifyDevices(devices.Devices)
 
 	return nil
 }
@@ -319,7 +260,6 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, address string) (*Pe
 			fp:      fp,
 			rdt:     auth.RDT,
 			queries: make(map[RDT]struct{}),
-			graph:   NewGraph(),
 		}
 	}
 
@@ -330,7 +270,6 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, address string) (*Pe
 // we think the peer that this structure represents knows about the cluster.
 type PeerView struct {
 	queries map[RDT]struct{}
-	graph   Graph
 	rdt     RDT
 	fp      FP
 	cluster *ClusterView
@@ -344,18 +283,9 @@ func (pv *PeerView) UnidentifiedDevices() UnknownDevices {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	var unknown []RDT
-	for edge := range pv.graph.edges {
-		if _, ok := pv.cluster.identities[edge.From]; !ok {
-			unknown = append(unknown, edge.From)
-		}
-
-		if _, ok := pv.cluster.identities[edge.To]; !ok {
-			unknown = append(unknown, edge.To)
-		}
+	return UnknownDevices{
+		Devices: pv.cluster.tracker.UnknownDevicesKnownBy(pv.rdt),
 	}
-
-	return UnknownDevices{Devices: unknown}
 }
 
 // UnknownRoutes returns routes that our local node has verified, but this peer
@@ -365,50 +295,22 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	unknown := NewGraph()
-
-	for edge := range pv.cluster.verified.edges {
-		if pv.graph.Contains(edge) {
-			continue
-		}
-
-		if _, err := unknown.Connect(edge); err != nil {
-			return Routes{}, err
-		}
-	}
-
-	for addr := range pv.cluster.verified.addresses {
-		if pv.graph.addresses[addr] {
-			continue
-		}
-
-		unknown.addresses[addr] = true
-	}
-
 	peerAddr, ok := pv.cluster.addresses[pv.rdt]
 	if !ok {
 		return Routes{}, fmt.Errorf("unable to list unknown routes for peer %q with undiscovered address", pv.rdt)
 	}
 
+	unseen := pv.cluster.tracker.UnseenEdges(pv.rdt)
+
 	// manually add the route from the local node to the receiving peer. this is
 	// a special case, since we might not have seen an assemble-devices message
 	// that includes this peer
-	edge := Edge{From: pv.cluster.rdt, To: pv.rdt, Via: peerAddr}
-	if !pv.graph.Contains(edge) {
-		if _, err := unknown.Connect(edge); err != nil {
-			return Routes{}, err
-		}
+	outbound := Edge{From: pv.cluster.rdt, To: pv.rdt, Via: peerAddr}
+	if !pv.cluster.tracker.KnowsEdge(pv.rdt, outbound) {
+		unseen = append(unseen, outbound)
 	}
 
-	// similarly, make sure that the route back to the local node is always
-	// present, even if it might not be involved in any of the routes we are
-	// sending
-	localAddr := pv.cluster.Address()
-	if !pv.graph.addresses[localAddr] {
-		unknown.addresses[localAddr] = true
-	}
-
-	return unknown.Export()
+	return edgesToRoutes(unseen), nil
 }
 
 // AckRoutes updates this peer's view of the cluster, adding the given routes to
@@ -418,11 +320,12 @@ func (pv *PeerView) AckRoutes(routes Routes) error {
 	pv.cluster.lock.Lock()
 	defer pv.cluster.lock.Unlock()
 
-	if _, err := pv.graph.Add(routes); err != nil {
-		return err
+	edges, err := routesToEdges(routes)
+	if err != nil {
+		return nil
 	}
 
-	return nil
+	return pv.cluster.tracker.MarkSentEdges(pv.rdt, edges)
 }
 
 // UnknownDevices returns a list of device identities that this peer has
@@ -434,7 +337,7 @@ func (pv *PeerView) UnknownDevices() (Devices, error) {
 
 	devices := make([]Identity, 0, len(pv.queries))
 	for rdt := range pv.queries {
-		id, ok := pv.cluster.identities[rdt]
+		id, ok := pv.cluster.tracker.DeviceID(rdt)
 		if !ok {
 			continue
 		}
@@ -616,4 +519,80 @@ func calculateHMAC(rdt RDT, fp FP, secret string) []byte {
 
 func calculateFP(cert []byte) FP {
 	return sha512.Sum512(cert)
+}
+
+func routesToEdges(r Routes) ([]Edge, error) {
+	if len(r.Routes)%3 != 0 {
+		return nil, errors.New("length of routes list in assemble-routes must be a multiple of three")
+	}
+
+	edges := make([]Edge, 0, len(r.Routes)/3)
+	for i := 0; i+2 < len(r.Routes); i += 3 {
+		if r.Routes[i] < 0 || r.Routes[i+1] < 0 || r.Routes[i+2] < 0 {
+			return nil, errors.New("invalid index in assemble-routes")
+		}
+
+		if r.Routes[i] >= len(r.Devices) || r.Routes[i+1] >= len(r.Devices) || r.Routes[i+2] >= len(r.Addresses) {
+			return nil, errors.New("invalid index in assemble-routes")
+		}
+
+		edges = append(edges, Edge{
+			From: r.Devices[r.Routes[i]],
+			To:   r.Devices[r.Routes[i+1]],
+			Via:  r.Addresses[r.Routes[i+2]],
+		})
+	}
+
+	return edges, nil
+}
+
+func edgesToRoutes(edges []Edge) Routes {
+	devs := make(map[RDT]struct{}, len(edges)*2)
+	addrs := make(map[string]struct{}, len(edges))
+	for _, e := range edges {
+		devs[e.From] = struct{}{}
+		devs[e.To] = struct{}{}
+		addrs[e.Via] = struct{}{}
+	}
+
+	devices := slices.Sorted(maps.Keys(devs))
+	addresses := slices.Sorted(maps.Keys(addrs))
+	sorted := slices.SortedFunc(slices.Values(edges), func(a, b Edge) int {
+		if a.From < b.From {
+			return -1
+		}
+		if a.From > b.From {
+			return 1
+		}
+
+		if a.To < b.To {
+			return -1
+		}
+		if a.To > b.To {
+			return 1
+		}
+
+		if a.Via < b.Via {
+			return -1
+		}
+		if a.Via > b.Via {
+			return 1
+		}
+		return 0
+	})
+
+	routes := make([]int, 0, len(edges)*3)
+	for _, e := range sorted {
+		routes = append(routes,
+			slices.Index(devices, e.From),
+			slices.Index(devices, e.To),
+			slices.Index(addresses, e.Via),
+		)
+	}
+
+	return Routes{
+		Devices:   devices,
+		Addresses: addresses,
+		Routes:    routes,
+	}
 }
