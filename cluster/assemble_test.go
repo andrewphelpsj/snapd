@@ -23,7 +23,7 @@ func TestAssemble(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const total = 16
+	const total = 100
 
 	for i := range total {
 		stop, err := cluster.Advertise(cluster.AdvertiseOpts{
@@ -67,8 +67,8 @@ func TestAssemble(t *testing.T) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	ctx, cancel = context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
+	// ctx, cancel = context.WithTimeout(ctx, time.Second*5)
+	// defer cancel()
 
 	collected := make([]assemblestate.Routes, total)
 	var wg sync.WaitGroup

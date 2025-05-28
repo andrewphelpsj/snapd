@@ -23,6 +23,7 @@ import (
 	"time"
 
 	as "github.com/snapcore/snapd/cluster/assemblestate"
+	"golang.org/x/time/rate"
 )
 
 type AssembleOpts struct {
@@ -131,12 +132,10 @@ outer:
 
 				logger.Info("discovered peer", "peer-address", addr)
 
-				rdt, err := assembler.verify(ctx, up)
-				if err != nil {
+				if err := assembler.verify(ctx, up); err != nil {
 					opts.ErrorHandler(fmt.Errorf("verifying discovered peer: %w", err))
 					return
 				}
-				logger.Info("established trust with peer", "peer-address", addr, "peer-rdt", rdt)
 
 				lock.Lock()
 				defer lock.Unlock()
@@ -151,8 +150,9 @@ outer:
 }
 
 type assembler struct {
-	view   *as.ClusterView
-	server *http.Server
+	view    *as.ClusterView
+	server  *http.Server
+	limiter *rate.Limiter
 
 	stopped bool
 	lock    sync.Mutex
@@ -170,6 +170,10 @@ func newAssembler(view *as.ClusterView, logger slog.Logger, errs func(error)) (*
 		peers:  make(map[as.RDT]*peer),
 		view:   view,
 		logger: logger,
+
+		// start off with a conservative 20 outbound messages per-second. this
+		// will be recalulated once peers join the cluster.
+		limiter: rate.NewLimiter(rate.Limit(20), 1),
 	}
 
 	mux := http.NewServeMux()
@@ -383,7 +387,7 @@ func (a *assembler) stop() (as.Routes, error) {
 	return a.view.Export()
 }
 
-func (a *assembler) verify(ctx context.Context, up UntrustedPeer) (as.RDT, error) {
+func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 	cert := a.view.Cert()
 	client := http.Client{
 		Transport: &http.Transport{
@@ -396,44 +400,37 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) (as.RDT, error
 	}
 
 	addr := peerAddress(up.IP, up.Port)
-	res, err := sendWithResponse(ctx, &client, addr, "auth", a.view.Auth())
+	res, err := sendWithResponse(ctx, &client, a.limiter, addr, "auth", a.view.Auth())
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer res.Body.Close()
 
 	if res.TLS == nil {
-		return "", errors.New("cannot establish trust over unencrypted connection")
+		return errors.New("cannot establish trust over unencrypted connection")
 	}
 
 	if len(res.TLS.PeerCertificates) != 1 {
-		return "", fmt.Errorf("exactly one peer certificate expected, got %d", len(res.TLS.PeerCertificates))
+		return fmt.Errorf("exactly one peer certificate expected, got %d", len(res.TLS.PeerCertificates))
 	}
 
 	// set a max size so an untrusted peer can't send some massive JSON
 	const maxAuthSize = 1024 * 4
 	var auth as.Auth
 	if err := json.NewDecoder(io.LimitReader(res.Body, maxAuthSize)).Decode(&auth); err != nil {
-		return "", err
+		return err
 	}
 
 	pv, err := a.view.Authenticate(auth, res.TLS.PeerCertificates[0].Raw, addr)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	a.lock.Lock()
-	defer a.lock.Unlock()
-
-	rdt := pv.RDT()
-	peer, err := newPeer(ctx, pv, cert, a.logger, a.errors)
-	if err != nil {
-		return "", err
+	if err := a.join(ctx, pv); err != nil {
+		return err
 	}
 
-	a.peers[rdt] = peer
-
-	return rdt, nil
+	return nil
 }
 
 type peer struct {
@@ -441,7 +438,6 @@ type peer struct {
 	unidentified chan struct{}
 	devices      chan struct{}
 	wg           sync.WaitGroup
-	errors       func(error)
 }
 
 // consumer orchestrates a loop that is either driver my an event source (the
@@ -500,12 +496,14 @@ func notify(ch chan<- struct{}) {
 	}
 }
 
-func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger slog.Logger, errs func(error)) (*peer, error) {
+func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
+	a.lock.Lock()
+	defer a.lock.Unlock()
+
 	p := &peer{
 		routes:       make(chan struct{}, 1),
 		unidentified: make(chan struct{}, 1),
 		devices:      make(chan struct{}, 1),
-		errors:       errs,
 	}
 
 	client := http.Client{
@@ -522,7 +520,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 					}
 					return nil
 				},
-				Certificates: []tls.Certificate{cert},
+				Certificates: []tls.Certificate{a.view.Cert()},
 			},
 		},
 		Timeout: time.Minute,
@@ -530,7 +528,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 
 	addr, ok := pv.Address()
 	if !ok {
-		return nil, fmt.Errorf("cannot communicate with peer %q without an address", pv.RDT())
+		return fmt.Errorf("cannot communicate with peer %q without an address", pv.RDT())
 	}
 
 	// below we spawn a few goroutines that handle publishing data to this peer.
@@ -553,7 +551,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 		publisher(ctx, p.routes, func() (retry bool) {
 			unknown, err := pv.UnknownRoutes()
 			if err != nil {
-				p.errors(err)
+				a.errors(err)
 				return false
 			}
 
@@ -561,20 +559,20 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return false
 			}
 
-			if err := send(ctx, &client, addr, "routes", unknown); err != nil {
+			if err := send(ctx, &client, a.limiter, addr, "routes", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
 
-				p.errors(err)
+				a.errors(err)
 				return true
 			}
 
-			logger.Debug("sent routes update", "peer-rdt", pv.RDT())
+			a.logger.Debug("sent routes update", "peer-rdt", pv.RDT())
 			previous = unknown
 
 			if err := pv.AckRoutes(unknown); err != nil {
-				p.errors(err)
+				a.errors(err)
 				return false
 			}
 			return false
@@ -593,12 +591,12 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return false
 			}
 
-			if err := send(ctx, &client, addr, "unknown", unknown); err != nil {
+			if err := send(ctx, &client, a.limiter, addr, "unknown", unknown); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
 
-				p.errors(err)
+				a.errors(err)
 				return true
 			}
 			return false
@@ -614,7 +612,7 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 		publisher(ctx, p.devices, func() (retry bool) {
 			devices, err := pv.UnknownDevices()
 			if err != nil {
-				p.errors(err)
+				a.errors(err)
 				return false
 			}
 
@@ -622,12 +620,12 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 				return false
 			}
 
-			if err := send(ctx, &client, addr, "devices", devices); err != nil {
+			if err := send(ctx, &client, a.limiter, addr, "devices", devices); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
 
-				p.errors(err)
+				a.errors(err)
 				return true
 			}
 
@@ -637,7 +635,23 @@ func newPeer(ctx context.Context, pv *as.PeerView, cert tls.Certificate, logger 
 	}()
 	notify(p.devices)
 
-	return p, nil
+	rdt := pv.RDT()
+	a.peers[rdt] = p
+
+	// update our rate limiter to consider the number of peers in the cluster.
+	// this is an attempt to coordinate throttling with our peers. this means
+	// 500 messages per-second for the entire cluster.
+	rate := max(rate.Limit(1), rate.Limit(500/len(a.peers)))
+	a.limiter.SetLimit(rate)
+
+	a.logger.Info(
+		"initiating outbound comms with peer",
+		"peer-address", addr,
+		"peer-rdt", rdt,
+		"rate-limit", a.limiter.Limit(),
+	)
+
+	return nil
 }
 
 func (p *peer) stop() {
@@ -648,8 +662,8 @@ func peerAddress(ip net.IP, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
-func send(ctx context.Context, client *http.Client, addr string, kind string, data any) error {
-	res, err := sendWithResponse(ctx, client, addr, kind, data)
+func send(ctx context.Context, client *http.Client, limiter *rate.Limiter, addr string, kind string, data any) error {
+	res, err := sendWithResponse(ctx, client, limiter, addr, kind, data)
 	if err != nil {
 		return err
 	}
@@ -662,7 +676,11 @@ func send(ctx context.Context, client *http.Client, addr string, kind string, da
 	return nil
 }
 
-func sendWithResponse(ctx context.Context, client *http.Client, addr string, kind string, data any) (*http.Response, error) {
+func sendWithResponse(ctx context.Context, client *http.Client, limiter *rate.Limiter, addr string, kind string, data any) (*http.Response, error) {
+	if err := limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
