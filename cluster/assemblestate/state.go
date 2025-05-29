@@ -294,7 +294,11 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	pv.cv.lock.Lock()
 	defer pv.cv.lock.Unlock()
 
-	unknown := pv.cv.tracker.UnknownEdges(pv.rdt)
+	// we set a cap on the number of known routes that we'll report, for a
+	// couple reasons. this limits what a newly joined peer might see.
+	// additionally, it helps us limit how much memory we're using at any one
+	// time.
+	unknown := pv.cv.tracker.UnknownEdges(pv.rdt, 5000)
 
 	addr, ok := pv.cv.addresses[pv.rdt]
 	if !ok {

@@ -394,7 +394,12 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 	}
 
 	addr := peerAddress(up.IP, up.Port)
-	res, err := sendWithResponse(ctx, &client, a.limiter, addr, "auth", a.view.Auth())
+
+	if err := a.limiter.Wait(ctx); err != nil {
+		return err
+	}
+
+	res, err := sendWithResponse(ctx, &client, addr, "auth", a.view.Auth())
 	if err != nil {
 		return err
 	}
@@ -444,7 +449,7 @@ type peer struct {
 // Retries are scheduled with an exponential back off. Incoming events are not
 // currently throttled, and might take precedence over an already scheduled
 // retry.
-func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
+func publisher(ctx context.Context, events <-chan struct{}, limiter *rate.Limiter, work func() bool) {
 	retry := false
 	backoff := time.Millisecond * 500
 	for {
@@ -471,6 +476,10 @@ func publisher(ctx context.Context, events <-chan struct{}, work func() bool) {
 		}
 
 		if ctx.Err() != nil {
+			return
+		}
+
+		if err := limiter.Wait(ctx); err != nil {
 			return
 		}
 
@@ -542,7 +551,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		publisher(ctx, p.routes, func() (retry bool) {
+		publisher(ctx, p.routes, a.limiter, func() (retry bool) {
 			routes, err := pv.UnknownRoutes()
 			if err != nil {
 				a.errors(err)
@@ -553,7 +562,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return false
 			}
 
-			if err := send(ctx, &client, a.limiter, addr, "routes", routes); err != nil {
+			if err := send(ctx, &client, addr, "routes", routes); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -578,13 +587,13 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		publisher(ctx, p.unidentified, func() (retry bool) {
+		publisher(ctx, p.unidentified, a.limiter, func() (retry bool) {
 			identifiable := pv.IdentifiableDevices()
 			if len(identifiable.Devices) == 0 {
 				return false
 			}
 
-			if err := send(ctx, &client, a.limiter, addr, "unknown", identifiable); err != nil {
+			if err := send(ctx, &client, addr, "unknown", identifiable); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -605,7 +614,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		publisher(ctx, p.devices, func() (retry bool) {
+		publisher(ctx, p.devices, a.limiter, func() (retry bool) {
 			devices, err := pv.UnknownDevices()
 			if err != nil {
 				a.errors(err)
@@ -616,7 +625,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return false
 			}
 
-			if err := send(ctx, &client, a.limiter, addr, "devices", devices); err != nil {
+			if err := send(ctx, &client, addr, "devices", devices); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -639,8 +648,8 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	// update our rate limiter to consider the number of peers in the cluster.
 	// this is an attempt to coordinate throttling with our peers. we allow
 	// everyone to send at least at least 1 message per second, but we try to
-	// keep the cluster limited to 500 messages per second.
-	rate := max(rate.Limit(1), rate.Limit(500/len(a.peers)))
+	// keep the cluster limited to 1000 messages per second.
+	rate := max(rate.Limit(1), rate.Limit(1000/len(a.peers)))
 	a.limiter.SetLimit(rate)
 
 	a.logger.Info(
@@ -661,8 +670,8 @@ func peerAddress(ip net.IP, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
-func send(ctx context.Context, client *http.Client, limiter *rate.Limiter, addr string, kind string, data any) error {
-	res, err := sendWithResponse(ctx, client, limiter, addr, kind, data)
+func send(ctx context.Context, client *http.Client, addr string, kind string, data any) error {
+	res, err := sendWithResponse(ctx, client, addr, kind, data)
 	if err != nil {
 		return err
 	}
@@ -675,11 +684,7 @@ func send(ctx context.Context, client *http.Client, limiter *rate.Limiter, addr 
 	return nil
 }
 
-func sendWithResponse(ctx context.Context, client *http.Client, limiter *rate.Limiter, addr string, kind string, data any) (*http.Response, error) {
-	if err := limiter.Wait(ctx); err != nil {
-		return nil, err
-	}
-
+func sendWithResponse(ctx context.Context, client *http.Client, addr string, kind string, data any) (*http.Response, error) {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return nil, err

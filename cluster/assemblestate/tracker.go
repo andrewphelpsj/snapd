@@ -223,12 +223,15 @@ func (rt *RouteTracker) MarkSentEdges(to RDT, sent []Edge) error {
 	return nil
 }
 
-func (rt *RouteTracker) UnknownEdges(p RDT) []Edge {
+func (rt *RouteTracker) UnknownEdges(p RDT, limit int) []Edge {
 	peerID := rt.peerID(p)
 	pending := rt.pending[peerID].ids()
 
-	unseen := make([]Edge, 0, len(pending))
+	unseen := make([]Edge, 0, min(len(pending), limit))
 	for _, edgeID := range pending {
+		if len(unseen) == limit {
+			break
+		}
 		unseen = append(unseen, rt.edges[edgeID])
 	}
 
