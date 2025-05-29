@@ -89,7 +89,7 @@ type ClusterView struct {
 
 	// tracker helps keep track of routes and device identities. Specifically,
 	// it keeps track of which routes have been published to each peer.
-	tracker *RouteTracker
+	tracker RouteTracker
 
 	// queries keeps track of the requests for device information from each
 	// peers. It is a mapping of requester RDT -> set of requested RDTs.
@@ -102,7 +102,10 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 	}
 
 	fp := calculateFP(cert.Certificate[0])
+
 	tracker := NewRouteTracker()
+
+	// we know ourselves, add that immediately
 	tracker.IdentifyDevices([]Identity{{
 		RDT: rdt,
 		FP:  fp,
@@ -216,7 +219,8 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, address string) (*Pe
 }
 
 // PeerView provides a peer's view into [ClusterView], providing access to what
-// we think the peer that this structure represents knows about the cluster.
+// we think this peer knows about the cluster. Having one of these proves that
+// this peer has provided proof that is knows the shared secret.
 type PeerView struct {
 	rdt  RDT
 	cert []byte

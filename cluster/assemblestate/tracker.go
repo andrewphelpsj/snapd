@@ -45,8 +45,8 @@ type RouteTracker struct {
 	verified   []edgeID
 }
 
-func NewRouteTracker() *RouteTracker {
-	return &RouteTracker{
+func NewRouteTracker() RouteTracker {
+	return RouteTracker{
 		peers:      make(map[RDT]peerID),
 		indices:    make(map[Edge]edgeID),
 		known:      make(map[edgeID]*bitset),

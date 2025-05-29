@@ -563,7 +563,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return true
 			}
 
-			a.logger.Debug("sent routes update", "peer-rdt", pv.RDT())
+			a.logger.Debug("sent routes update", "peer-rdt", pv.RDT(), "routes-count", len(routes.Routes)/3)
 			previous = routes
 
 			if err := pv.AckRoutes(routes); err != nil {
