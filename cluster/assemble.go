@@ -592,6 +592,9 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				a.errors(err)
 				return true
 			}
+
+			a.logger.Debug("sent device identities", "peer-rdt", pv.RDT(), "devices-count", len(identifiable.Devices))
+
 			return false
 		})
 	}()
@@ -621,6 +624,8 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				a.errors(err)
 				return true
 			}
+
+			a.logger.Debug("sent device queries", "peer-rdt", pv.RDT(), "query-count", len(devices.Devices))
 
 			pv.AckDevices(devices)
 			return false
