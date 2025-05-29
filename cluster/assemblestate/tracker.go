@@ -34,21 +34,40 @@ type peerID = int
 type edgeID = int
 
 type RouteTracker struct {
+	// peers keeps a mapping of RDTs to an ID we assign each peer. These IDs are
+	// used so that we can keep a compact representation of which edges each
+	// peer knows.
 	peers map[RDT]peerID
 
-	indices map[Edge]edgeID
-	edges   []Edge
+	// edges keeps track of all edges that we know about, verified or not.
+	edges []Edge
+	// indexes keeps a mapping of edges to indexes into the edges slice, for
+	// quick lookup.
+	indexes map[Edge]edgeID
 
-	known      map[edgeID]*bitset
-	identified map[RDT]Identity
+	// known keeps track of which edges are known by each peer. An edge is known
+	// to a peer if either they have reported the edge to us or we have sent the
+	// edge to them. The [bitset] associated with each edge stores peer IDs.
+	known map[edgeID]*bitset
+
+	// unverified keeps track of edges that we know about but are not yet
+	// verified. We use a map here for quick lookup and easy deletion.
 	unverified map[edgeID]struct{}
-	verified   []edgeID
+
+	// verified keeps track of which edges are verified. Since this list only
+	// grows and we don't need to perform lookups on it, it is better as a
+	// slice.
+	verified []edgeID
+
+	// identified keeps track of device identities. This information is used to
+	// verify routes.
+	identified map[RDT]Identity
 }
 
 func NewRouteTracker() RouteTracker {
 	return RouteTracker{
 		peers:      make(map[RDT]peerID),
-		indices:    make(map[Edge]edgeID),
+		indexes:    make(map[Edge]edgeID),
 		known:      make(map[edgeID]*bitset),
 		identified: make(map[RDT]Identity),
 		unverified: make(map[edgeID]struct{}),
@@ -66,12 +85,12 @@ func (rt *RouteTracker) peerID(p RDT) peerID {
 }
 
 func (rt *RouteTracker) edgeID(e Edge) edgeID {
-	if id, ok := rt.indices[e]; ok {
+	if id, ok := rt.indexes[e]; ok {
 		return id
 	}
 
 	id := edgeID(len(rt.edges))
-	rt.indices[e] = id
+	rt.indexes[e] = id
 	rt.edges = append(rt.edges, e)
 
 	rt.unverified[id] = struct{}{}
@@ -80,7 +99,7 @@ func (rt *RouteTracker) edgeID(e Edge) edgeID {
 	return id
 }
 
-func (rt *RouteTracker) IdentifyDevices(ids []Identity) error {
+func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 	dirty := false
 	for _, id := range ids {
 		if existing, ok := rt.identified[id.RDT]; ok {
@@ -149,7 +168,7 @@ func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
 func (rt *RouteTracker) MarkSentEdges(to RDT, sent []Edge) error {
 	peerID := rt.peerID(to)
 	for _, e := range sent {
-		edgeID, ok := rt.indices[e]
+		edgeID, ok := rt.indexes[e]
 		if !ok {
 			continue
 		}
@@ -186,7 +205,7 @@ func (rt *RouteTracker) KnowsEdge(p RDT, e Edge) bool {
 		return false
 	}
 
-	edgeID, ok := rt.indices[e]
+	edgeID, ok := rt.indexes[e]
 	if !ok {
 		return false
 	}

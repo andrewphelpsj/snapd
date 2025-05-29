@@ -634,8 +634,9 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	a.peers[rdt] = p
 
 	// update our rate limiter to consider the number of peers in the cluster.
-	// this is an attempt to coordinate throttling with our peers. this means
-	// 500 messages per-second for the entire cluster.
+	// this is an attempt to coordinate throttling with our peers. we allow
+	// everyone to send at least at least 1 message per second, but we try to
+	// keep the cluster limited to 500 messages per second.
 	rate := max(rate.Limit(1), rate.Limit(500/len(a.peers)))
 	a.limiter.SetLimit(rate)
 

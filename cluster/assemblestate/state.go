@@ -106,7 +106,7 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 	tracker := NewRouteTracker()
 
 	// we know ourselves, add that immediately
-	tracker.IdentifyDevices([]Identity{{
+	tracker.RecordIdentities([]Identity{{
 		RDT: rdt,
 		FP:  fp,
 	}})
@@ -220,7 +220,7 @@ func (cv *ClusterView) Authenticate(auth Auth, cert []byte, address string) (*Pe
 
 // PeerView provides a peer's view into [ClusterView], providing access to what
 // we think this peer knows about the cluster. Having one of these proves that
-// this peer has provided proof that is knows the shared secret.
+// this peer has provided proof that it knows the shared secret.
 type PeerView struct {
 	rdt  RDT
 	cert []byte
@@ -270,7 +270,7 @@ func (pv *PeerView) RecordIdentities(devices Devices) error {
 	pv.cv.lock.Lock()
 	defer pv.cv.lock.Unlock()
 
-	return pv.cv.tracker.IdentifyDevices(devices.Devices)
+	return pv.cv.tracker.RecordIdentities(devices.Devices)
 }
 
 // IdentifiableDevices returns the devices that our local node does not know
@@ -307,6 +307,9 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	if !pv.cv.tracker.KnowsEdge(pv.rdt, outbound) {
 		unknown = append(unknown, outbound)
 	}
+
+	// TODO: add extra addresses here, will be treated by the peer as
+	// "discovered" devices.
 
 	return EdgesToRoutes(unknown), nil
 }
