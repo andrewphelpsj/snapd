@@ -542,7 +542,6 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		previous := as.Routes{}
 		publisher(ctx, p.routes, func() (retry bool) {
 			routes, err := pv.UnknownRoutes()
 			if err != nil {
@@ -550,7 +549,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return false
 			}
 
-			if routesEqual(previous, routes) || routesEqual(routes, as.Routes{}) {
+			if len(routes.Routes) == 0 && len(routes.Devices) == 0 && len(routes.Addresses) == 0 {
 				return false
 			}
 
@@ -564,7 +563,6 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 			}
 
 			a.logger.Debug("sent routes update", "peer-rdt", pv.RDT(), "routes-count", len(routes.Routes)/3)
-			previous = routes
 
 			if err := pv.AckRoutes(routes); err != nil {
 				a.errors(err)
@@ -747,17 +745,21 @@ func discoveryNotifier(ctx context.Context, discover Discoverer, period time.Dur
 
 		ticker := time.NewTicker(period)
 		defer ticker.Stop()
+		first := true
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
+			if !first {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
 
-			// fail early even if the ticker won the select
-			if ctx.Err() != nil {
-				return
+				// fail early even if the ticker won the select
+				if ctx.Err() != nil {
+					return
+				}
 			}
+			first = false
 
 			peers, err := discover(ctx)
 			if err != nil {

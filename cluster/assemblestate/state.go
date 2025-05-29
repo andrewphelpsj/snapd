@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"slices"
+	"sort"
 	"sync"
 
 	"github.com/google/uuid"
@@ -129,7 +130,7 @@ func (cv *ClusterView) Export() Routes {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
-	return EdgesToRoutes(cv.tracker.VerifiedEdges())
+	return EdgesToRoutes(cv.tracker.VerifiedEdges(), true)
 }
 
 // Auth returns the [Auth] message that we should send to other peers to prove
@@ -311,7 +312,7 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	// TODO: add extra addresses here, will be treated by the peer as
 	// "discovered" devices.
 
-	return EdgesToRoutes(unknown), nil
+	return EdgesToRoutes(unknown, false), nil
 }
 
 // AckRoutes updates this peer's view of the cluster, adding the given routes to
@@ -421,7 +422,7 @@ func RoutesToEdges(r Routes) ([]Edge, error) {
 	return edges, nil
 }
 
-func EdgesToRoutes(edges []Edge) Routes {
+func EdgesToRoutes(edges []Edge, sorted bool) Routes {
 	devs := make(map[RDT]struct{}, len(edges)*2)
 	addrs := make(map[string]struct{}, len(edges))
 	for _, e := range edges {
@@ -432,42 +433,27 @@ func EdgesToRoutes(edges []Edge) Routes {
 
 	devices := slices.Sorted(maps.Keys(devs))
 	addresses := slices.Sorted(maps.Keys(addrs))
-	sorted := slices.SortedFunc(slices.Values(edges), func(a, b Edge) int {
-		if a.From < b.From {
-			return -1
-		}
-		if a.From > b.From {
-			return 1
-		}
 
-		if a.To < b.To {
-			return -1
-		}
-		if a.To > b.To {
-			return 1
-		}
-
-		if a.Via < b.Via {
-			return -1
-		}
-		if a.Via > b.Via {
-			return 1
-		}
-		return 0
-	})
-
-	routes := make([]int, 0, len(edges)*3)
-	for _, e := range sorted {
-		routes = append(routes,
-			slices.Index(devices, e.From),
-			slices.Index(devices, e.To),
-			slices.Index(addresses, e.Via),
-		)
+	if sorted {
+		sort.Slice(edges, func(i, j int) bool {
+			a, b := edges[i], edges[j]
+			if a.From != b.From {
+				return a.From < b.From
+			}
+			if a.To != b.To {
+				return a.To < b.To
+			}
+			return a.Via < b.Via
+		})
 	}
 
-	return Routes{
-		Devices:   devices,
-		Addresses: addresses,
-		Routes:    routes,
+	routes := make([]int, 0, 3*len(edges))
+	for _, e := range edges {
+		from, _ := slices.BinarySearch(devices, e.From)
+		to, _ := slices.BinarySearch(devices, e.To)
+		via, _ := slices.BinarySearch(addresses, e.Via)
+		routes = append(routes, from, to, via)
 	}
+
+	return Routes{Devices: devices, Addresses: addresses, Routes: routes}
 }

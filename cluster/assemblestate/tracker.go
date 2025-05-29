@@ -3,6 +3,7 @@ package assemblestate
 import (
 	"fmt"
 	"maps"
+	"math/bits"
 	"slices"
 )
 
@@ -30,6 +31,26 @@ func (bs *bitset) has(id int) bool {
 	return bs.words[word]&(1<<bit) != 0
 }
 
+// clear turns off the bit for id.
+func (b *bitset) clear(id int) {
+	word, bit := id/64, id%64
+	if word < len(b.words) {
+		b.words[word] &^= 1 << bit
+	}
+}
+
+func (b *bitset) ids() []int {
+	var result []int
+	for wi, w := range b.words {
+		for w != 0 {
+			tz := bits.TrailingZeros64(w)
+			result = append(result, wi*64+tz)
+			w &= w - 1
+		}
+	}
+	return result
+}
+
 type peerID = int
 type edgeID = int
 
@@ -50,6 +71,11 @@ type RouteTracker struct {
 	// edge to them. The [bitset] associated with each edge stores peer IDs.
 	known map[edgeID]*bitset
 
+	// pending keeps track of which edges are not known by a peer. We keep both
+	// this and the known set of edges in memory so that we can quickly
+	// calculate both.
+	pending map[peerID]*bitset
+
 	// unverified keeps track of edges that we know about but are not yet
 	// verified. We use a map here for quick lookup and easy deletion.
 	unverified map[edgeID]struct{}
@@ -69,6 +95,7 @@ func NewRouteTracker() RouteTracker {
 		peers:      make(map[RDT]peerID),
 		indexes:    make(map[Edge]edgeID),
 		known:      make(map[edgeID]*bitset),
+		pending:    make(map[peerID]*bitset),
 		identified: make(map[RDT]Identity),
 		unverified: make(map[edgeID]struct{}),
 	}
@@ -81,6 +108,13 @@ func (rt *RouteTracker) peerID(p RDT) peerID {
 
 	id := peerID(len(rt.peers))
 	rt.peers[p] = id
+
+	bs := &bitset{}
+	for _, edgeID := range rt.verified {
+		bs.set(edgeID)
+	}
+	rt.pending[id] = bs
+
 	return id
 }
 
@@ -130,6 +164,13 @@ func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 
 		delete(rt.unverified, edgeID)
 		rt.verified = append(rt.verified, edgeID)
+
+		// seed pending for every peer that doesn’t yet know this edge
+		for _, pid := range rt.peers {
+			if !rt.known[edgeID].has(pid) {
+				rt.pending[pid].set(edgeID)
+			}
+		}
 	}
 
 	return nil
@@ -149,6 +190,7 @@ func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
 		edgeID := rt.edgeID(e)
 
 		rt.known[edgeID].set(peerID)
+		rt.pending[peerID].clear(edgeID)
 
 		if _, ok := rt.identified[e.From]; !ok {
 			continue
@@ -161,6 +203,12 @@ func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
 		if _, ok := rt.unverified[edgeID]; ok {
 			delete(rt.unverified, edgeID)
 			rt.verified = append(rt.verified, edgeID)
+
+			for _, pid := range rt.peers {
+				if !rt.known[edgeID].has(pid) {
+					rt.pending[pid].set(edgeID)
+				}
+			}
 		}
 	}
 }
@@ -168,26 +216,22 @@ func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
 func (rt *RouteTracker) MarkSentEdges(to RDT, sent []Edge) error {
 	peerID := rt.peerID(to)
 	for _, e := range sent {
-		edgeID, ok := rt.indexes[e]
-		if !ok {
-			continue
-		}
-
+		edgeID := rt.edgeID(e)
 		rt.known[edgeID].set(peerID)
+		rt.pending[peerID].clear(edgeID)
 	}
 	return nil
 }
 
 func (rt *RouteTracker) UnknownEdges(p RDT) []Edge {
 	peerID := rt.peerID(p)
-	var unseen []Edge
-	for _, edgeID := range rt.verified {
-		if rt.known[edgeID].has(peerID) {
-			continue
-		}
+	pending := rt.pending[peerID].ids()
 
+	unseen := make([]Edge, 0, len(pending))
+	for _, edgeID := range pending {
 		unseen = append(unseen, rt.edges[edgeID])
 	}
+
 	return unseen
 }
 

@@ -83,7 +83,7 @@ func TestAssemble(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			routes, err := cluster.Assemble(ctx, discover, cluster.AssembleOpts{
-				DiscoveryPeriod: time.Millisecond * 500,
+				DiscoveryPeriod: time.Second * 5,
 				Secret:          "secret",
 				ListenIP:        net.ParseIP("127.0.0.1"),
 				ListenPort:      8001 + i,
@@ -117,7 +117,7 @@ func TestAssemble(t *testing.T) {
 		}
 	}
 
-	expected := assemblestate.EdgesToRoutes(edges)
+	expected := assemblestate.EdgesToRoutes(edges, true)
 
 	for i, got := range collected {
 		if !reflect.DeepEqual(expected, got) {
