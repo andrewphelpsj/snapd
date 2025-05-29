@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -37,11 +36,6 @@ type AssembleOpts struct {
 }
 
 type Discoverer = func(context.Context) ([]UntrustedPeer, error)
-
-type Observer interface {
-	Error(error)
-	Update(*as.Graph)
-}
 
 func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.Routes, error) {
 	if opts.DiscoveryPeriod == 0 {
@@ -249,7 +243,7 @@ func (a *assembler) handleAuth(w http.ResponseWriter, r *http.Request) {
 	a.logger.Debug("got valid auth message", "peer-rdt", auth.RDT)
 }
 
-func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, as.RDT)) http.HandlerFunc {
+func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, *as.PeerView)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil {
 			w.WriteHeader(400)
@@ -261,18 +255,18 @@ func (a *assembler) trustedHandler(h func(http.ResponseWriter, *http.Request, as
 			return
 		}
 
-		rdt, err := a.view.Trusted(r.TLS.PeerCertificates[0].Raw)
+		pv, err := a.view.Trusted(r.TLS.PeerCertificates[0].Raw)
 		if err != nil {
 			a.logger.Debug("dropping message from untrusted peer")
 			w.WriteHeader(403)
 			return
 		}
 
-		h(w, r, rdt)
+		h(w, r, pv)
 	}
 }
 
-func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT as.RDT) {
+func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, pv *as.PeerView) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		return
@@ -284,19 +278,19 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 		return
 	}
 
-	if err := a.view.RecordPeerRoutes(peerRDT, routes); err != nil {
+	if err := pv.RecordRoutes(routes); err != nil {
 		w.WriteHeader(400)
 		return
 	}
 
-	a.logger.Debug("got routes update", "peer-rdt", peerRDT, "routes-count", len(routes.Routes)/3)
+	a.logger.Debug("got routes update", "peer-rdt", pv.RDT(), "routes-count", len(routes.Routes)/3)
 
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
 	// wake up this peer's thread so that it'll request information for any
 	// devices we don't recognize
-	if p, ok := a.peers[peerRDT]; ok {
+	if p, ok := a.peers[pv.RDT()]; ok {
 		notify(p.unidentified)
 	}
 
@@ -304,7 +298,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 		// any new routes from this peer don't need to be sent back to that
 		// peer, since they already have them. don't even bother waking that
 		// thread up
-		if rdt == peerRDT {
+		if rdt == pv.RDT() {
 			continue
 		}
 
@@ -314,7 +308,7 @@ func (a *assembler) handleRoutes(w http.ResponseWriter, r *http.Request, peerRDT
 	}
 }
 
-func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerRDT as.RDT) {
+func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, pv *as.PeerView) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		return
@@ -326,22 +320,22 @@ func (a *assembler) handleUnknown(w http.ResponseWriter, r *http.Request, peerRD
 		return
 	}
 
-	if err := a.view.RecordPeerDeviceQueries(peerRDT, unknown); err != nil {
+	if err := pv.RecordDeviceQueries(unknown); err != nil {
 		w.WriteHeader(400)
 		return
 	}
 
-	a.logger.Debug("got query for device information", "peer-rdt", peerRDT)
+	a.logger.Debug("got query for device information", "peer-rdt", pv.RDT())
 
 	a.lock.Lock()
 	defer a.lock.Unlock()
 
-	if p, ok := a.peers[peerRDT]; ok {
+	if p, ok := a.peers[pv.RDT()]; ok {
 		notify(p.devices)
 	}
 }
 
-func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRDT as.RDT) {
+func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, pv *as.PeerView) {
 	if r.Method != "POST" {
 		w.WriteHeader(405)
 		return
@@ -353,12 +347,12 @@ func (a *assembler) handleDevices(w http.ResponseWriter, r *http.Request, peerRD
 		return
 	}
 
-	if err := a.view.RecordIdentities(devices); err != nil {
+	if err := pv.RecordIdentities(devices); err != nil {
 		w.WriteHeader(400)
 		return
 	}
 
-	a.logger.Debug("got unknown device information", "peer-rdt", peerRDT)
+	a.logger.Debug("got unknown device information", "peer-rdt", pv.RDT())
 
 	a.lock.Lock()
 	defer a.lock.Unlock()
@@ -515,9 +509,10 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 						return fmt.Errorf("exactly one peer certificate expected, got %d", len(certs))
 					}
 
-					if sha512.Sum512(certs[0]) != pv.FP() {
+					if !bytes.Equal(certs[0], pv.Cert()) {
 						return errors.New("refusing to communicate with unexpected peer certificate")
 					}
+
 					return nil
 				},
 				Certificates: []tls.Certificate{a.view.Cert()},
@@ -549,17 +544,17 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 		defer p.wg.Done()
 		previous := as.Routes{}
 		publisher(ctx, p.routes, func() (retry bool) {
-			unknown, err := pv.UnknownRoutes()
+			routes, err := pv.UnknownRoutes()
 			if err != nil {
 				a.errors(err)
 				return false
 			}
 
-			if routesEqual(previous, unknown) || routesEqual(unknown, as.Routes{}) {
+			if routesEqual(previous, routes) || routesEqual(routes, as.Routes{}) {
 				return false
 			}
 
-			if err := send(ctx, &client, a.limiter, addr, "routes", unknown); err != nil {
+			if err := send(ctx, &client, a.limiter, addr, "routes", routes); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -569,9 +564,9 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 			}
 
 			a.logger.Debug("sent routes update", "peer-rdt", pv.RDT())
-			previous = unknown
+			previous = routes
 
-			if err := pv.AckRoutes(unknown); err != nil {
+			if err := pv.AckRoutes(routes); err != nil {
 				a.errors(err)
 				return false
 			}
@@ -586,12 +581,12 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 	go func() {
 		defer p.wg.Done()
 		publisher(ctx, p.unidentified, func() (retry bool) {
-			unknown := pv.UnidentifiedDevices()
-			if len(unknown.Devices) == 0 {
+			identifiable := pv.IdentifiableDevices()
+			if len(identifiable.Devices) == 0 {
 				return false
 			}
 
-			if err := send(ctx, &client, a.limiter, addr, "unknown", unknown); err != nil {
+			if err := send(ctx, &client, a.limiter, addr, "unknown", identifiable); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}

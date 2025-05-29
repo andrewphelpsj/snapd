@@ -102,29 +102,22 @@ func TestAssemble(t *testing.T) {
 
 	// after all nodes exit, each of them should see the same fully connected
 	// graph
-	graph := assemblestate.NewGraph()
+	var edges []assemblestate.Edge
 	for i := range total {
 		for peer := range total {
 			if i == peer {
 				continue
 			}
 
-			edge := assemblestate.Edge{
+			edges = append(edges, assemblestate.Edge{
 				From: assemblestate.RDT(strconv.Itoa(i)),
 				To:   assemblestate.RDT(strconv.Itoa(peer)),
 				Via:  fmt.Sprintf("127.0.0.1:%d", 8001+peer),
-			}
-
-			if _, err := graph.Connect(edge); err != nil {
-				t.Fatal(err)
-			}
+			})
 		}
 	}
 
-	expected, err := graph.Export()
-	if err != nil {
-		t.Fatal(err)
-	}
+	expected := assemblestate.EdgesToRoutes(edges)
 
 	for i, got := range collected {
 		if !reflect.DeepEqual(expected, got) {
