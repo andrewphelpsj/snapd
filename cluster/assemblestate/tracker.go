@@ -7,14 +7,14 @@ import (
 	"slices"
 )
 
-type bitset struct {
+type bitset[T ~int] struct {
 	words []uint64
 }
 
 // set turns on the bit for id.
-func (b *bitset) set(id int) {
+func (b *bitset[T]) set(id T) {
 	word, bit := id/64, id%64
-	if word >= len(b.words) {
+	if int(word) >= len(b.words) {
 		cp := make([]uint64, word+1)
 		copy(cp, b.words)
 		b.words = cp
@@ -23,36 +23,37 @@ func (b *bitset) set(id int) {
 }
 
 // has reports whether the bit for id is set.
-func (bs *bitset) has(id int) bool {
+func (bs *bitset[T]) has(id T) bool {
 	word, bit := id/64, id%64
-	if word >= len(bs.words) {
+	if int(word) >= len(bs.words) {
 		return false
 	}
 	return bs.words[word]&(1<<bit) != 0
 }
 
 // clear turns off the bit for id.
-func (b *bitset) clear(id int) {
+func (b *bitset[T]) clear(id T) {
 	word, bit := id/64, id%64
-	if word < len(b.words) {
+	if int(word) < len(b.words) {
 		b.words[word] &^= 1 << bit
 	}
 }
 
-func (b *bitset) ids() []int {
-	var result []int
-	for wi, w := range b.words {
-		for w != 0 {
-			tz := bits.TrailingZeros64(w)
-			result = append(result, wi*64+tz)
-			w &= w - 1
+// all returns all of the values that are set in the bitset.
+func (b *bitset[T]) all() []T {
+	var result []T
+	for wi, word := range b.words {
+		for word != 0 {
+			zeroes := bits.TrailingZeros64(word)
+			result = append(result, T(wi*64+zeroes))
+			word &= word - 1
 		}
 	}
 	return result
 }
 
-type peerID = int
-type edgeID = int
+type peerID int
+type edgeID int
 
 type RouteTracker struct {
 	// peers keeps a mapping of RDTs to an ID we assign each peer. These IDs are
@@ -69,12 +70,12 @@ type RouteTracker struct {
 	// known keeps track of which edges are known by each peer. An edge is known
 	// to a peer if either they have reported the edge to us or we have sent the
 	// edge to them. The [bitset] associated with each edge stores peer IDs.
-	known map[edgeID]*bitset
+	known map[edgeID]*bitset[peerID]
 
 	// pending keeps track of which edges are not known by a peer. We keep both
 	// this and the known set of edges in memory so that we can quickly
 	// calculate both.
-	pending map[peerID]*bitset
+	pending map[peerID]*bitset[edgeID]
 
 	// unverified keeps track of edges that we know about but are not yet
 	// verified. We use a map here for quick lookup and easy deletion.
@@ -94,8 +95,8 @@ func NewRouteTracker() RouteTracker {
 	return RouteTracker{
 		peers:      make(map[RDT]peerID),
 		indexes:    make(map[Edge]edgeID),
-		known:      make(map[edgeID]*bitset),
-		pending:    make(map[peerID]*bitset),
+		known:      make(map[edgeID]*bitset[peerID]),
+		pending:    make(map[peerID]*bitset[edgeID]),
 		identified: make(map[RDT]Identity),
 		unverified: make(map[edgeID]struct{}),
 	}
@@ -109,7 +110,7 @@ func (rt *RouteTracker) peerID(p RDT) peerID {
 	id := peerID(len(rt.peers))
 	rt.peers[p] = id
 
-	bs := &bitset{}
+	bs := &bitset[edgeID]{}
 	for _, edgeID := range rt.verified {
 		bs.set(edgeID)
 	}
@@ -128,7 +129,7 @@ func (rt *RouteTracker) edgeID(e Edge) edgeID {
 	rt.edges = append(rt.edges, e)
 
 	rt.unverified[id] = struct{}{}
-	rt.known[id] = &bitset{}
+	rt.known[id] = &bitset[peerID]{}
 
 	return id
 }
@@ -225,7 +226,7 @@ func (rt *RouteTracker) MarkSentEdges(to RDT, sent []Edge) error {
 
 func (rt *RouteTracker) UnknownEdges(p RDT, limit int) []Edge {
 	peerID := rt.peerID(p)
-	pending := rt.pending[peerID].ids()
+	pending := rt.pending[peerID].all()
 
 	unseen := make([]Edge, 0, min(len(pending), limit))
 	for _, edgeID := range pending {
