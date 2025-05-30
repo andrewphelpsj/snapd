@@ -1,10 +1,14 @@
 package assemblestate
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"math/bits"
 	"slices"
+	"sort"
+
+	"github.com/snapcore/snapd/cluster/assemblestate/bimap"
 )
 
 type bitset[T ~int] struct {
@@ -82,20 +86,23 @@ func values[T ~int](slice []T, wi int, word uint64) []T {
 	return slice
 }
 
-type peerID int
-type edgeID int
+type (
+	peerID int
+	edgeID int
+	addrID int
+)
+
+type edge struct {
+	from, to peerID
+	via      addrID
+}
 
 type RouteTracker struct {
-	// peers keeps a mapping of RDTs to an ID we assign each peer. This is here
-	// to help keep track of which peers we've seen before.
-	peers map[RDT]peerID
+	self RDT
 
-	// edges keeps track of all edges that we know about, verified or not.
-	edges []Edge
-
-	// indexes keeps a mapping of edges to indexes into the edges slice, for
-	// quick lookup.
-	indexes map[Edge]edgeID
+	peers *bimap.BiMap[RDT, peerID]
+	addrs *bimap.BiMap[string, addrID]
+	edges *bimap.BiMap[edge, edgeID]
 
 	// known keeps track of which edges each peer knows about.
 	known map[peerID]*bitset[edgeID]
@@ -109,49 +116,53 @@ type RouteTracker struct {
 
 	// identified keeps track of device identities. This information is used to
 	// verify routes.
-	identified map[RDT]Identity
+	identified map[peerID]Identity
 }
 
-func NewRouteTracker() RouteTracker {
+func NewRouteTracker(self RDT) RouteTracker {
 	return RouteTracker{
-		peers:      make(map[RDT]peerID),
-		indexes:    make(map[Edge]edgeID),
+		self:       self,
+		peers:      bimap.New[RDT, peerID](),
+		addrs:      bimap.New[string, addrID](),
+		edges:      bimap.New[edge, edgeID](),
 		known:      make(map[peerID]*bitset[edgeID]),
-		identified: make(map[RDT]Identity),
+		identified: make(map[peerID]Identity),
 		unverified: &bitset[edgeID]{},
 		verified:   &bitset[edgeID]{},
 	}
 }
 
 func (rt *RouteTracker) peerID(p RDT) peerID {
-	if id, ok := rt.peers[p]; ok {
+	if id, ok := rt.peers.IndexOf(p); ok {
 		return id
 	}
 
-	id := peerID(len(rt.peers))
-	rt.peers[p] = id
+	id := rt.peers.Add(p)
 	rt.known[id] = &bitset[edgeID]{}
 
 	return id
 }
 
-func (rt *RouteTracker) edgeID(e Edge) edgeID {
-	if id, ok := rt.indexes[e]; ok {
+func (rt *RouteTracker) edgeID(e edge) edgeID {
+	if id, ok := rt.edges.IndexOf(e); ok {
 		return id
 	}
 
-	id := edgeID(len(rt.edges))
-	rt.indexes[e] = id
-	rt.edges = append(rt.edges, e)
+	id := rt.edges.Add(e)
 	rt.unverified.set(id)
 
 	return id
 }
 
+func (rt *RouteTracker) addrID(a string) addrID {
+	return rt.addrs.Add(a)
+}
+
 func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 	dirty := false
 	for _, id := range ids {
-		if existing, ok := rt.identified[id.RDT]; ok {
+		pid := rt.peerID(id.RDT)
+		if existing, ok := rt.identified[pid]; ok {
 			if existing != id {
 				return fmt.Errorf("got new identifying information for device with rdt %q", id.RDT)
 			}
@@ -159,7 +170,7 @@ func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 		}
 
 		dirty = true
-		rt.identified[id.RDT] = id
+		rt.identified[pid] = id
 	}
 
 	if !dirty {
@@ -167,12 +178,12 @@ func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 	}
 
 	for _, eid := range rt.unverified.all() {
-		edge := rt.edges[eid]
-		if _, ok := rt.identified[edge.From]; !ok {
+		edge := rt.edges.Value(eid)
+		if _, ok := rt.identified[edge.from]; !ok {
 			continue
 		}
 
-		if _, ok := rt.identified[edge.To]; !ok {
+		if _, ok := rt.identified[edge.to]; !ok {
 			continue
 		}
 
@@ -184,24 +195,52 @@ func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 }
 
 func (rt *RouteTracker) DeviceID(rdt RDT) (Identity, bool) {
-	id, ok := rt.identified[rdt]
+	pid, ok := rt.peers.IndexOf(rdt)
 	if !ok {
 		return Identity{}, false
 	}
+
+	id, ok := rt.identified[pid]
+	if !ok {
+		return Identity{}, false
+	}
+
 	return id, true
 }
 
-func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
+func (rt *RouteTracker) RecordRoutes(from RDT, r Routes) error {
 	pid := rt.peerID(from)
-	for _, edge := range edges {
-		eid := rt.edgeID(edge)
+
+	if len(r.Routes)%3 != 0 {
+		return errors.New("length of routes list must be a multiple of three")
+	}
+
+	for i := 0; i+2 < len(r.Routes); i += 3 {
+		if r.Routes[i] < 0 || r.Routes[i+1] < 0 || r.Routes[i+2] < 0 {
+			return errors.New("invalid index in routes")
+		}
+
+		if r.Routes[i] >= len(r.Devices) || r.Routes[i+1] >= len(r.Devices) || r.Routes[i+2] >= len(r.Addresses) {
+			return errors.New("invalid index in routes")
+		}
+
+		fromID := rt.peerID(r.Devices[r.Routes[i]])
+		toID := rt.peerID(r.Devices[r.Routes[i+1]])
+		viaID := rt.addrID(r.Addresses[r.Routes[i+2]])
+
+		eid := rt.edgeID(edge{
+			from: fromID,
+			to:   toID,
+			via:  viaID,
+		})
+
 		rt.known[pid].set(eid)
 
-		if _, ok := rt.identified[edge.From]; !ok {
+		if _, ok := rt.identified[fromID]; !ok {
 			continue
 		}
 
-		if _, ok := rt.identified[edge.To]; !ok {
+		if _, ok := rt.identified[toID]; !ok {
 			continue
 		}
 
@@ -210,52 +249,136 @@ func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
 			rt.verified.set(eid)
 		}
 	}
-}
 
-func (rt *RouteTracker) MarkSentEdges(to RDT, sent []Edge) error {
-	pid := rt.peerID(to)
-	for _, edge := range sent {
-		rt.known[pid].set(rt.edgeID(edge))
-	}
 	return nil
 }
 
-func (rt *RouteTracker) UnknownEdges(p RDT, limit int) []Edge {
-	pid := rt.peerID(p)
-	unknown := rt.verified.diff(rt.known[pid])
+func (rt *RouteTracker) MarkSentRoutes(to RDT, r Routes) error {
+	pid := rt.peerID(to)
 
-	edges := make([]Edge, 0, min(len(unknown), limit))
-	for _, id := range unknown {
-		if len(edges) == limit {
-			break
+	if len(r.Routes)%3 != 0 {
+		return errors.New("length of routes list must be a multiple of three")
+	}
+
+	for i := 0; i+2 < len(r.Routes); i += 3 {
+		if r.Routes[i] < 0 || r.Routes[i+1] < 0 || r.Routes[i+2] < 0 {
+			return errors.New("invalid index in routes")
 		}
-		edges = append(edges, rt.edges[id])
+
+		if r.Routes[i] >= len(r.Devices) || r.Routes[i+1] >= len(r.Devices) || r.Routes[i+2] >= len(r.Addresses) {
+			return errors.New("invalid index in routes")
+		}
+
+		fromID := rt.peerID(r.Devices[r.Routes[i]])
+		toID := rt.peerID(r.Devices[r.Routes[i+1]])
+		viaID := rt.addrID(r.Addresses[r.Routes[i+2]])
+
+		eid := rt.edgeID(edge{
+			from: fromID,
+			to:   toID,
+			via:  viaID,
+		})
+
+		rt.known[pid].set(eid)
 	}
 
-	return edges
+	return nil
 }
 
-func (rt *RouteTracker) VerifiedEdges() []Edge {
-	ids := rt.verified.all()
-	verified := make([]Edge, 0, len(ids))
-	for _, eid := range ids {
-		verified = append(verified, rt.edges[eid])
+func (rt *RouteTracker) UnknownRoutes(peer RDT, destination string, limit int) Routes {
+	pid := rt.peerID(peer)
+
+	unknown := rt.verified.diff(rt.known[pid])
+	if len(unknown) > limit {
+		unknown = unknown[:limit]
 	}
-	return verified
+
+	rdts := bimap.New[RDT, int]()
+	addrs := bimap.New[string, int]()
+
+	routes := make([]int, 0, len(unknown)*3)
+	for _, eid := range unknown {
+		edge := rt.edges.Value(eid)
+
+		from := rt.peers.Value(edge.from)
+		to := rt.peers.Value(edge.to)
+		address := rt.addrs.Value(edge.via)
+
+		routes = append(routes,
+			rdts.Add(from),
+			rdts.Add(to),
+			addrs.Add(address),
+		)
+	}
+
+	selfID := rt.peerID(rt.self)
+	addrID := rt.addrID(destination)
+	directID := rt.edgeID(edge{from: selfID, to: pid, via: addrID})
+
+	if !rt.known[pid].has(directID) && !rt.verified.has(directID) {
+		routes = append(routes,
+			rdts.Add(rt.self),
+			rdts.Add(peer),
+			addrs.Add(destination),
+		)
+	}
+
+	return Routes{
+		Devices:   rdts.Values(),
+		Addresses: addrs.Values(),
+		Routes:    routes,
+	}
 }
 
-func (rt *RouteTracker) KnowsEdge(p RDT, e Edge) bool {
-	pid, ok := rt.peers[p]
-	if !ok {
-		return false
+func (rt *RouteTracker) VerifiedRoutes() Routes {
+	eids := rt.verified.all()
+
+	devs := make(map[RDT]struct{})
+	addrs := make(map[string]struct{})
+
+	for _, eid := range eids {
+		edge := rt.edges.Value(eid)
+		devs[rt.peers.Value(edge.from)] = struct{}{}
+		devs[rt.peers.Value(edge.to)] = struct{}{}
+		addrs[rt.addrs.Value(edge.via)] = struct{}{}
 	}
 
-	eid, ok := rt.indexes[e]
-	if !ok {
-		return false
+	devices := slices.Sorted(maps.Keys(devs))
+	addresses := slices.Sorted(maps.Keys(addrs))
+
+	sort.Slice(eids, func(i, j int) bool {
+		a, b := rt.edges.Value(eids[i]), rt.edges.Value(eids[j])
+
+		if rt.peers.Value(a.from) != rt.peers.Value(b.from) {
+			return rt.peers.Value(a.from) < rt.peers.Value(b.from)
+		}
+
+		if rt.peers.Value(a.to) != rt.peers.Value(b.to) {
+			return rt.peers.Value(a.to) < rt.peers.Value(b.to)
+		}
+
+		return rt.addrs.Value(a.via) < rt.addrs.Value(b.via)
+	})
+
+	routes := make([]int, 0, len(eids)*3)
+	for _, eid := range eids {
+		edge := rt.edges.Value(eid)
+		from, _ := slices.BinarySearch(devices, rt.peers.Value(edge.from))
+		to, _ := slices.BinarySearch(devices, rt.peers.Value(edge.to))
+		via, _ := slices.BinarySearch(addresses, rt.addrs.Value(edge.via))
+
+		routes = append(routes,
+			from,
+			to,
+			via,
+		)
 	}
 
-	return rt.known[pid].has(eid)
+	return Routes{
+		Devices:   devices,
+		Addresses: addresses,
+		Routes:    routes,
+	}
 }
 
 func (rt *RouteTracker) UnknownDevicesKnownBy(p RDT) []RDT {
@@ -263,14 +386,17 @@ func (rt *RouteTracker) UnknownDevicesKnownBy(p RDT) []RDT {
 	ids := rt.unverified.intersection(rt.known[pid])
 	missing := make(map[RDT]struct{})
 	for _, eid := range ids {
-		edge := rt.edges[eid]
+		edge := rt.edges.Value(eid)
 
-		if _, ok := rt.identified[edge.From]; !ok {
-			missing[edge.From] = struct{}{}
+		from := rt.peers.Value(edge.from)
+		to := rt.peers.Value(edge.to)
+
+		if _, ok := rt.identified[edge.from]; !ok {
+			missing[from] = struct{}{}
 		}
 
-		if _, ok := rt.identified[edge.To]; !ok {
-			missing[edge.To] = struct{}{}
+		if _, ok := rt.identified[edge.to]; !ok {
+			missing[to] = struct{}{}
 		}
 	}
 	return slices.Collect(maps.Keys(missing))

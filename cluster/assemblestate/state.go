@@ -104,7 +104,7 @@ func NewClusterView(secret string, rdt RDT, ip net.IP, port int, cert tls.Certif
 
 	fp := calculateFP(cert.Certificate[0])
 
-	tracker := NewRouteTracker()
+	tracker := NewRouteTracker(rdt)
 
 	// we know ourselves, add that immediately
 	tracker.RecordIdentities([]Identity{{
@@ -130,7 +130,7 @@ func (cv *ClusterView) Export() Routes {
 	cv.lock.Lock()
 	defer cv.lock.Unlock()
 
-	return EdgesToRoutes(cv.tracker.VerifiedEdges(), true)
+	return cv.tracker.VerifiedRoutes()
 }
 
 // Auth returns the [Auth] message that we should send to other peers to prove
@@ -254,14 +254,7 @@ func (pv *PeerView) RecordRoutes(routes Routes) error {
 	pv.cv.lock.Lock()
 	defer pv.cv.lock.Unlock()
 
-	edges, err := RoutesToEdges(routes)
-	if err != nil {
-		return err
-	}
-
-	pv.cv.tracker.RecordEdges(pv.rdt, edges)
-
-	return nil
+	return pv.cv.tracker.RecordRoutes(pv.rdt, routes)
 }
 
 // RecordIdentities records the given device identities. All new device
@@ -294,29 +287,18 @@ func (pv *PeerView) UnknownRoutes() (Routes, error) {
 	pv.cv.lock.Lock()
 	defer pv.cv.lock.Unlock()
 
-	// we set a cap on the number of known routes that we'll report, for a
-	// couple reasons. this limits what a newly joined peer might see.
-	// additionally, it helps us limit how much memory we're using at any one
-	// time.
-	unknown := pv.cv.tracker.UnknownEdges(pv.rdt, 5000)
-
 	addr, ok := pv.cv.addresses[pv.rdt]
 	if !ok {
 		return Routes{}, fmt.Errorf("unable to list unknown routes for peer %q with undiscovered address", pv.rdt)
 	}
 
-	// manually add the route from the local node to the receiving peer. this is
-	// a special case, since we might not have seen an assemble-devices message
-	// that includes this peer
-	outbound := Edge{From: pv.cv.rdt, To: pv.rdt, Via: addr}
-	if !pv.cv.tracker.KnowsEdge(pv.rdt, outbound) {
-		unknown = append(unknown, outbound)
-	}
+	const limit = 5000
+	unknown := pv.cv.tracker.UnknownRoutes(pv.rdt, addr, limit)
 
-	// TODO: add extra addresses here, will be treated by the peer as
-	// "discovered" devices.
+	// TODO: potentially add extra addresses here, will be treated by the peer
+	// as "discovered" devices.
 
-	return EdgesToRoutes(unknown, false), nil
+	return unknown, nil
 }
 
 // AckRoutes updates this peer's view of the cluster, adding the given routes to
@@ -326,12 +308,7 @@ func (pv *PeerView) AckRoutes(routes Routes) error {
 	pv.cv.lock.Lock()
 	defer pv.cv.lock.Unlock()
 
-	edges, err := RoutesToEdges(routes)
-	if err != nil {
-		return nil
-	}
-
-	return pv.cv.tracker.MarkSentEdges(pv.rdt, edges)
+	return pv.cv.tracker.MarkSentRoutes(pv.rdt, routes)
 }
 
 // UnknownDevices returns a list of device identities that this peer has
@@ -399,31 +376,6 @@ func calculateHMAC(rdt RDT, fp FP, secret string) []byte {
 
 func calculateFP(cert []byte) FP {
 	return sha512.Sum512(cert)
-}
-
-func RoutesToEdges(r Routes) ([]Edge, error) {
-	if len(r.Routes)%3 != 0 {
-		return nil, errors.New("length of routes list in assemble-routes must be a multiple of three")
-	}
-
-	edges := make([]Edge, 0, len(r.Routes)/3)
-	for i := 0; i+2 < len(r.Routes); i += 3 {
-		if r.Routes[i] < 0 || r.Routes[i+1] < 0 || r.Routes[i+2] < 0 {
-			return nil, errors.New("invalid index in assemble-routes")
-		}
-
-		if r.Routes[i] >= len(r.Devices) || r.Routes[i+1] >= len(r.Devices) || r.Routes[i+2] >= len(r.Addresses) {
-			return nil, errors.New("invalid index in assemble-routes")
-		}
-
-		edges = append(edges, Edge{
-			From: r.Devices[r.Routes[i]],
-			To:   r.Devices[r.Routes[i+1]],
-			Via:  r.Addresses[r.Routes[i+2]],
-		})
-	}
-
-	return edges, nil
 }
 
 func EdgesToRoutes(edges []Edge, sorted bool) Routes {
