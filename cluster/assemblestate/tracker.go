@@ -43,48 +43,69 @@ func (b *bitset[T]) clear(id T) {
 func (b *bitset[T]) all() []T {
 	var result []T
 	for wi, word := range b.words {
-		for word != 0 {
-			zeroes := bits.TrailingZeros64(word)
-			result = append(result, T(wi*64+zeroes))
-			word &= word - 1
-		}
+		result = values(result, wi, word)
 	}
 	return result
+}
+
+// diff returns the set difference between this and the given [bitset].
+func (b *bitset[T]) diff(other *bitset[T]) []T {
+	var result []T
+	for wi, w := range b.words {
+		mask := w
+		if wi < len(other.words) {
+			mask &= ^other.words[wi]
+		}
+		result = values(result, wi, mask)
+	}
+	return result
+}
+
+// diff returns the set intersection of this and the given [bitset].
+func (b *bitset[T]) intersection(other *bitset[T]) []T {
+	var result []T
+	for wi := range min(len(other.words), len(b.words)) {
+		mask := b.words[wi] & other.words[wi]
+		result = values(result, wi, mask)
+	}
+	return result
+}
+
+// values appends to slice the values corresponding to each set bit in word. wi
+// is the index of the 64-bit word within a [bitset].
+func values[T ~int](slice []T, wi int, word uint64) []T {
+	for word != 0 {
+		tz := bits.TrailingZeros64(word)
+		slice = append(slice, T((wi*64)+tz))
+		word &= word - 1
+	}
+	return slice
 }
 
 type peerID int
 type edgeID int
 
 type RouteTracker struct {
-	// peers keeps a mapping of RDTs to an ID we assign each peer. These IDs are
-	// used so that we can keep a compact representation of which edges each
-	// peer knows.
+	// peers keeps a mapping of RDTs to an ID we assign each peer. This is here
+	// to help keep track of which peers we've seen before.
 	peers map[RDT]peerID
 
 	// edges keeps track of all edges that we know about, verified or not.
 	edges []Edge
+
 	// indexes keeps a mapping of edges to indexes into the edges slice, for
 	// quick lookup.
 	indexes map[Edge]edgeID
 
-	// known keeps track of which edges are known by each peer. An edge is known
-	// to a peer if either they have reported the edge to us or we have sent the
-	// edge to them. The [bitset] associated with each edge stores peer IDs.
-	known map[edgeID]*bitset[peerID]
-
-	// pending keeps track of which edges are not known by a peer. We keep both
-	// this and the known set of edges in memory so that we can quickly
-	// calculate both.
-	pending map[peerID]*bitset[edgeID]
+	// known keeps track of which edges each peer knows about.
+	known map[peerID]*bitset[edgeID]
 
 	// unverified keeps track of edges that we know about but are not yet
-	// verified. We use a map here for quick lookup and easy deletion.
-	unverified map[edgeID]struct{}
+	// verified.
+	unverified *bitset[edgeID]
 
-	// verified keeps track of which edges are verified. Since this list only
-	// grows and we don't need to perform lookups on it, it is better as a
-	// slice.
-	verified []edgeID
+	// verified keeps track of which edges we've verified.
+	verified *bitset[edgeID]
 
 	// identified keeps track of device identities. This information is used to
 	// verify routes.
@@ -95,10 +116,10 @@ func NewRouteTracker() RouteTracker {
 	return RouteTracker{
 		peers:      make(map[RDT]peerID),
 		indexes:    make(map[Edge]edgeID),
-		known:      make(map[edgeID]*bitset[peerID]),
-		pending:    make(map[peerID]*bitset[edgeID]),
+		known:      make(map[peerID]*bitset[edgeID]),
 		identified: make(map[RDT]Identity),
-		unverified: make(map[edgeID]struct{}),
+		unverified: &bitset[edgeID]{},
+		verified:   &bitset[edgeID]{},
 	}
 }
 
@@ -109,12 +130,7 @@ func (rt *RouteTracker) peerID(p RDT) peerID {
 
 	id := peerID(len(rt.peers))
 	rt.peers[p] = id
-
-	bs := &bitset[edgeID]{}
-	for _, edgeID := range rt.verified {
-		bs.set(edgeID)
-	}
-	rt.pending[id] = bs
+	rt.known[id] = &bitset[edgeID]{}
 
 	return id
 }
@@ -127,9 +143,7 @@ func (rt *RouteTracker) edgeID(e Edge) edgeID {
 	id := edgeID(len(rt.edges))
 	rt.indexes[e] = id
 	rt.edges = append(rt.edges, e)
-
-	rt.unverified[id] = struct{}{}
-	rt.known[id] = &bitset[peerID]{}
+	rt.unverified.set(id)
 
 	return id
 }
@@ -152,26 +166,18 @@ func (rt *RouteTracker) RecordIdentities(ids []Identity) error {
 		return nil
 	}
 
-	for edgeID := range rt.unverified {
-		e := rt.edges[edgeID]
-
-		if _, ok := rt.identified[e.From]; !ok {
+	for _, eid := range rt.unverified.all() {
+		edge := rt.edges[eid]
+		if _, ok := rt.identified[edge.From]; !ok {
 			continue
 		}
 
-		if _, ok := rt.identified[e.To]; !ok {
+		if _, ok := rt.identified[edge.To]; !ok {
 			continue
 		}
 
-		delete(rt.unverified, edgeID)
-		rt.verified = append(rt.verified, edgeID)
-
-		// seed pending for every peer that doesn’t yet know this edge
-		for _, pid := range rt.peers {
-			if !rt.known[edgeID].has(pid) {
-				rt.pending[pid].set(edgeID)
-			}
-		}
+		rt.unverified.clear(eid)
+		rt.verified.set(eid)
 	}
 
 	return nil
@@ -186,103 +192,86 @@ func (rt *RouteTracker) DeviceID(rdt RDT) (Identity, bool) {
 }
 
 func (rt *RouteTracker) RecordEdges(from RDT, edges []Edge) {
-	peerID := rt.peerID(from)
-	for _, e := range edges {
-		edgeID := rt.edgeID(e)
+	pid := rt.peerID(from)
+	for _, edge := range edges {
+		eid := rt.edgeID(edge)
+		rt.known[pid].set(eid)
 
-		rt.known[edgeID].set(peerID)
-		rt.pending[peerID].clear(edgeID)
-
-		if _, ok := rt.identified[e.From]; !ok {
+		if _, ok := rt.identified[edge.From]; !ok {
 			continue
 		}
 
-		if _, ok := rt.identified[e.To]; !ok {
+		if _, ok := rt.identified[edge.To]; !ok {
 			continue
 		}
 
-		if _, ok := rt.unverified[edgeID]; ok {
-			delete(rt.unverified, edgeID)
-			rt.verified = append(rt.verified, edgeID)
-
-			for _, pid := range rt.peers {
-				if !rt.known[edgeID].has(pid) {
-					rt.pending[pid].set(edgeID)
-				}
-			}
+		if rt.unverified.has(eid) {
+			rt.unverified.clear(eid)
+			rt.verified.set(eid)
 		}
 	}
 }
 
 func (rt *RouteTracker) MarkSentEdges(to RDT, sent []Edge) error {
-	peerID := rt.peerID(to)
-	for _, e := range sent {
-		edgeID := rt.edgeID(e)
-		rt.known[edgeID].set(peerID)
-		rt.pending[peerID].clear(edgeID)
+	pid := rt.peerID(to)
+	for _, edge := range sent {
+		rt.known[pid].set(rt.edgeID(edge))
 	}
 	return nil
 }
 
 func (rt *RouteTracker) UnknownEdges(p RDT, limit int) []Edge {
-	peerID := rt.peerID(p)
-	pending := rt.pending[peerID].all()
+	pid := rt.peerID(p)
+	unknown := rt.verified.diff(rt.known[pid])
 
-	unseen := make([]Edge, 0, min(len(pending), limit))
-	for _, edgeID := range pending {
-		if len(unseen) == limit {
+	edges := make([]Edge, 0, min(len(unknown), limit))
+	for _, id := range unknown {
+		if len(edges) == limit {
 			break
 		}
-		unseen = append(unseen, rt.edges[edgeID])
+		edges = append(edges, rt.edges[id])
 	}
 
-	return unseen
+	return edges
 }
 
 func (rt *RouteTracker) VerifiedEdges() []Edge {
-	all := make([]Edge, 0, len(rt.verified))
-	for _, edgeID := range rt.verified {
-		all = append(all, rt.edges[edgeID])
+	ids := rt.verified.all()
+	verified := make([]Edge, 0, len(ids))
+	for _, eid := range ids {
+		verified = append(verified, rt.edges[eid])
 	}
-	return all
+	return verified
 }
 
 func (rt *RouteTracker) KnowsEdge(p RDT, e Edge) bool {
-	peerID, ok := rt.peers[p]
+	pid, ok := rt.peers[p]
 	if !ok {
 		return false
 	}
 
-	edgeID, ok := rt.indexes[e]
+	eid, ok := rt.indexes[e]
 	if !ok {
 		return false
 	}
 
-	return rt.known[edgeID].has(peerID)
+	return rt.known[pid].has(eid)
 }
 
 func (rt *RouteTracker) UnknownDevicesKnownBy(p RDT) []RDT {
-	peerID, ok := rt.peers[p]
-	if !ok {
-		return nil
-	}
+	pid := rt.peerID(p)
+	ids := rt.unverified.intersection(rt.known[pid])
+	missing := make(map[RDT]struct{})
+	for _, eid := range ids {
+		edge := rt.edges[eid]
 
-	missing := make(map[RDT]struct{}, len(rt.unverified))
-	for edgeID := range rt.unverified {
-		if !rt.known[edgeID].has(peerID) {
-			continue
+		if _, ok := rt.identified[edge.From]; !ok {
+			missing[edge.From] = struct{}{}
 		}
 
-		e := rt.edges[edgeID]
-
-		if _, ok := rt.identified[e.From]; !ok {
-			missing[e.From] = struct{}{}
-		}
-
-		if _, ok := rt.identified[e.To]; !ok {
-			missing[e.To] = struct{}{}
+		if _, ok := rt.identified[edge.To]; !ok {
+			missing[edge.To] = struct{}{}
 		}
 	}
-
 	return slices.Collect(maps.Keys(missing))
 }
