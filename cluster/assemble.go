@@ -17,8 +17,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	as "github.com/snapcore/snapd/cluster/assemblestate"
@@ -90,7 +90,9 @@ func Assemble(ctx context.Context, discover Discoverer, opts AssembleOpts) (as.R
 	discoveries, stop := discoveryNotifier(ctx, discover, opts.DiscoveryPeriod, opts.ErrorHandler)
 	defer stop()
 
-	defer logger.Info("assemble stopped")
+	defer func() {
+		logger.Info("assemble stopped", "sent-bytes", assembler.bytes.Load())
+	}()
 
 	joined := make(map[string]bool)
 	var lock sync.Mutex
@@ -149,6 +151,7 @@ type assembler struct {
 	limiter *rate.Limiter
 
 	stopped bool
+	bytes   atomic.Int64
 	lock    sync.Mutex
 	peers   map[as.RDT]*peer
 
@@ -399,7 +402,7 @@ func (a *assembler) verify(ctx context.Context, up UntrustedPeer) error {
 		return err
 	}
 
-	res, err := sendWithResponse(ctx, &client, addr, "auth", a.view.Auth())
+	res, _, err := sendWithResponse(ctx, &client, addr, "auth", a.view.Auth())
 	if err != nil {
 		return err
 	}
@@ -562,7 +565,8 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return false
 			}
 
-			if err := send(ctx, &client, addr, "routes", routes); err != nil {
+			count, err := send(ctx, &client, addr, "routes", routes)
+			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -570,6 +574,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				a.errors(err)
 				return true
 			}
+			a.bytes.Add(int64(count))
 
 			a.logger.Debug("sent routes update", "peer-rdt", pv.RDT(), "routes-count", len(routes.Routes)/3)
 
@@ -593,7 +598,8 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return false
 			}
 
-			if err := send(ctx, &client, addr, "unknown", identifiable); err != nil {
+			count, err := send(ctx, &client, addr, "unknown", identifiable)
+			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -601,6 +607,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				a.errors(err)
 				return true
 			}
+			a.bytes.Add(count)
 
 			a.logger.Debug("sent device identities", "peer-rdt", pv.RDT(), "devices-count", len(identifiable.Devices))
 
@@ -625,7 +632,8 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				return false
 			}
 
-			if err := send(ctx, &client, addr, "devices", devices); err != nil {
+			count, err := send(ctx, &client, addr, "devices", devices)
+			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return false
 				}
@@ -633,6 +641,7 @@ func (a *assembler) join(ctx context.Context, pv *as.PeerView) error {
 				a.errors(err)
 				return true
 			}
+			a.bytes.Add(count)
 
 			a.logger.Debug("sent device queries", "peer-rdt", pv.RDT(), "query-count", len(devices.Devices))
 
@@ -670,33 +679,38 @@ func peerAddress(ip net.IP, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
-func send(ctx context.Context, client *http.Client, addr string, kind string, data any) error {
-	res, err := sendWithResponse(ctx, client, addr, kind, data)
+func send(ctx context.Context, client *http.Client, addr string, kind string, data any) (int64, error) {
+	res, count, err := sendWithResponse(ctx, client, addr, kind, data)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
-		return fmt.Errorf("response to '%s' message contains status code %d", kind, res.StatusCode)
+		return 0, fmt.Errorf("response to '%s' message contains status code %d", kind, res.StatusCode)
 	}
 
-	return nil
+	return count, nil
 }
 
-func sendWithResponse(ctx context.Context, client *http.Client, addr string, kind string, data any) (*http.Response, error) {
+func sendWithResponse(ctx context.Context, client *http.Client, addr string, kind string, data any) (*http.Response, int64, error) {
 	payload, err := json.Marshal(data)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	url := fmt.Sprintf("https://%s/assemble/%s", addr, kind)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return client.Do(req)
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return res, int64(len(payload)), nil
 }
 
 func createCert(ip net.IP) (tls.Certificate, error) {
@@ -737,12 +751,6 @@ func createCert(ip net.IP) (tls.Certificate, error) {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 
 	return tls.X509KeyPair(certPEM, keyPEM)
-}
-
-func routesEqual(l, r as.Routes) bool {
-	return slices.Equal(l.Addresses, r.Addresses) &&
-		slices.Equal(l.Devices, r.Devices) &&
-		slices.Equal(l.Routes, r.Routes)
 }
 
 func discoveryNotifier(ctx context.Context, discover Discoverer, period time.Duration, errs func(error)) (<-chan []UntrustedPeer, func()) {
