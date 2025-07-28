@@ -1,0 +1,303 @@
+// -*- Mode: Go; indent-tabs-mode: t -*-
+
+/*
+ * Copyright (C) 2025 Canonical Ltd
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+package mdns_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/snapcore/snapd/cluster/mdns"
+	"gopkg.in/check.v1"
+)
+
+const (
+	discoverNamespace    = "mdns-discover-ns"
+	discoverHostLinkName = "mdnshost0"
+	discoverIfaceName    = "mdnspeer0"
+	discoverHostCIDR     = "192.0.2.1/24"
+	discoverIfaceCIDR    = "192.0.2.2/24"
+	discoverIfaceIP      = "192.0.2.2"
+
+	discoverTestEnv       = "SNAPD_MDNS_DISCOVER_TEST"
+	discoverTestEnvInside = "inside-netns"
+)
+
+func Test(t *testing.T) { check.TestingT(t) }
+
+var _ = check.Suite(&discoverSuite{})
+
+type discoverSuite struct{}
+
+func TestMain(m *testing.M) {
+	if os.Getuid() != 0 {
+		os.Exit(0)
+	}
+
+	if os.Getenv(discoverTestEnv) == discoverTestEnvInside {
+		os.Exit(m.Run())
+	}
+
+	code, err := runTestsInNamespace()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	os.Exit(code)
+}
+
+func runTestsInNamespace() (int, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 1, fmt.Errorf("cannot locate test executable: %w", err)
+	}
+
+	teardown := [][]string{
+		{"ip", "link", "del", discoverHostLinkName},
+		{"ip", "netns", "del", discoverNamespace},
+	}
+
+	executeIgnoreErrors(teardown)
+	defer executeIgnoreErrors(teardown)
+
+	setup := [][]string{
+		{"ip", "netns", "add", discoverNamespace},
+		{"ip", "link", "add", discoverHostLinkName, "type", "veth", "peer", "name", discoverIfaceName},
+		{"ip", "link", "set", discoverIfaceName, "netns", discoverNamespace},
+		{"ip", "link", "set", discoverHostLinkName, "up"},
+		{"ip", "addr", "add", discoverHostCIDR, "dev", discoverHostLinkName},
+		{"ip", "netns", "exec", discoverNamespace, "ip", "link", "set", "lo", "up"},
+		{"ip", "netns", "exec", discoverNamespace, "ip", "link", "set", discoverIfaceName, "up"},
+		{"ip", "netns", "exec", discoverNamespace, "ip", "addr", "add", discoverIfaceCIDR, "dev", discoverIfaceName},
+	}
+
+	if err := execute(setup); err != nil {
+		return 1, fmt.Errorf("cannot setup network namespace for discovery tests: %w", err)
+	}
+
+	args := append([]string{"netns", "exec", discoverNamespace, exe}, os.Args[1:]...)
+	cmd := exec.Command("ip", args...)
+	cmd.Env = append(os.Environ(), discoverTestEnv+"="+discoverTestEnvInside)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err = cmd.Run()
+	if err == nil {
+		return 0, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), nil
+	}
+
+	return 0, fmt.Errorf("cannot run mdns tests inside network namespace: %w", err)
+}
+
+func execute(cmds [][]string) error {
+	for _, args := range cmds {
+		if len(args) == 0 {
+			continue
+		}
+
+		cmd := exec.Command(args[0], args[1:]...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("cannot execute %q: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		}
+	}
+
+	return nil
+}
+
+func executeIgnoreErrors(cmds [][]string) {
+	for _, args := range cmds {
+		if len(args) == 0 {
+			continue
+		}
+
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Run()
+	}
+}
+
+func (s *discoverSuite) TestMulticastDiscovery(c *check.C) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const (
+		port        = 45876
+		serviceName = "snapd-self"
+	)
+
+	cfg := mdns.Config{
+		Interface:   discoverIfaceName,
+		IP:          net.ParseIP(discoverIfaceIP),
+		Port:        port,
+		ServiceName: serviceName,
+		ServiceType: "_snapd._https",
+	}
+
+	addresses, stop, err := mdns.MulticastDiscovery(ctx, cfg)
+	c.Assert(err, check.IsNil)
+
+	// calling stop should always close the channel. ensure this by draining the
+	// channel until empty and closed.
+	defer func() {
+		for {
+			select {
+			case <-ctx.Done():
+				c.Fatalf("context cancelled before channel could be drained")
+			case _, ok := <-addresses:
+				if !ok {
+					return
+				}
+			}
+		}
+	}()
+
+	defer stop()
+
+	peers := make([]peerConfig, 0, 4)
+	for i := 0; i < 4; i++ {
+		peers = append(peers, peerConfig{
+			name: fmt.Sprintf("peer-%d", i+1),
+			ip:   fmt.Sprintf("192.0.2.%d", 100+i),
+		})
+	}
+
+	stop = startPeers(ctx, c, peers, port)
+	defer stop()
+
+	expected := expectedPeers(peers, port)
+	seen := make([]string, 0, 16)
+
+	found := make(map[string]bool)
+
+	for len(found) < len(expected) {
+		select {
+		case addr := <-addresses:
+			seen = append(seen, addr)
+			if expected[addr] {
+				found[addr] = true
+			}
+		case <-ctx.Done():
+			c.Fatalf("timeout waiting for multicast discovery; want %v, have %v (samples %v)", keys(expected), keys(found), seen)
+		}
+	}
+}
+
+type peerConfig struct {
+	name string
+	ip   string
+}
+
+func startPeers(ctx context.Context, c *check.C, peers []peerConfig, port int) func() {
+	if len(peers) == 0 {
+		return func() {}
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+
+	stops := make([]func(), 0, len(peers))
+	addrs := make([]string, 0, len(peers))
+
+	for _, peer := range peers {
+		addrCIDR := fmt.Sprintf("%s/24", peer.ip)
+		cmd := exec.Command("ip", "addr", "add", addrCIDR, "dev", discoverIfaceName)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			cancel()
+			c.Fatalf("cannot add address %s: %v (%s)", addrCIDR, err, strings.TrimSpace(string(output)))
+		}
+
+		ip := net.ParseIP(peer.ip)
+		if ip == nil {
+			cancel()
+			c.Fatalf("invalid peer IP %q", peer.ip)
+		}
+
+		cfg := mdns.Config{
+			Interface:   discoverIfaceName,
+			IP:          ip,
+			Port:        port,
+			ServiceName: fmt.Sprintf("snapd-%s", peer.name),
+			ServiceType: "_snapd._https",
+		}
+
+		ch, stop, err := mdns.MulticastDiscovery(ctx, cfg)
+		if err != nil {
+			cancel()
+			c.Fatalf("cannot start peer %s discovery: %v", peer.name, err)
+		}
+
+		stops = append(stops, stop)
+		addrs = append(addrs, addrCIDR)
+
+		go func(ch <-chan string) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case _, ok := <-ch:
+					if !ok {
+						return
+					}
+				}
+			}
+		}(ch)
+	}
+
+	return func() {
+		cancel()
+
+		for _, stop := range stops {
+			stop()
+		}
+
+		for _, addr := range addrs {
+			exec.Command("ip", "addr", "del", addr, "dev", discoverIfaceName).Run()
+		}
+	}
+}
+
+func expectedPeers(peers []peerConfig, port int) map[string]bool {
+	results := make(map[string]bool, len(peers))
+	for _, peer := range peers {
+		results[fmt.Sprintf("%s:%d", peer.ip, port)] = true
+	}
+	return results
+}
+
+func keys(m map[string]bool) []string {
+	list := make([]string, 0, len(m))
+	for k := range m {
+		list = append(list, k)
+	}
+	sort.Strings(list)
+	return list
+}
