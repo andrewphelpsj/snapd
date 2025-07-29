@@ -8,14 +8,21 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
-	"testing"
 	"time"
+
+	"gopkg.in/check.v1"
 )
+
+type TransportSuite struct{}
+
+var _ = check.Suite(&TransportSuite{})
 
 func generateTestCert() (tls.Certificate, []byte, error) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -48,33 +55,24 @@ func generateTestCert() (tls.Certificate, []byte, error) {
 	return cert, certDER, nil
 }
 
-func TestTrustedSuccess(t *testing.T) {
+func (s *TransportSuite) TestTrustedSuccess(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, serverCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// verify request is to correct endpoint
-		if r.URL.Path != "/assemble/routes" {
-			t.Errorf("expected path /assemble/routes, got %s", r.URL.Path)
-		}
+		c.Assert(r.URL.Path, check.Equals, "/assemble/routes")
 
 		// verify method is POST
-		if r.Method != "POST" {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
+		c.Assert(r.Method, check.Equals, "POST")
 
 		// verify json payload
 		var routes Routes
-		if err := json.NewDecoder(r.Body).Decode(&routes); err != nil {
-			t.Errorf("failed to decode routes: %v", err)
-		}
+		err := json.NewDecoder(r.Body).Decode(&routes)
+		c.Assert(err, check.IsNil)
 
 		w.WriteHeader(200)
 	}))
@@ -95,40 +93,30 @@ func TestTrustedSuccess(t *testing.T) {
 	}
 
 	err = client.Trusted(context.Background(), server.Listener.Addr().String(), serverCertDER, "routes", routes)
-	if err != nil {
-		t.Fatalf("trusted call failed: %v", err)
-	}
+	c.Assert(err, check.IsNil)
 
 	// verify counters were incremented
-	if atomic.LoadInt64(&client.sent) != 1 {
-		t.Errorf("expected sent counter to be 1, got %d", atomic.LoadInt64(&client.sent))
-	}
-
-	if atomic.LoadInt64(&client.tx) == 0 {
-		t.Error("expected tx counter to be > 0")
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(1))
+	c.Assert(atomic.LoadInt64(&client.tx) > 0, check.Equals, true)
 }
 
-func TestTrustedCertificateMismatch(t *testing.T) {
+func (s *TransportSuite) TestTrustedCertificateMismatch(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	// generate different cert for mismatch
 	_, wrongCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	}))
+
+	// suppress server error logging for this test since we expect TLS errors
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
 
 	server.TLS = &tls.Config{
 		Certificates: []tls.Certificate{serverCert},
@@ -146,31 +134,21 @@ func TestTrustedCertificateMismatch(t *testing.T) {
 	}
 
 	err = client.Trusted(context.Background(), server.Listener.Addr().String(), wrongCertDER, "routes", routes)
-	if err == nil {
-		t.Fatal("expected error due to certificate mismatch, got nil")
-	}
+	c.Assert(err, check.NotNil)
 
 	// the error message should contain something about certificate verification
-	if !strings.Contains(err.Error(), "refusing to communicate with unexpected peer certificate") {
-		t.Errorf("unexpected error message: %v", err)
-	}
+	c.Assert(strings.Contains(err.Error(), "refusing to communicate with unexpected peer certificate"), check.Equals, true)
 
 	// counters should not be incremented on failure
-	if atomic.LoadInt64(&client.sent) != 0 {
-		t.Errorf("expected sent counter to be 0, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(0))
 }
 
-func TestTrustedRateLimit(t *testing.T) {
+func (s *TransportSuite) TestTrustedRateLimit(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, serverCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	callCount := int64(0)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,38 +174,26 @@ func TestTrustedRateLimit(t *testing.T) {
 	// send first message immediately
 	start := time.Now()
 	err = client.Trusted(context.Background(), server.Listener.Addr().String(), serverCertDER, "routes", routes)
-	if err != nil {
-		t.Fatalf("first trusted call failed: %v", err)
-	}
+	c.Assert(err, check.IsNil)
 
 	// send second message - should be rate limited
 	err = client.Trusted(context.Background(), server.Listener.Addr().String(), serverCertDER, "routes", routes)
-	if err != nil {
-		t.Fatalf("second trusted call failed: %v", err)
-	}
+	c.Assert(err, check.IsNil)
 
 	elapsed := time.Since(start)
 
 	// with rate limit of 20/sec, second call should take at least 50ms
-	if elapsed < 40*time.Millisecond {
-		t.Errorf("expected rate limiting delay, but calls completed in %v", elapsed)
-	}
+	c.Assert(elapsed >= 40*time.Millisecond, check.Equals, true, check.Commentf("expected rate limiting delay, but calls completed in %v", elapsed))
 
-	if atomic.LoadInt64(&callCount) != 2 {
-		t.Errorf("expected 2 server calls, got %d", atomic.LoadInt64(&callCount))
-	}
+	c.Assert(atomic.LoadInt64(&callCount), check.Equals, int64(2))
 }
 
-func TestTrustedContextCancellation(t *testing.T) {
+func (s *TransportSuite) TestTrustedContextCancellation(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, serverCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// delay to allow context cancellation
@@ -254,26 +220,18 @@ func TestTrustedContextCancellation(t *testing.T) {
 	defer cancel()
 
 	err = client.Trusted(ctx, server.Listener.Addr().String(), serverCertDER, "routes", routes)
-	if err == nil {
-		t.Fatal("expected error due to context timeout, got nil")
-	}
+	c.Assert(err, check.NotNil)
 
 	// counters should not be incremented on failure
-	if atomic.LoadInt64(&client.sent) != 0 {
-		t.Errorf("expected sent counter to be 0, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(0))
 }
 
-func TestTrustedCountersUpdate(t *testing.T) {
+func (s *TransportSuite) TestTrustedCountersUpdate(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, serverCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -297,37 +255,25 @@ func TestTrustedCountersUpdate(t *testing.T) {
 	// send multiple messages and verify counters
 	for i := 0; i < 3; i++ {
 		err = client.Trusted(context.Background(), server.Listener.Addr().String(), serverCertDER, "routes", routes)
-		if err != nil {
-			t.Fatalf("trusted call %d failed: %v", i+1, err)
-		}
+		c.Assert(err, check.IsNil)
 	}
 
-	if atomic.LoadInt64(&client.sent) != 3 {
-		t.Errorf("expected sent counter to be 3, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(3))
 
 	tx := atomic.LoadInt64(&client.tx)
-	if tx == 0 {
-		t.Error("expected tx counter to be > 0")
-	}
+	c.Assert(tx > 0, check.Equals, true)
 
 	// tx should be consistent across calls (same payload size)
 	expectedTx := tx / 3
-	if expectedTx == 0 {
-		t.Error("expected consistent payload size per message")
-	}
+	c.Assert(expectedTx > 0, check.Equals, true)
 }
 
-func TestTrustedNonSuccessStatus(t *testing.T) {
+func (s *TransportSuite) TestTrustedNonSuccessStatus(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, serverCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400) // bad request
@@ -349,48 +295,33 @@ func TestTrustedNonSuccessStatus(t *testing.T) {
 	}
 
 	err = client.Trusted(context.Background(), server.Listener.Addr().String(), serverCertDER, "routes", routes)
-	if err == nil {
-		t.Fatal("expected error due to non-200 status, got nil")
-	}
+	c.Assert(err, check.NotNil)
 
 	expectedError := "response to 'routes' message contains status code 400"
-	if err.Error() != expectedError {
-		t.Errorf("expected error '%s', got '%v'", expectedError, err)
-	}
+	c.Assert(err.Error(), check.Equals, expectedError)
 
 	// counters should not be incremented when send fails due to non-200 status
-	if atomic.LoadInt64(&client.sent) != 0 {
-		t.Errorf("expected sent counter to be 0, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(0))
 }
 
-func TestUntrustedSuccess(t *testing.T) {
+func (s *TransportSuite) TestUntrustedSuccess(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, serverCertDER, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// verify request is to correct endpoint
-		if r.URL.Path != "/assemble/auth" {
-			t.Errorf("expected path /assemble/auth, got %s", r.URL.Path)
-		}
+		c.Assert(r.URL.Path, check.Equals, "/assemble/auth")
 
 		// verify method is POST
-		if r.Method != "POST" {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
+		c.Assert(r.Method, check.Equals, "POST")
 
 		// verify json payload
 		var auth Auth
-		if err := json.NewDecoder(r.Body).Decode(&auth); err != nil {
-			t.Errorf("failed to decode auth: %v", err)
-		}
+		err := json.NewDecoder(r.Body).Decode(&auth)
+		c.Assert(err, check.IsNil)
 
 		w.WriteHeader(200)
 	}))
@@ -410,35 +341,22 @@ func TestUntrustedSuccess(t *testing.T) {
 	}
 
 	cert, err := client.Untrusted(context.Background(), server.Listener.Addr().String(), "auth", auth)
-	if err != nil {
-		t.Fatalf("untrusted call failed: %v", err)
-	}
+	c.Assert(err, check.IsNil)
 
 	// verify returned certificate matches server certificate
-	if string(cert) != string(serverCertDER) {
-		t.Error("returned certificate doesn't match server certificate")
-	}
+	c.Assert(string(cert), check.Equals, string(serverCertDER))
 
 	// verify counters were incremented
-	if atomic.LoadInt64(&client.sent) != 1 {
-		t.Errorf("expected sent counter to be 1, got %d", atomic.LoadInt64(&client.sent))
-	}
-
-	if atomic.LoadInt64(&client.tx) == 0 {
-		t.Error("expected tx counter to be > 0")
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(1))
+	c.Assert(atomic.LoadInt64(&client.tx) > 0, check.Equals, true)
 }
 
-func TestUntrustedRateLimit(t *testing.T) {
+func (s *TransportSuite) TestUntrustedRateLimit(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	callCount := int64(0)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -463,38 +381,26 @@ func TestUntrustedRateLimit(t *testing.T) {
 	// send first message immediately
 	start := time.Now()
 	_, err = client.Untrusted(context.Background(), server.Listener.Addr().String(), "auth", auth)
-	if err != nil {
-		t.Fatalf("first untrusted call failed: %v", err)
-	}
+	c.Assert(err, check.IsNil)
 
 	// send second message - should be rate limited
 	_, err = client.Untrusted(context.Background(), server.Listener.Addr().String(), "auth", auth)
-	if err != nil {
-		t.Fatalf("second untrusted call failed: %v", err)
-	}
+	c.Assert(err, check.IsNil)
 
 	elapsed := time.Since(start)
 
 	// with rate limit of 20/sec, second call should take at least 50ms
-	if elapsed < 40*time.Millisecond {
-		t.Errorf("expected rate limiting delay, but calls completed in %v", elapsed)
-	}
+	c.Assert(elapsed >= 40*time.Millisecond, check.Equals, true, check.Commentf("expected rate limiting delay, but calls completed in %v", elapsed))
 
-	if atomic.LoadInt64(&callCount) != 2 {
-		t.Errorf("expected 2 server calls, got %d", atomic.LoadInt64(&callCount))
-	}
+	c.Assert(atomic.LoadInt64(&callCount), check.Equals, int64(2))
 }
 
-func TestUntrustedContextCancellation(t *testing.T) {
+func (s *TransportSuite) TestUntrustedContextCancellation(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// delay to allow context cancellation
@@ -520,26 +426,18 @@ func TestUntrustedContextCancellation(t *testing.T) {
 	defer cancel()
 
 	_, err = client.Untrusted(ctx, server.Listener.Addr().String(), "auth", auth)
-	if err == nil {
-		t.Fatal("expected error due to context timeout, got nil")
-	}
+	c.Assert(err, check.NotNil)
 
 	// counters should not be incremented on failure
-	if atomic.LoadInt64(&client.sent) != 0 {
-		t.Errorf("expected sent counter to be 0, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(0))
 }
 
-func TestUntrustedCountersUpdate(t *testing.T) {
+func (s *TransportSuite) TestUntrustedCountersUpdate(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -562,37 +460,25 @@ func TestUntrustedCountersUpdate(t *testing.T) {
 	// send multiple messages and verify counters
 	for i := 0; i < 3; i++ {
 		_, err = client.Untrusted(context.Background(), server.Listener.Addr().String(), "auth", auth)
-		if err != nil {
-			t.Fatalf("untrusted call %d failed: %v", i+1, err)
-		}
+		c.Assert(err, check.IsNil)
 	}
 
-	if atomic.LoadInt64(&client.sent) != 3 {
-		t.Errorf("expected sent counter to be 3, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(3))
 
 	tx := atomic.LoadInt64(&client.tx)
-	if tx == 0 {
-		t.Error("expected tx counter to be > 0")
-	}
+	c.Assert(tx > 0, check.Equals, true)
 
 	// tx should be consistent across calls (same payload size)
 	expectedTx := tx / 3
-	if expectedTx == 0 {
-		t.Error("expected consistent payload size per message")
-	}
+	c.Assert(expectedTx > 0, check.Equals, true)
 }
 
-func TestUntrustedNonSuccessStatus(t *testing.T) {
+func (s *TransportSuite) TestUntrustedNonSuccessStatus(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	serverCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403) // forbidden
@@ -613,26 +499,18 @@ func TestUntrustedNonSuccessStatus(t *testing.T) {
 	}
 
 	_, err = client.Untrusted(context.Background(), server.Listener.Addr().String(), "auth", auth)
-	if err == nil {
-		t.Fatal("expected error due to non-200 status, got nil")
-	}
+	c.Assert(err, check.NotNil)
 
 	expectedError := "got non-200 status code in response to auth message: 403"
-	if err.Error() != expectedError {
-		t.Errorf("expected error '%s', got '%v'", expectedError, err)
-	}
+	c.Assert(err.Error(), check.Equals, expectedError)
 
 	// counters should still be incremented as the message was sent
-	if atomic.LoadInt64(&client.sent) != 1 {
-		t.Errorf("expected sent counter to be 1, got %d", atomic.LoadInt64(&client.sent))
-	}
+	c.Assert(atomic.LoadInt64(&client.sent), check.Equals, int64(1))
 }
 
-func TestUntrustedNoTLS(t *testing.T) {
+func (s *TransportSuite) TestUntrustedNoTLS(c *check.C) {
 	clientCert, _, err := generateTestCert()
-	if err != nil {
-		t.Fatal(err)
-	}
+	c.Assert(err, check.IsNil)
 
 	// create non-TLS server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -650,11 +528,8 @@ func TestUntrustedNoTLS(t *testing.T) {
 	// this test is tricky because the client will try to use TLS but the server doesn't support it
 	// the http client will fail before we get to check TLS
 	_, err = client.Untrusted(context.Background(), server.Listener.Addr().String(), "auth", auth)
-	if err == nil {
-		t.Fatal("expected error due to TLS requirement, got nil")
-	}
+	c.Assert(err, check.NotNil)
 
 	// we expect a TLS-related error, not our specific error message
 	// because the connection fails before we can check res.TLS
 }
-
