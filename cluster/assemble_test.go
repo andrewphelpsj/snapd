@@ -35,10 +35,6 @@ func TestAssemble(t *testing.T) {
 		peers = append(peers, fmt.Sprintf("127.0.0.1:%d", 8001+i))
 	}
 
-	discover := func(ctx context.Context) ([]string, error) {
-		return peers, nil
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute*1)
 	defer cancel()
 
@@ -60,6 +56,10 @@ func TestAssemble(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
+
+			// create a separate discovery channel for each node
+			discover := make(chan []string, 1)
+			discover <- peers
 
 			rtd := strconv.Itoa(i)
 			st := state.New(nil)

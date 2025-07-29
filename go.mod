@@ -7,6 +7,7 @@ replace maze.io/x/crypto => github.com/snapcore/maze.io-x-crypto v0.0.0-20190131
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.6.1
+	github.com/brutella/dnssd v1.2.14
 	github.com/canonical/go-efilib v1.6.0
 	github.com/canonical/go-sp800.90a-drbg v0.0.0-20210314144037-6eeb1040d6c3 // indirect
 	github.com/canonical/go-tpm2 v1.13.0
@@ -40,12 +41,10 @@ require (
 require go.etcd.io/bbolt v1.3.9
 
 require (
-	github.com/brutella/dnssd v1.2.14 // indirect
 	github.com/canonical/cpuid v0.0.0-20220614022739-219e067757cb // indirect
 	github.com/canonical/go-kbkdf v0.0.0-20250104172618-3b1308f9acf9 // indirect
 	github.com/canonical/go-password-validator v0.0.0-20250617132709-1b205303ca54 // indirect
 	github.com/canonical/tcglog-parser v0.0.0-20240924110432-d15eaf652981 // indirect
-	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/kr/pretty v0.2.2-0.20200810074440-814ac30b4b18 // indirect
 	github.com/kr/text v0.1.0 // indirect
 	github.com/miekg/dns v1.1.61 // indirect

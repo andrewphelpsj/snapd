@@ -1359,10 +1359,7 @@ func (s *ClusterSuite) TestRunTimeout(c *check.C) {
 		},
 	}
 
-	discover := func(ctx context.Context) ([]string, error) {
-		return []string{}, nil
-	}
-
+	discover := make(chan []string)
 	session := AssembleSession{
 		Initiated: started,
 	}
@@ -1402,10 +1399,7 @@ func (s *ClusterSuite) TestRunServerError(c *check.C) {
 		},
 	}
 
-	discover := func(ctx context.Context) ([]string, error) {
-		return []string{}, nil
-	}
-
+	discover := make(chan []string)
 	as, err := NewAssembleState(cfg, AssembleSession{}, func(DeviceToken, Identifier) (RouteSelector, error) {
 		return statelessSelector(), nil
 	}, commit)
@@ -1462,10 +1456,7 @@ func (s *ClusterSuite) TestMaxSizeCompletion(c *check.C) {
 		},
 	}
 
-	discover := func(ctx context.Context) ([]string, error) {
-		return []string{}, nil
-	}
-
+	discover := make(chan []string)
 	as, err := NewAssembleState(cfg, AssembleSession{}, func(DeviceToken, Identifier) (RouteSelector, error) {
 		return mockSelector, nil
 	}, commit)

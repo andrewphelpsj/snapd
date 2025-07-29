@@ -4,11 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
 
 	"github.com/snapcore/snapd/cluster"
+	"github.com/snapcore/snapd/cluster/assemblestate"
 	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/overlord/state"
 )
@@ -16,22 +18,22 @@ import (
 func main() {
 	rdt := flag.String("rdt", "", "random device token")
 	port := flag.Int("port", 0, "listen port")
+	iface := flag.String("iface", "", "interface to listen on")
 	ip := flag.String("ip", "", "listen address")
-	terminate := flag.Bool("t", false, "terminate once all routes found")
+	count := flag.Int("c", 0, "expected cluster size")
 	flag.Parse()
 
-	if *port == 0 || *ip == "" {
-		return
+	if *port == 0 || *ip == "" || *iface == "" || *rdt == "" {
+		flag.Usage()
+		os.Exit(1)
 	}
 
-	run(*ip, *port, *rdt, *terminate, flag.Args())
+	if err := run(*iface, *ip, *port, *rdt, *count); err != nil {
+		log.Fatalln(err)
+	}
 }
 
-func run(ip string, port int, rdt string, terminate bool, peers []string) error {
-	discover := func(ctx context.Context) ([]string, error) {
-		return peers, nil
-	}
-
+func run(iface string, ip string, port int, rdt string, count int) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -41,21 +43,23 @@ func run(ip string, port int, rdt string, terminate bool, peers []string) error 
 
 	st := state.New(nil)
 
-	expected := 0
-	if terminate {
-		expected = len(peers) + 1
-	}
-
 	opts := cluster.AssembleOpts{
 		Secret:       "secret",
 		ListenIP:     net.ParseIP(ip),
 		ListenPort:   port,
 		RDTOverride:  rdt,
 		Logger:       l,
-		ExpectedSize: expected,
+		ExpectedSize: count,
 	}
 
-	got, err := cluster.Assemble(st, ctx, discover, opts)
+	discoveries, stop, err := assemblestate.MulticastDiscovery(ctx, iface, ip, port, assemblestate.DeviceToken(rdt))
+	if err != nil {
+		return err
+	}
+
+	defer stop()
+
+	got, err := cluster.Assemble(st, ctx, discoveries, opts)
 	if err != nil {
 		return err
 	}

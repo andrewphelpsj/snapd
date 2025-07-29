@@ -38,7 +38,7 @@ type AssembleOpts struct {
 // stopped assemble session.
 //
 // TODO: get rid of this entrypoint
-func Assemble(st *state.State, ctx context.Context, discover assemblestate.Discoverer, opts AssembleOpts) (assemblestate.Routes, error) {
+func Assemble(st *state.State, ctx context.Context, discoveries <-chan []string, opts AssembleOpts) (assemblestate.Routes, error) {
 	// TODO: pick how we're going to generate RDTs
 	rdt := assemblestate.DeviceToken(opts.RDTOverride)
 	if rdt == "" {
@@ -85,7 +85,7 @@ func Assemble(st *state.State, ctx context.Context, discover assemblestate.Disco
 	}
 
 	transport := assemblestate.NewHTTPTransport(log)
-	return as.Run(ctx, transport, discover)
+	return as.Run(ctx, transport, discoveries)
 }
 
 func createCertAndKey(ip net.IP) (certPEM []byte, keyPEM []byte, err error) {
