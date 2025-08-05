@@ -79,13 +79,13 @@ func Assemble(st *state.State, ctx context.Context, discoveries <-chan []string,
 		return assemblestate.NewPrioritySelector(self, nil, ids), nil
 	}
 
-	as, err := assemblestate.NewAssembleState(config, session, selector, log, commit)
+	as, err := assemblestate.NewAssembleState(config, session, selector, log, commit, nil)
 	if err != nil {
 		return assemblestate.Routes{}, err
 	}
 
 	transport := assemblestate.NewHTTPTransport(log)
-	return as.Run(ctx, transport, discoveries)
+	return as.Run(ctx, transport, discoveries, assemblestate.PublicationOptions{})
 }
 
 func createCertAndKey(ip net.IP) (certPEM []byte, keyPEM []byte, err error) {
