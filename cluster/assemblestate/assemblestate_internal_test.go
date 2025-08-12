@@ -1372,7 +1372,7 @@ func (s *ClusterSuite) TestRunTimeout(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// when Run is called, the clock will return a time past the 1-hour limit
-	_, err = as.Run(context.Background(), transport, discover)
+	_, err = as.Run(context.Background(), transport, discover, PublicationOptions{})
 	c.Assert(err, check.ErrorMatches, "cannot resume an assembly session that began more than an hour ago")
 }
 
@@ -1412,8 +1412,74 @@ func (s *ClusterSuite) TestRunServerError(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// run should return the server error wrapped with "server failed: "
-	_, err = as.Run(context.Background(), transport, discover)
+	_, err = as.Run(context.Background(), transport, discover, PublicationOptions{})
 	c.Assert(err, testutil.ErrorIs, serverError)
+}
+
+func (s *ClusterSuite) TestMaxSizeCompletion(c *check.C) {
+	ip := net.IPv4(127, 0, 0, 1)
+	certPEM, keyPEM := createTestCertAndKey(c, ip)
+
+	cfg := AssembleConfig{
+		Secret:       "secret",
+		RDT:          "rdt1",
+		IP:           ip,
+		Port:         8001,
+		TLSCert:      certPEM,
+		TLSKey:       keyPEM,
+		ExpectedSize: 2,
+	}
+
+	commit := func(AssembleSession) {}
+
+	// create a mock selector that returns a fully connected 2-device graph
+	mockSelector := &selector{
+		AddAuthoritativeRouteFunc: func(r DeviceToken, via string) {},
+		RecordRoutesFunc: func(r DeviceToken, ro Routes) (int, int, error) {
+			return 0, 0, nil
+		},
+		VerifyRoutesFunc: func() {},
+		SelectFunc: func(to DeviceToken, count int) (Routes, func(), bool) {
+			return Routes{}, nil, false
+		},
+		RoutesFunc: func() Routes {
+			// return a fully connected graph with 2 devices
+			return Routes{
+				Devices:   []DeviceToken{"one", "two"},
+				Addresses: []string{"127.0.0.1:8001", "127.0.0.1:8002"},
+				Routes:    []int{0, 1, 1, 1, 0, 0}, // one->two via 8002, two->one via 8001
+			}
+		},
+	}
+
+	transport := &testTransport{
+		ServeFunc: func(ctx context.Context, addr string, cert tls.Certificate, as *AssembleState) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		NewClientFunc: func(cert tls.Certificate) Client {
+			return &testClient{}
+		},
+	}
+
+	discover := func(ctx context.Context) ([]string, error) {
+		return []string{}, nil
+	}
+
+	as, err := NewAssembleState(cfg, AssembleSession{}, func(DeviceToken, Identifier) (RouteSelector, error) {
+		return mockSelector, nil
+	}, commit)
+	c.Assert(err, check.IsNil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	routes, err := as.Run(ctx, transport, discover, PublicationOptions{
+		Period: time.Millisecond,
+	})
+	c.Assert(err, check.IsNil)
+	c.Assert(len(routes.Devices), check.Equals, 2)
+	c.Assert(len(routes.Routes), check.Equals, 6) // 2 devices * 3 ints per route
 }
 
 func encodeCertAsFP(fingerprint []byte) string {

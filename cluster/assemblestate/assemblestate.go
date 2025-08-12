@@ -103,6 +103,8 @@ type AssembleState struct {
 	// selector keeps track of our routes and decides the strategy for
 	// publishing routes to our peers.
 	selector RouteSelector
+
+	cache *Routes
 }
 
 // AssembleSession provides a method for serializing our current state of
@@ -141,12 +143,17 @@ func (as *AssembleState) export() AssembleSession {
 		}
 	}
 
+	routes := as.selector.Routes()
+	if as.config.ExpectedSize != 0 {
+		as.cache = &routes
+	}
+
 	return AssembleSession{
 		Initiated:  as.initiated,
 		Trusted:    trusted,
 		Addresses:  addresses,
 		Discovered: discovered,
-		Routes:     as.selector.Routes(),
+		Routes:     routes,
 		Devices:    as.devices.Export(),
 	}
 }
@@ -175,6 +182,9 @@ type AssembleConfig struct {
 	// Clock is an optional function to retrieve the current time. If nil,
 	// defaults to time.Now.
 	Clock func() time.Time
+	// ExpectedSize is the expected size of the cluster. If unset, cluster
+	// assembly will not terminate automatically.
+	ExpectedSize int
 }
 
 const AssembleSessionLength = time.Hour
@@ -521,12 +531,47 @@ func (as *AssembleState) VerifyPeer(cert []byte) (*PeerHandle, error) {
 	}, nil
 }
 
+// complete checks if assembly should terminate based on expected size
+// configuration. Returns true if max size is configured and we have discovered
+// exactly that many devices with full connectivity between them.
+func (as *AssembleState) complete() bool {
+	if as.config.ExpectedSize <= 0 {
+		return false
+	}
+
+	as.lock.Lock()
+	defer as.lock.Unlock()
+
+	if as.cache == nil {
+		routes := as.selector.Routes()
+		as.cache = &routes
+	}
+
+	if len(as.cache.Devices) != as.config.ExpectedSize {
+		return false
+	}
+
+	n := len(as.cache.Devices)
+	if n <= 1 {
+		return true
+	}
+
+	expected := n * (n - 1)
+	current := len(as.cache.Routes) / 3
+	return current == expected
+}
+
+type PublicationOptions struct {
+	Period time.Duration
+}
+
 // Run starts the assembly process, managing both the server and periodic client operations.
 // It returns when the context is cancelled, returning the final routes discovered.
 func (as *AssembleState) Run(
 	ctx context.Context,
 	transport Transport,
 	discover Discoverer,
+	opts PublicationOptions,
 ) (Routes, error) {
 	if as.initiated.IsZero() {
 		as.initiated = as.clock()
@@ -595,13 +640,20 @@ func (as *AssembleState) Run(
 	go func() {
 		defer wg.Done()
 		const (
-			period = time.Second * 5
 			peers  = 5
 			routes = 5000
 		)
-		periodic(ctx, period, func(ctx context.Context) {
+		periodic(ctx, opts.Period, func(ctx context.Context) {
 			as.publishRoutes(ctx, client, peers, routes)
 			rounds++
+
+			// check if assembly is complete based on expected size
+			// configuration
+			if as.complete() {
+				logger.Debug("assembly complete: discovered all devices with full connectivity")
+				cancel()
+				return
+			}
 		})
 	}()
 
