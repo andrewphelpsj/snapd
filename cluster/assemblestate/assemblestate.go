@@ -28,7 +28,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -551,6 +553,56 @@ type RunOptions struct {
 	Period time.Duration
 }
 
+func (as *AssembleState) convertToClusterDevices(ids []Identity) ([]ClusterDevice, error) {
+	var devices []ClusterDevice
+	for _, id := range ids {
+		var serial *asserts.Serial
+		dec := asserts.NewDecoder(strings.NewReader(id.SerialBundle))
+		for {
+			as, err := dec.Decode()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return nil, err
+			}
+
+			s, ok := as.(*asserts.Serial)
+			if !ok {
+				continue
+			}
+			serial = s
+		}
+
+		if serial == nil {
+			return nil, fmt.Errorf("serial assertion missing from bundle in device identity: %s", id.RDT)
+		}
+
+		// TODO: we need to consider other sources for addresses, rather than
+		// just our discoveries
+		var addresses []string
+		if addr, ok := as.addresses[id.FP]; ok {
+			addresses = []string{addr}
+		}
+
+		devices = append(devices, ClusterDevice{
+			BrandID:   serial.BrandID(),
+			Model:     serial.Model(),
+			Serial:    serial.Serial(),
+			Addresses: addresses,
+		})
+	}
+
+	return devices, nil
+}
+
+type ClusterDevice struct {
+	BrandID   string
+	Model     string
+	Serial    string
+	Addresses []string
+}
+
 // Run starts the assembly process, managing both the server and periodic client operations.
 // It returns when the context is cancelled, returning the final routes discovered.
 //
@@ -562,13 +614,13 @@ func (as *AssembleState) Run(
 	transport Transport,
 	discoveries <-chan string,
 	opts RunOptions,
-) (Routes, error) {
+) ([]ClusterDevice, Routes, error) {
 	if as.initiated.IsZero() {
 		as.initiated = as.clock()
 	}
 
 	if as.clock().Sub(as.initiated) > AssembleSessionLength {
-		return Routes{}, errors.New("cannot resume an assembly session that began more than an hour ago")
+		return nil, Routes{}, errors.New("cannot resume an assembly session that began more than an hour ago")
 	}
 
 	addr := ln.Addr().String()
@@ -601,8 +653,29 @@ func (as *AssembleState) Run(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		for {
 			select {
+			case <-ticker.C:
+				// TODO: this is nasty, fix this
+				as.lock.Lock()
+				discoveries := as.selector.Addresses()
+				as.lock.Unlock()
+
+				// filter out our address
+				addrs := make([]string, 0, len(discoveries))
+				for _, d := range discoveries {
+					if d == addr {
+						continue
+					}
+
+					addrs = append(addrs, d)
+				}
+
+				if err := as.publishAuthAndCommit(ctx, addrs, client); err != nil {
+					logger.Debugf("error: %s", err.Error())
+				}
 			case discovery, ok := <-discoveries:
 				if !ok {
 					return
@@ -672,7 +745,7 @@ func (as *AssembleState) Run(
 
 	select {
 	case err := <-serverError:
-		return Routes{}, fmt.Errorf("server failed: %w", err)
+		return nil, Routes{}, fmt.Errorf("server failed: %w", err)
 	default:
 	}
 
@@ -683,11 +756,11 @@ func (as *AssembleState) Run(
 	defer as.lock.Unlock()
 
 	// perform final fingerprint consistency check
-	devices := as.devices.Export()
-	for _, identity := range devices.IDs {
+	ids := as.devices.Export().IDs
+	for _, identity := range ids {
 		if fp, ok := as.fingerprints[identity.RDT]; ok {
 			if fp != identity.FP {
-				return Routes{}, fmt.Errorf("consistency check failed: fingerprint mismatch for device %s", identity.RDT)
+				return nil, Routes{}, fmt.Errorf("consistency check failed: fingerprint mismatch for device %s", identity.RDT)
 			}
 		}
 	}
@@ -698,7 +771,12 @@ func (as *AssembleState) Run(
 		rounds, stats.Sent, stats.Tx, stats.Received, stats.Rx,
 	)
 
-	return as.selector.Routes(), nil
+	devices, err := as.convertToClusterDevices(ids)
+	if err != nil {
+		return nil, Routes{}, err
+	}
+
+	return devices, as.selector.Routes(), nil
 }
 
 func periodic(
