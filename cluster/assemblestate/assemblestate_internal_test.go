@@ -1628,7 +1628,7 @@ func (s *clusterSuite) TestRunTimeout(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// when Run is called, the clock will return a time past the 1-hour limit
-	_, err = as.Run(context.Background(), transport, discover, PublicationOptions{})
+	_, _, err = as.Run(context.Background(), transport, discover, PublicationOptions{})
 	c.Assert(err, check.ErrorMatches, "cannot resume an assembly session that began more than an hour ago")
 }
 
@@ -1657,7 +1657,7 @@ func (s *clusterSuite) TestRunServerError(c *check.C) {
 	c.Assert(err, check.IsNil)
 
 	// run should return the server error wrapped with "server failed: "
-	_, err = as.Run(context.Background(), transport, discover, PublicationOptions{})
+	_, _, err = as.Run(context.Background(), transport, discover, PublicationOptions{})
 	c.Assert(err, testutil.ErrorIs, serverError)
 }
 
@@ -1708,7 +1708,7 @@ func (s *clusterSuite) TestMaxSizeCompletion(c *check.C) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	routes, err := as.Run(ctx, transport, discover, PublicationOptions{
+	_, routes, err := as.Run(ctx, transport, discover, PublicationOptions{
 		Period: time.Millisecond,
 	})
 	c.Assert(err, check.IsNil)

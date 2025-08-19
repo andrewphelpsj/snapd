@@ -592,6 +592,44 @@ type PublicationOptions struct {
 	Period time.Duration
 }
 
+func (as *AssembleState) convertToClusterDevices(ids []Identity) ([]ClusterDevice, error) {
+	var devices []ClusterDevice
+	for _, id := range ids {
+		a, err := asserts.Decode([]byte(id.Serial))
+		if err != nil {
+			return nil, err
+		}
+
+		serial, ok := a.(*asserts.Serial)
+		if !ok {
+			return nil, fmt.Errorf("internal error: unexpected serial assertion type: %T", a)
+		}
+
+		// TODO: we need to consider other sources for addresses, rather than
+		// just our discoveries
+		var addresses []string
+		if addr, ok := as.addresses[id.FP]; ok {
+			addresses = []string{addr}
+		}
+
+		devices = append(devices, ClusterDevice{
+			BrandID:   serial.BrandID(),
+			Model:     serial.Model(),
+			Serial:    serial.Serial(),
+			Addresses: addresses,
+		})
+	}
+
+	return devices, nil
+}
+
+type ClusterDevice struct {
+	BrandID   string
+	Model     string
+	Serial    string
+	Addresses []string
+}
+
 // Run starts the assembly process, managing both the server and periodic client operations.
 // It returns when the context is cancelled, returning the final routes discovered.
 func (as *AssembleState) Run(
@@ -599,13 +637,13 @@ func (as *AssembleState) Run(
 	transport Transport,
 	discoveries <-chan []string,
 	opts PublicationOptions,
-) (Routes, error) {
+) ([]ClusterDevice, Routes, error) {
 	if as.initiated.IsZero() {
 		as.initiated = as.clock()
 	}
 
 	if as.clock().Sub(as.initiated) > AssembleSessionLength {
-		return Routes{}, errors.New("cannot resume an assembly session that began more than an hour ago")
+		return nil, Routes{}, errors.New("cannot resume an assembly session that began more than an hour ago")
 	}
 
 	addr := fmt.Sprintf("%s:%d", as.config.IP, as.config.Port)
@@ -704,16 +742,16 @@ func (as *AssembleState) Run(
 
 	select {
 	case err := <-serverError:
-		return Routes{}, fmt.Errorf("server failed: %w", err)
+		return nil, Routes{}, fmt.Errorf("server failed: %w", err)
 	default:
 	}
 
 	// perform final fingerprint consistency check
-	devices := as.devices.Export()
-	for _, identity := range devices.IDs {
+	ids := as.devices.Export().IDs
+	for _, identity := range ids {
 		if fp, ok := as.fingerprints[identity.RDT]; ok {
 			if fp != identity.FP {
-				return Routes{}, fmt.Errorf("consistency check failed: fingerprint mismatch for device %s", identity.RDT)
+				return nil, Routes{}, fmt.Errorf("consistency check failed: fingerprint mismatch for device %s", identity.RDT)
 			}
 		}
 	}
@@ -724,7 +762,12 @@ func (as *AssembleState) Run(
 		rounds, sent, tx, received, rx,
 	)
 
-	return as.selector.Routes(), nil
+	devices, err := as.convertToClusterDevices(ids)
+	if err != nil {
+		return nil, Routes{}, err
+	}
+
+	return devices, as.selector.Routes(), nil
 }
 
 func periodic(
