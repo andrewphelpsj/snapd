@@ -28,6 +28,8 @@ import (
 	"sync"
 
 	"github.com/brutella/dnssd"
+	dnssdlog "github.com/brutella/dnssd/log"
+	"github.com/snapcore/snapd/logger"
 )
 
 // Config holds the parameters required to advertise and discover peers using
@@ -43,6 +45,10 @@ type Config struct {
 	ServiceName string
 	// ServiceType is the DNS-SD service type (for example "_snapd._https").
 	ServiceType string
+	// Domain is the DNS domain used for discovery; defaults to "local" when empty.
+	Domain string
+	// Verbose enables verbose logging from the underlying dnssd library when true.
+	Verbose bool
 	// Buffer controls the size of the returned address channel; defaults to 1
 	// to prevent blocking the internal mDNS loop.
 	Buffer int
@@ -67,9 +73,20 @@ func MulticastDiscovery(ctx context.Context, cfg Config) (<-chan string, func(),
 		return nil, nil, errors.New("service type must be provided")
 	}
 
+	if cfg.Verbose {
+		dnssdlog.Debug.Enable()
+		dnssdlog.Info.Enable()
+	}
+
+	domain := cfg.Domain
+	if domain == "" {
+		domain = "local"
+	}
+
 	svcConfig := dnssd.Config{
 		Name:   cfg.ServiceName,
 		Type:   cfg.ServiceType,
+		Domain: domain,
 		Port:   cfg.Port,
 		Ifaces: []string{cfg.Interface},
 	}
@@ -98,7 +115,8 @@ func MulticastDiscovery(ctx context.Context, cfg Config) (<-chan string, func(),
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		rp.Respond(ctx)
+		err := rp.Respond(ctx)
+		logger.Debugf("mdns responder exited: %v", err)
 	}()
 
 	size := cfg.Buffer
@@ -111,10 +129,10 @@ func MulticastDiscovery(ctx context.Context, cfg Config) (<-chan string, func(),
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		const domain = "local"
 		defer close(addresses)
 
-		dnssd.LookupType(ctx, fmt.Sprintf("%s.%s.", cfg.ServiceType, domain), func(be dnssd.BrowseEntry) {
+		lookup := fmt.Sprintf("%s.%s.", cfg.ServiceType, domain)
+		err := dnssd.LookupType(ctx, lookup, func(be dnssd.BrowseEntry) {
 			for _, ip := range be.IPs {
 				if len(ip) != net.IPv4len {
 					continue
@@ -129,6 +147,7 @@ func MulticastDiscovery(ctx context.Context, cfg Config) (<-chan string, func(),
 			}
 
 		}, func(be dnssd.BrowseEntry) {})
+		logger.Debugf("mdns lookup exited: %v", err)
 	}()
 
 	var once sync.Once
