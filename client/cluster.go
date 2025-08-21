@@ -22,6 +22,8 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+
+	"github.com/snapcore/snapd/asserts"
 )
 
 // ClusterAssembleOptions holds the options for cluster assembly
@@ -63,4 +65,39 @@ func (client *Client) ClusterAssemble(opts ClusterAssembleOptions) (changeID str
 	}
 
 	return client.doAsync("POST", "/v2/cluster", nil, headers, &body)
+}
+
+// GetClusterUncommittedHeaders retrieves the uncommitted cluster state headers
+// that are ready to be signed into a cluster assertion.
+func (client *Client) GetClusterUncommittedHeaders() (map[string]any, error) {
+	var headers map[string]any
+	_, err := client.doSync("GET", "/v2/cluster/uncommitted", nil, nil, nil, &headers)
+	if err != nil {
+		return nil, err
+	}
+	return headers, nil
+}
+
+// CommitClusterAssertion commits a signed cluster assertion to the system.
+// The cluster assertion must be properly signed and valid.
+func (client *Client) CommitClusterAssertion(cluster *asserts.Cluster) error {
+	encoded := asserts.Encode(cluster)
+
+	req := struct {
+		Assertion string `json:"assertion"`
+	}{
+		Assertion: string(encoded),
+	}
+
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(&req); err != nil {
+		return err
+	}
+
+	headers := map[string]string{
+		"Content-Type": "application/json",
+	}
+
+	_, err := client.doSync("POST", "/v2/cluster/uncommitted", nil, headers, &body, nil)
+	return err
 }

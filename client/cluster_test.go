@@ -21,9 +21,12 @@ package client_test
 
 import (
 	"encoding/json"
+	"time"
 
 	"gopkg.in/check.v1"
 
+	"github.com/snapcore/snapd/asserts"
+	"github.com/snapcore/snapd/asserts/assertstest"
 	"github.com/snapcore/snapd/client"
 )
 
@@ -103,4 +106,121 @@ func (cs *clientSuite) TestClientClusterAssembleError(c *check.C) {
 
 	_, err := cs.cli.ClusterAssemble(opts)
 	c.Assert(err, check.ErrorMatches, "invalid address format")
+}
+
+func (cs *clientSuite) TestClientGetClusterUncommittedHeaders(c *check.C) {
+	cs.status = 200
+	cs.rsp = `{
+		"type": "sync",
+		"result": {
+			"type": "cluster",
+			"cluster-id": "test-cluster-123",
+			"sequence": "1",
+			"devices": [
+				{
+					"id": "1",
+					"brand-id": "canonical",
+					"model": "ubuntu-core-24-amd64",
+					"serial": "device-1",
+					"addresses": ["192.168.1.10"]
+				}
+			],
+			"subclusters": [
+				{
+					"name": "default",
+					"devices": ["1"]
+				}
+			],
+			"timestamp": "2024-01-15T10:30:00Z"
+		}
+	}`
+
+	headers, err := cs.cli.GetClusterUncommittedHeaders()
+	c.Assert(err, check.IsNil)
+	c.Check(headers["type"], check.Equals, "cluster")
+	c.Check(headers["cluster-id"], check.Equals, "test-cluster-123")
+	c.Check(headers["sequence"], check.Equals, "1")
+	c.Check(headers["timestamp"], check.Equals, "2024-01-15T10:30:00Z")
+
+	// verify the request
+	c.Check(cs.req.Method, check.Equals, "GET")
+	c.Check(cs.req.URL.Path, check.Equals, "/v2/cluster/uncommitted")
+}
+
+func (cs *clientSuite) TestClientCommitClusterAssertion(c *check.C) {
+	cs.status = 200
+	cs.rsp = `{
+		"type": "sync",
+		"result": null
+	}`
+
+	// create a test cluster assertion
+	privKey, _ := assertstest.GenerateKey(752)
+	storeStack := assertstest.NewStoreStack("canonical", nil)
+
+	db, err := asserts.OpenDatabase(&asserts.DatabaseConfig{
+		Backstore: asserts.NewMemoryBackstore(),
+		Trusted:   storeStack.Trusted,
+	})
+	c.Assert(err, check.IsNil)
+
+	err = db.Add(storeStack.StoreAccountKey(""))
+	c.Assert(err, check.IsNil)
+
+	account := assertstest.NewAccount(storeStack, "test-account", map[string]any{
+		"validation": "verified",
+	}, "")
+	err = db.Add(account)
+	c.Assert(err, check.IsNil)
+
+	accountKey := assertstest.NewAccountKey(storeStack, account, nil, privKey.PublicKey(), "")
+	err = db.Add(accountKey)
+	c.Assert(err, check.IsNil)
+
+	headers := map[string]any{
+		"type":         "cluster",
+		"authority-id": account.AccountID(),
+		"cluster-id":   "test-cluster-456",
+		"sequence":     "1",
+		"devices": []any{
+			map[string]any{
+				"id":        "1",
+				"brand-id":  "canonical",
+				"model":     "ubuntu-core-24-amd64",
+				"serial":    "device-1",
+				"addresses": []any{"192.168.1.10"},
+			},
+		},
+		"subclusters": []any{
+			map[string]any{
+				"name":    "default",
+				"devices": []any{"1"},
+			},
+		},
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	signingDB := assertstest.NewSigningDB(account.AccountID(), privKey)
+	clusterAssert, err := signingDB.Sign(asserts.ClusterType, headers, nil, "")
+	c.Assert(err, check.IsNil)
+
+	// test the commit
+	err = cs.cli.CommitClusterAssertion(clusterAssert.(*asserts.Cluster))
+	c.Assert(err, check.IsNil)
+
+	// verify the request
+	c.Check(cs.req.Method, check.Equals, "POST")
+	c.Check(cs.req.URL.Path, check.Equals, "/v2/cluster/uncommitted")
+	c.Check(cs.req.Header.Get("Content-Type"), check.Equals, "application/json")
+
+	var reqBody map[string]interface{}
+	err = json.NewDecoder(cs.req.Body).Decode(&reqBody)
+	c.Assert(err, check.IsNil)
+	c.Check(reqBody["assertion"], check.NotNil)
+	// verify it's a valid assertion string
+	assertionStr, ok := reqBody["assertion"].(string)
+	c.Assert(ok, check.Equals, true)
+	decoded, err := asserts.Decode([]byte(assertionStr))
+	c.Assert(err, check.IsNil)
+	c.Check(decoded.Type().Name, check.Equals, "cluster")
 }
