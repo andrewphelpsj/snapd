@@ -145,6 +145,7 @@ type selector struct {
 	SelectFunc                func(to DeviceToken, count int) (routes Routes, ack func(), ok bool)
 	RoutesFunc                func() Routes
 	CompleteFunc              func(size int) (bool, error)
+	AddressesFunc             func() []string
 }
 
 func (s *selector) AddAuthoritativeRoute(r DeviceToken, via string) {
@@ -187,6 +188,13 @@ func (s *selector) Complete(size int) (bool, error) {
 		panic("unexpected call")
 	}
 	return s.CompleteFunc(size)
+}
+
+func (s *selector) Addresses() []string {
+	if s.AddressesFunc == nil {
+		panic("unexpected call")
+	}
+	return s.AddressesFunc()
 }
 
 type testClient struct {
