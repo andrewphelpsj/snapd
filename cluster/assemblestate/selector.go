@@ -70,6 +70,8 @@ type RouteSelector interface {
 
 	// Routes returns all routes that are currently valid for publication.
 	Routes() Routes
+
+	Addresses() []string
 }
 
 // PrioritySelector implements [RouteSelector].
@@ -434,6 +436,10 @@ func (p *PrioritySelector) Routes() Routes {
 		Addresses: addrs,
 		Routes:    routes,
 	}
+}
+
+func (p *PrioritySelector) Addresses() []string {
+	return p.addresses.Values()
 }
 
 func (p *PrioritySelector) edgesToRoutes(edges []edgeID) Routes {
