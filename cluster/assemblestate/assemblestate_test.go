@@ -122,7 +122,7 @@ func (s *assembleSuite) TestRun(c *check.C) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := as.Run(
+			_, _, err := as.Run(
 				ctx,
 				listeners[rdt],
 				assemblestate.NewHTTPSTransport(),
@@ -158,7 +158,7 @@ func (s *assembleSuite) TestRun(c *check.C) {
 	disco := make(chan []string, 1)
 	disco <- addrs
 
-	routes, err := as.Run(
+	_, routes, err := as.Run(
 		ctx,
 		listeners[rdt],
 		assemblestate.NewHTTPSTransport(),
