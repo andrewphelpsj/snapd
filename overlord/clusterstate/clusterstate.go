@@ -87,6 +87,7 @@ type UncommittedClusterState struct {
 	Devices     []ClusterDevice     `json:"devices"`
 	Subclusters []ClusterSubcluster `json:"subclusters"`
 	CompletedAt time.Time           `json:"completed-at"`
+	Sequence    int                 `json:"sequence"`
 }
 
 type ClusterDevice struct {
@@ -203,10 +204,14 @@ func CommitClusterAssertion(st *state.State, clusterID string) error {
 	// verify the cluster assertion exists in the database
 	db := assertstate.DB(st)
 
-	as, err := db.Find(asserts.ClusterType, map[string]string{
+	as, err := db.FindSequence(asserts.ClusterType, map[string]string{
 		"cluster-id": clusterID,
-		"sequence":   "1", // TODO: handle sequences properly
-	})
+	}, -1, asserts.ClusterType.MaxSupportedFormat())
+
+	// as, err := db.Find(asserts.ClusterType, map[string]string{
+	// 	"cluster-id": clusterID,
+	// 	"sequence":   strconv.Itoa(uncommitted.Sequence), // TODO: handle sequences properly
+	// })
 	if err != nil {
 		return fmt.Errorf("cannot find cluster assertion: %v", err)
 	}
@@ -268,8 +273,8 @@ func CommitClusterAssertion(st *state.State, clusterID string) error {
 		}
 	}
 
-	// clear the uncommitted state
-	st.Set("uncommitted-cluster-state", nil)
+	uncommitted.Sequence = as.Sequence()
+	UpdateUncommittedClusterState(st, uncommitted)
 
 	st.EnsureBefore(0)
 

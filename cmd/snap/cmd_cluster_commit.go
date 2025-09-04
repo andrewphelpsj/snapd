@@ -217,7 +217,7 @@ func convertStateToHeaders(state client.UncommittedClusterState) map[string]any 
 	return map[string]any{
 		"type":        "cluster",
 		"cluster-id":  state.ClusterID,
-		"sequence":    "1", // TODO: handle sequences properly
+		"sequence":    strconv.Itoa(state.Sequence + 1), // TODO: handle sequences properly
 		"devices":     devices,
 		"subclusters": subclusters,
 		"timestamp":   state.CompletedAt.Format(time.RFC3339),
