@@ -294,9 +294,7 @@ func verifySerialBundle(bundle string, db asserts.RODatabase) (*asserts.Serial, 
 		}
 	}
 
-	if err := batch.CommitToAndObserve(tmpDB, observe, &asserts.CommitOptions{
-		Precheck: true,
-	}); err != nil {
+	if err := batch.CommitToAndObserve(tmpDB, observe, nil); err != nil {
 		return nil, err
 	}
 

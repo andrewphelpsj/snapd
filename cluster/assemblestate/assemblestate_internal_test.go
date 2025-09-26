@@ -1104,6 +1104,62 @@ func (s *clusterSuite) TestCommitDevicesInconsistentIdentity(c *check.C) {
 	c.Assert(len(cm.commits), check.Equals, baseline, check.Commentf("commit should not be called on identity inconsistency"))
 }
 
+func (s *clusterSuite) TestCommitDevicesMissingBundlePrerequisites(c *check.C) {
+	assertDB, store := mockAssertDB(c)
+	cfg := createTestAssembleConfig(c, store, "secret", "self")
+
+	cm := &committer{}
+	as, err := NewAssembleState(cfg, AssembleSession{}, func(DeviceToken, Identifier) (RouteSelector, error) {
+		return statelessSelector(), nil
+	}, cm.commit, assertDB)
+	c.Assert(err, check.IsNil)
+
+	const brand = "external-brand"
+
+	deviceKey, _ := assertstest.GenerateKey(752)
+	devicePub, err := asserts.EncodePublicKey(deviceKey.PublicKey())
+	c.Assert(err, check.IsNil)
+
+	serialHeaders := map[string]any{
+		"authority-id":        brand,
+		"brand-id":            brand,
+		"model":               "test-model",
+		"serial":              randutil.RandomString(10),
+		"device-key":          string(devicePub),
+		"device-key-sha3-384": deviceKey.PublicKey().ID(),
+		"timestamp":           time.Now().Format(time.RFC3339),
+	}
+
+	brandPK, _ := assertstest.GenerateKey(752)
+	brandSigning := assertstest.NewSigningDB(brand, brandPK)
+
+	serial, err := brandSigning.Sign(asserts.SerialType, serialHeaders, nil, "")
+	c.Assert(err, check.IsNil)
+
+	// note that we only encode the serial assertion. should trigger an error
+	// about missing prereqs when attempting to commit the identity
+	bundle := asserts.Encode(serial)
+
+	fp := CalculateFP([]byte("cert"))
+	hmac := CalculateHMAC("rdt", fp, "secret")
+
+	proof, err := asserts.RawSignWithKey(hmac, deviceKey)
+	c.Assert(err, check.IsNil)
+
+	id := Identity{
+		RDT:          "rdt",
+		FP:           fp,
+		SerialBundle: string(bundle),
+		SerialProof:  proof,
+	}
+
+	peer, _, _ := trustedAndDiscoveredPeer(c, as, DeviceToken("peer"))
+	err = peer.CommitDevices(Devices{
+		Devices: []Identity{id},
+	})
+	c.Assert(err, check.ErrorMatches, "invalid serial assertion for device rdt: invalid identity for device rdt: cannot resolve prerequisite assertion: .*")
+}
+
 func (s *clusterSuite) TestRecordDevicesForgedIdentity(c *check.C) {
 	as, _, _, _, signing := newAssembleStateWithTestKeys(c, statelessSelector(), AssembleConfig{
 		Secret: "secret",
