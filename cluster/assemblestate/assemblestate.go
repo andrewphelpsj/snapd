@@ -882,7 +882,7 @@ func buildSerialBundle(serial *asserts.Serial, db asserts.RODatabase) (string, e
 
 	fetcher := asserts.NewFetcher(db, retrieve, enc.Encode)
 	if err := fetcher.Save(serial); err != nil {
-		return "", fmt.Errorf("cannot fetch serial prerequisites: %w", err)
+		return "", fmt.Errorf("cannot bundle serial prerequisites: %w", err)
 	}
 
 	return buf.String(), nil
