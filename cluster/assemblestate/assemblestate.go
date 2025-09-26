@@ -897,12 +897,12 @@ func ensureLocalDevicePresent(data *DeviceQueryTrackerData, self Identity) error
 				return fmt.Errorf("fingerprint mismatch for local device %q", self.RDT)
 			}
 
-			if existing.SerialBundle != self.SerialBundle {
-				return fmt.Errorf("serial bundle mismatch for local device %q", self.RDT)
-			}
-
 			if !bytes.Equal(existing.SerialProof, self.SerialProof) {
 				return fmt.Errorf("serial proof mismatch for local device %q", self.RDT)
+			}
+
+			if existing.SerialBundle != self.SerialBundle {
+				return fmt.Errorf("serial bundle mismatch for local device %q", self.RDT)
 			}
 
 			return nil
