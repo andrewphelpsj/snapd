@@ -283,23 +283,34 @@ func verifySerialBundle(bundle string, db asserts.RODatabase) (*asserts.Serial, 
 	tmpDB := db.WithStackedBackstore(asserts.NewMemoryBackstore())
 	batch := asserts.NewBatch(nil)
 
-	if _, err := batch.AddStream(strings.NewReader(bundle)); err != nil {
+	refs, err := batch.AddStream(strings.NewReader(bundle))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := batch.CommitTo(tmpDB, nil); err != nil {
 		return nil, err
 	}
 
 	var serials []*asserts.Serial
-	observe := func(a asserts.Assertion) {
-		if s, ok := a.(*asserts.Serial); ok {
+	for _, r := range refs {
+		if r.Type == asserts.SerialType {
+			a, err := r.Resolve(tmpDB.Find)
+			if err != nil {
+				return nil, err
+			}
+
+			s, ok := a.(*asserts.Serial)
+			if !ok {
+				return nil, errors.New("internal error: wrong assertion type")
+			}
+
 			serials = append(serials, s)
 		}
 	}
 
-	if err := batch.CommitToAndObserve(tmpDB, observe, nil); err != nil {
-		return nil, err
-	}
-
 	if len(serials) != 1 {
-		return nil, errors.New("exactly one serial assertion expected in bundle")
+		return nil, fmt.Errorf("exactly one serial assertion expected in bundle, found %d", len(serials))
 	}
 
 	return serials[0], nil
