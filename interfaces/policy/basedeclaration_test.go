@@ -1005,6 +1005,36 @@ slots:
 		}
 	}
 
+	// gadget-provided network slots must declare a device attribute
+	ic = s.installSlotCand(c, "network", snap.TypeGadget, `name: gadget-slot
+version: 0
+type: gadget
+slots:
+  network:
+`)
+	err = ic.Check()
+	c.Check(err, NotNil)
+
+	ic = s.installSlotCand(c, "network", snap.TypeGadget, `name: gadget-slot
+version: 0
+type: gadget
+slots:
+  network:
+    device: enp3s0
+`)
+	err = ic.Check()
+	c.Check(err, IsNil)
+
+	// core-provided (implicit) network slots remain allowed without attributes
+	ic = s.installSlotCand(c, "network", snap.TypeOS, `name: core
+version: 0
+type: os
+slots:
+  network:
+`)
+	err = ic.Check()
+	c.Check(err, IsNil)
+
 	// The core and snapd snaps may provide a shared-memory slot
 	ic = s.installSlotCand(c, "shared-memory", snap.TypeOS, `name: core
 version: 0
@@ -1043,6 +1073,46 @@ slots:
 	err = ic.Check()
 	c.Assert(err, Not(IsNil))
 	c.Assert(err, ErrorMatches, "installation not allowed by \"udisks2\" slot rule of interface \"udisks2\"")
+}
+
+func (s *baseDeclSuite) TestNetworkConnectionDeviceMatching(c *C) {
+	slotWithDevice := `name: slot-snap
+version: 0
+slots:
+  network:
+    device: enp3s0
+`
+	plugWithDevice := `name: plug-snap
+version: 0
+plugs:
+  network:
+    device: enp3s0
+`
+	plugWithOtherDevice := `name: plug-snap
+version: 0
+plugs:
+  network:
+    device: enxdeadbeef00
+`
+
+	// legacy system slot/plug pairing with no device attribute continues to work
+	cand := s.connectCand(c, "network", "", "")
+	c.Assert(cand.Check(), IsNil)
+
+	// gadget slots expose a device but still accept plugs without one
+	cand = s.connectCand(c, "network", slotWithDevice, "")
+	c.Assert(cand.Check(), IsNil)
+
+	// explicit device plugs must match the slot attribute exactly
+	cand = s.connectCand(c, "network", slotWithDevice, plugWithDevice)
+	c.Assert(cand.Check(), IsNil)
+
+	cand = s.connectCand(c, "network", slotWithDevice, plugWithOtherDevice)
+	c.Assert(cand.Check(), Not(IsNil))
+
+	// plugs that request a device cannot fall back to the implicit system slot
+	cand = s.connectCand(c, "network", "", plugWithDevice)
+	c.Assert(cand.Check(), Not(IsNil))
 }
 
 func (s *baseDeclSuite) TestPlugInstallation(c *C) {

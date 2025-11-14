@@ -24,8 +24,42 @@ const networkSummary = `allows access to the network`
 const networkBaseDeclarationSlots = `
   network:
     allow-installation:
-      slot-snap-type:
-        - core
+      -
+        slot-snap-type:
+          - core
+      -
+        slot-snap-type:
+          - gadget
+        slot-attributes:
+          device: .+
+    allow-connection:
+      -
+        slot-attributes:
+          device: $MISSING
+        plug-attributes:
+          device: $MISSING
+      -
+        slot-attributes:
+          device: .+
+        plug-attributes:
+          device: $MISSING
+      -
+        plug-attributes:
+          device: $SLOT(device)
+    allow-auto-connection:
+      -
+        slot-attributes:
+          device: $MISSING
+        plug-attributes:
+          device: $MISSING
+      -
+        slot-attributes:
+          device: .+
+        plug-attributes:
+          device: $MISSING
+      -
+        plug-attributes:
+          device: $SLOT(device)
 `
 
 // http://bazaar.launchpad.net/~ubuntu-security/ubuntu-core-security/trunk/view/head:/data/apparmor/policygroups/ubuntu-core/16.04/network
