@@ -19,6 +19,13 @@
 
 package builtin
 
+import (
+	"fmt"
+	"regexp"
+
+	"github.com/snapcore/snapd/snap"
+)
+
 const networkSummary = `allows access to the network`
 
 const networkBaseDeclarationSlots = `
@@ -61,6 +68,10 @@ const networkBaseDeclarationSlots = `
         plug-attributes:
           device: $SLOT(device)
 `
+
+const networkDeviceNameMaxLen = 15
+
+var networkDeviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][-A-Za-z0-9_.:]*$`)
 
 // http://bazaar.launchpad.net/~ubuntu-security/ubuntu-core-security/trunk/view/head:/data/apparmor/policygroups/ubuntu-core/16.04/network
 const networkConnectedPlugAppArmor = `
@@ -124,14 +135,68 @@ socket AF_NETLINK - NETLINK_ROUTE
 socket AF_CONN
 `
 
+type networkInterface struct {
+	commonInterface
+}
+
+func (iface *networkInterface) BeforePreparePlug(plug *snap.PlugInfo) error {
+	return maybeSanitizeNetworkDeviceAttr(plug.Attrs, false)
+}
+
+func (iface *networkInterface) BeforePrepareSlot(slot *snap.SlotInfo) error {
+	requiresDevice := slot.Snap.Type() == snap.TypeGadget
+	if requiresDevice && (slot.Attrs == nil || slot.Attrs["device"] == nil) {
+		return fmt.Errorf("network slots provided by gadget snaps must specify a device attribute")
+	}
+	return maybeSanitizeNetworkDeviceAttr(slot.Attrs, requiresDevice)
+}
+
+func maybeSanitizeNetworkDeviceAttr(attrs map[string]any, required bool) error {
+	if attrs == nil {
+		if required {
+			return fmt.Errorf("network device attribute must be provided")
+		}
+		return nil
+	}
+	raw, ok := attrs["device"]
+	if !ok {
+		if required {
+			return fmt.Errorf("network device attribute must be provided")
+		}
+		return nil
+	}
+	device, err := normalizeNetworkDeviceAttr(raw)
+	if err != nil {
+		return err
+	}
+	attrs["device"] = device
+	return nil
+}
+
+func normalizeNetworkDeviceAttr(val any) (string, error) {
+	device, ok := val.(string)
+	if !ok || device == "" {
+		return "", fmt.Errorf("network device attribute must be a non-empty string")
+	}
+	if len(device) > networkDeviceNameMaxLen {
+		return "", fmt.Errorf("network device attribute %q is too long (maximum %d characters)", device, networkDeviceNameMaxLen)
+	}
+	if !networkDeviceNamePattern.MatchString(device) {
+		return "", fmt.Errorf("network device attribute %q contains invalid characters", device)
+	}
+	return device, nil
+}
+
 func init() {
-	registerIface(&commonInterface{
-		name:                  "network",
-		summary:               networkSummary,
-		implicitOnCore:        true,
-		implicitOnClassic:     true,
-		baseDeclarationSlots:  networkBaseDeclarationSlots,
-		connectedPlugAppArmor: networkConnectedPlugAppArmor,
-		connectedPlugSecComp:  networkConnectedPlugSecComp,
+	registerIface(&networkInterface{
+		commonInterface: commonInterface{
+			name:                  "network",
+			summary:               networkSummary,
+			implicitOnCore:        true,
+			implicitOnClassic:     true,
+			baseDeclarationSlots:  networkBaseDeclarationSlots,
+			connectedPlugAppArmor: networkConnectedPlugAppArmor,
+			connectedPlugSecComp:  networkConnectedPlugSecComp,
+		},
 	})
 }

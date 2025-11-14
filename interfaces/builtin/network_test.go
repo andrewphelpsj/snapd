@@ -53,6 +53,56 @@ slots:
   interface: network
 `
 
+const netMockGadgetSlotWithDeviceYaml = `name: gadget
+version: 1.0
+type: gadget
+slots:
+  network:
+    interface: network
+    device: enp3s0
+`
+
+const netMockGadgetSlotMissingDeviceYaml = `name: gadget
+version: 1.0
+type: gadget
+slots:
+  network:
+    interface: network
+`
+
+const netMockGadgetSlotInvalidDeviceYaml = `name: gadget
+version: 1.0
+type: gadget
+slots:
+  network:
+    interface: network
+    device: bad/device
+`
+
+const netMockPlugSnapInfoWithDeviceYaml = `name: other
+version: 1.0
+plugs:
+  uplink:
+    interface: network
+    device: enp3s0
+apps:
+  app2:
+    command: foo
+    plugs: [uplink]
+`
+
+const netMockPlugSnapInfoWithInvalidDeviceYaml = `name: other
+version: 1.0
+plugs:
+  uplink:
+    interface: network
+    device: bad/device
+apps:
+  app2:
+    command: foo
+    plugs: [uplink]
+`
+
 var _ = Suite(&NetworkInterfaceSuite{
 	iface: builtin.MustInterface("network"),
 })
@@ -92,4 +142,42 @@ func (s *NetworkInterfaceSuite) TestUsedSecuritySystems(c *C) {
 
 func (s *NetworkInterfaceSuite) TestInterfaces(c *C) {
 	c.Check(builtin.Interfaces(), testutil.DeepContains, s.iface)
+}
+
+func (s *NetworkInterfaceSuite) TestGadgetSlotRequiresDevice(c *C) {
+	_, slot := MockConnectedSlot(c, netMockGadgetSlotMissingDeviceYaml, nil, "network")
+	err := interfaces.BeforePrepareSlot(s.iface, slot)
+	c.Assert(err, ErrorMatches, "network slots provided by gadget snaps must specify a device attribute")
+}
+
+func (s *NetworkInterfaceSuite) TestGadgetSlotAcceptsDevice(c *C) {
+	_, slot := MockConnectedSlot(c, netMockGadgetSlotWithDeviceYaml, nil, "network")
+	err := interfaces.BeforePrepareSlot(s.iface, slot)
+	c.Assert(err, IsNil)
+
+	var device string
+	c.Assert(slot.Attr("device", &device), IsNil)
+	c.Assert(device, Equals, "enp3s0")
+}
+
+func (s *NetworkInterfaceSuite) TestGadgetSlotRejectsInvalidDevice(c *C) {
+	_, slot := MockConnectedSlot(c, netMockGadgetSlotInvalidDeviceYaml, nil, "network")
+	err := interfaces.BeforePrepareSlot(s.iface, slot)
+	c.Assert(err, ErrorMatches, `network device attribute "bad/device" contains invalid characters`)
+}
+
+func (s *NetworkInterfaceSuite) TestPlugDeviceAttributeValidation(c *C) {
+	_, plug := MockConnectedPlug(c, netMockPlugSnapInfoWithDeviceYaml, nil, "uplink")
+	err := interfaces.BeforePreparePlug(s.iface, plug)
+	c.Assert(err, IsNil)
+
+	var device string
+	c.Assert(plug.Attr("device", &device), IsNil)
+	c.Assert(device, Equals, "enp3s0")
+}
+
+func (s *NetworkInterfaceSuite) TestPlugDeviceAttributeRejectsInvalid(c *C) {
+	_, plug := MockConnectedPlug(c, netMockPlugSnapInfoWithInvalidDeviceYaml, nil, "uplink")
+	err := interfaces.BeforePreparePlug(s.iface, plug)
+	c.Assert(err, ErrorMatches, `network device attribute "bad/device" contains invalid characters`)
 }
