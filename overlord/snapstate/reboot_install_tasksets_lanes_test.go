@@ -156,11 +156,11 @@ func TestArrangeSnapInstallTaskSetsMergesLanesWithoutDuplicates(t *testing.T) {
 	baseSts := snapInstallTaskSetForLaneMergeTest(st, "core20", snap.TypeBase, "core20", baseLane)
 	kernelSts := snapInstallTaskSetForLaneMergeTest(st, "kernel", snap.TypeKernel, "core20", kernelLane)
 
-	if err := arrangeSnapInstallTaskSets(st, nil, []*snapInstallTaskSet{&baseSts, &kernelSts}); err != nil {
+	if err := arrangeSnapInstallTaskSets(st, nil, []snapInstallTaskSet{baseSts, kernelSts}); err != nil {
 		t.Fatalf("arrangeSnapInstallTaskSets returned error: %v", err)
 	}
 
-	for _, sts := range []*snapInstallTaskSet{&baseSts, &kernelSts} {
+	for _, sts := range []snapInstallTaskSet{baseSts, kernelSts} {
 		for _, slice := range [][]*state.Task{
 			sts.beforeLocalSystemModificationsTasks,
 			sts.beforeReboot,

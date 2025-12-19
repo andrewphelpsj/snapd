@@ -128,7 +128,7 @@ func mkOldTaskSetForArrangeEquivalenceTest(st *state.State, snapName string, sna
 	}
 }
 
-func mkInstallTaskSetForArrangeEquivalenceTest(st *state.State, snapName string, snapType snap.Type, base string) (*snapInstallTaskSet, map[string]*state.Task) {
+func mkInstallTaskSetForArrangeEquivalenceTest(st *state.State, snapName string, snapType snap.Type, base string) (snapInstallTaskSet, map[string]*state.Task) {
 	snapsup := mkSnapSetupForArrangeEquivalenceTest(snapName, snapType, base)
 
 	download := st.NewTask("download-snap", "...")
@@ -147,7 +147,7 @@ func mkInstallTaskSetForArrangeEquivalenceTest(st *state.State, snapName string,
 	autoConnect.WaitFor(link)
 	autoConnect.Set("test-id", snapName+":auto")
 
-	sts := &snapInstallTaskSet{
+	sts := snapInstallTaskSet{
 		beforeLocalSystemModificationsTasks: []*state.Task{download},
 		beforeReboot:                        []*state.Task{unlink, link},
 		postReboot:                          []*state.Task{autoConnect},
@@ -197,7 +197,7 @@ func TestArrangeImplementationOnlyDiffersInDownloadParallelization(t *testing.T)
 	}
 
 	var oldTaskSets []*state.TaskSet
-	var newTaskSets []*snapInstallTaskSet
+	var newTaskSets []snapInstallTaskSet
 	oldTasks := make(map[string]*state.Task)
 	newTasks := make(map[string]*state.Task)
 

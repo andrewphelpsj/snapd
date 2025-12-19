@@ -875,24 +875,24 @@ func (sb *snapInstallBuilder) addCleanupTasks(st *state.State, s *span, ic insta
 	return nil
 }
 
-func doInstallOrPreDownload(st *state.State, snapst *SnapState, snapsup SnapSetup, compsups []ComponentSetup, ic installContext) (*snapInstallTaskSet, *state.TaskSet, error) {
+func doInstallOrPreDownload(st *state.State, snapst *SnapState, snapsup SnapSetup, compsups []ComponentSetup, ic installContext) (snapInstallTaskSet, *state.TaskSet, error) {
 	if ic.DeviceCtx == nil {
 		dctx, err := DeviceCtx(st, nil, nil)
 		if err != nil {
-			return nil, nil, err
+			return snapInstallTaskSet{}, nil, err
 		}
 		ic.DeviceCtx = dctx
 	}
 
 	if err := checkInstallInvariants(st, snapst, &snapsup, ic); err != nil {
-		return nil, nil, err
+		return snapInstallTaskSet{}, nil, err
 	}
 
 	// TODO: this feels like a hack that we could drop in some way?
 	if snapst.IsInstalled() {
 		info, err := snapst.CurrentInfo()
 		if err != nil {
-			return nil, nil, err
+			return snapInstallTaskSet{}, nil, err
 		}
 
 		// adjust plugs-only hint to match existing behavior
@@ -904,7 +904,7 @@ func doInstallOrPreDownload(st *state.State, snapst *SnapState, snapsup SnapSetu
 	// checks done above
 	busyErr, err := shouldPreDownloadSnap(st, snapsup, *snapst)
 	if err != nil {
-		return nil, nil, err
+		return snapInstallTaskSet{}, nil, err
 	}
 
 	// snap is busy, return a pre-download task set and the busyErr for the
@@ -912,13 +912,13 @@ func doInstallOrPreDownload(st *state.State, snapst *SnapState, snapsup SnapSetu
 	if busyErr != nil {
 		existing, err := findTasksMatchingKindAndSnap(st, "pre-download-snap", snapsup.InstanceName(), snapsup.Revision())
 		if err != nil {
-			return nil, nil, err
+			return snapInstallTaskSet{}, nil, err
 		}
 
 		for _, task := range existing {
 			switch task.Status() {
 			case state.DoStatus, state.DoingStatus:
-				return nil, nil, busyErr
+				return snapInstallTaskSet{}, nil, busyErr
 			}
 		}
 
@@ -932,28 +932,28 @@ func doInstallOrPreDownload(st *state.State, snapst *SnapState, snapsup SnapSetu
 		preDownload.Set("refresh-info", busyErr.PendingSnapRefreshInfo())
 		ts.AddTask(preDownload)
 
-		return nil, ts, busyErr
+		return snapInstallTaskSet{}, ts, busyErr
 	}
 
 	tr := config.NewTransaction(st)
 	experimentalGateAutoRefreshHook, err := features.Flag(tr, features.GateAutoRefreshHook)
 	if err != nil && !config.IsNoOption(err) {
-		return nil, nil, err
+		return snapInstallTaskSet{}, nil, err
 	}
 	if experimentalGateAutoRefreshHook && snapst.IsInstalled() {
 		// If this snap was held, then remove it from snaps-hold.
 		if err := resetGatingForRefreshed(st, snapsup.InstanceName()); err != nil {
-			return nil, nil, err
+			return snapInstallTaskSet{}, nil, err
 		}
 	}
 
 	builder := newSnapInstallTaskBuilder(*snapst, snapsup, compsups)
 	sts, ts, err := builder.build(st, ic)
 	if err != nil {
-		return nil, nil, err
+		return snapInstallTaskSet{}, nil, err
 	}
 
-	return &sts, ts, nil
+	return sts, ts, nil
 }
 
 // shouldPreDownloadSnap returns a timedBusySnapError when we should enqueue a
@@ -2547,7 +2547,7 @@ func doPotentiallySplitUpdate(st *state.State, requested []string, updates []upd
 
 func doUpdate(st *state.State, requested []string, updates []update, opts Options) ([]string, bool, *UpdateTaskSets, error) {
 	var installTasksets []*state.TaskSet
-	var installSnapInstallTaskSets []*snapInstallTaskSet
+	var installSnapInstallTaskSets []snapInstallTaskSet
 	var preDlTasksets []*state.TaskSet
 
 	refreshAll := len(requested) == 0
