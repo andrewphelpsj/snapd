@@ -16172,7 +16172,13 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		c.Check(finishRestart, Equals, false)
 	} else {
 		c.Check(preRebootTask.Kind(), Equals, "link-snap")
-		c.Check(postRebootTask.Kind(), Equals, "auto-connect")
+		// If components are present, component linking is the first post-reboot
+		// task; otherwise auto-connect runs first.
+		if len(opts.postRefreshComponents) > 0 {
+			c.Check(postRebootTask.Kind(), Equals, "link-component")
+		} else {
+			c.Check(postRebootTask.Kind(), Equals, "auto-connect")
+		}
 		c.Check(findKindInTaskSet(ts, "prepare-kernel-modules-components"), IsNil)
 		if opts.snapType == snap.TypeKernel {
 			discardTask := findKindInTaskSet(ts, "discard-old-kernel-snap-setup")
@@ -16182,8 +16188,17 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 	}
 	c.Check(preRebootTask.Get("set-next-boot", &setNextBoot), IsNil)
 	c.Check(setNextBoot, Equals, true)
-	c.Check(postRebootTask.Get("finish-restart", &finishRestart), IsNil)
-	c.Check(finishRestart, Equals, true)
+	if withKMods {
+		c.Check(postRebootTask.Get("finish-restart", &finishRestart), IsNil)
+		c.Check(finishRestart, Equals, true)
+	} else {
+		// The first post-reboot task doesn't necessarily carry finish-restart when it
+		// isn't auto-connect.
+		autoConnTask := findKindInTaskSet(ts, "auto-connect")
+		c.Assert(autoConnTask, NotNil)
+		c.Check(autoConnTask.Get("finish-restart", &finishRestart), IsNil)
+		c.Check(finishRestart, Equals, true)
+	}
 
 	chg := s.state.NewChange("refresh", "refresh a snap")
 	chg.AddAll(ts)

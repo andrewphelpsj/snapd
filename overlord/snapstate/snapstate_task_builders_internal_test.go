@@ -266,3 +266,29 @@ func (s *taskBuilderTestSuite) TestMultipleSpansShareBuilder(c *C) {
 	c.Check(span1.Tasks(), DeepEquals, []*state.Task{first})
 	c.Check(span2.Tasks(), DeepEquals, []*state.Task{second, third})
 }
+
+func (s *taskBuilderTestSuite) TestSpanUpdateEdgeIfUnset(c *C) {
+	st := state.New(nil)
+	st.Lock()
+	defer st.Unlock()
+
+	b := newBuilder()
+	span := b.NewSpan()
+
+	first := st.NewTask("task-1", "first")
+	second := st.NewTask("task-2", "second")
+
+	edge := state.TaskSetEdge("begin-edge")
+
+	// edge gets set when it's unset
+	span.UpdateEdgeIfUnset(first, edge)
+
+	edgeTask := b.TaskSet().MaybeEdge(edge)
+	c.Check(edgeTask, Equals, first)
+
+	// attempting to set the same edge again does nothing
+	span.UpdateEdgeIfUnset(second, edge)
+
+	edgeTask = b.TaskSet().MaybeEdge(edge)
+	c.Check(edgeTask, Equals, first)
+}

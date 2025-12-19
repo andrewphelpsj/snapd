@@ -389,11 +389,12 @@ func (sb *snapInstallBuilder) runRefreshHooks() bool {
 	return sb.snapst.IsInstalled() && !componentOnlyUpdate && !sb.snapsup.Flags.Revert
 }
 
-// addAutoConnectThroughHooks builds the chain of tasks that starts with
-// auto-connect and runs through any post-refresh/install hooks. Depending on
-// whether kernel-module preparation is required, this chain may belong either
-// to the pre-reboot or post-reboot span, so the span is provided by the caller.
-func (sb *snapInstallBuilder) addAutoConnectThroughHooks(
+// addLinkComponentThroughHooks builds the chain of tasks that starts with any
+// component linking tasks, continues through auto-connect, and then runs
+// through any post-refresh/install hooks. Depending on whether kernel-module
+// preparation is required, this chain may belong either to the pre-reboot or
+// post-reboot span, so the span is provided by the caller.
+func (sb *snapInstallBuilder) addLinkComponentThroughHooks(
 	st *state.State,
 	s *span,
 	ic installContext,
@@ -401,6 +402,14 @@ func (sb *snapInstallBuilder) addAutoConnectThroughHooks(
 	deviceCtx DeviceContext,
 ) error {
 	revisionStr := fmt.Sprintf(" (%s)", sb.snapsup.Revision())
+
+	// link components
+	for _, t := range sb.componentTSS.linkTasks {
+		s.Add(t)
+		if postReboot {
+			s.UpdateEdgeIfUnset(t, MaybeRebootWaitEdge)
+		}
+	}
 
 	// auto-connections
 	//
@@ -417,7 +426,7 @@ func (sb *snapInstallBuilder) addAutoConnectThroughHooks(
 	autoConnect.Set("finish-restart", postReboot)
 	s.Add(autoConnect)
 	if postReboot {
-		s.UpdateEdge(autoConnect, MaybeRebootWaitEdge)
+		s.UpdateEdgeIfUnset(autoConnect, MaybeRebootWaitEdge)
 	}
 
 	// setup aliases
@@ -656,10 +665,6 @@ func (sb *snapInstallBuilder) BeforeReboot(st *state.State, s *span, ic installC
 	s.Add(linkSnap)
 	s.UpdateEdge(linkSnap, MaybeRebootEdge)
 
-	for _, t := range sb.componentTSS.linkTasks {
-		s.Add(t)
-	}
-
 	if sb.requiresKmodSetup() {
 		logger.Noticef("kernel-modules components present, delaying reboot after hooks are run")
 
@@ -667,7 +672,7 @@ func (sb *snapInstallBuilder) BeforeReboot(st *state.State, s *span, ic installC
 		// before we schedule the reboot. otherwise, hooks are scheduled for
 		// after the reboot
 		const postReboot = false
-		if err := sb.addAutoConnectThroughHooks(st, s, ic, postReboot, ic.DeviceCtx); err != nil {
+		if err := sb.addLinkComponentThroughHooks(st, s, ic, postReboot, ic.DeviceCtx); err != nil {
 			return err
 		}
 
@@ -691,7 +696,7 @@ func (sb *snapInstallBuilder) PostReboot(st *state.State, s *span, ic installCon
 		// Let tasks know if they have to do something about restarts
 		// No kernel modules, reboot after link snap
 		const postReboot = true
-		if err := sb.addAutoConnectThroughHooks(st, s, ic, postReboot, ic.DeviceCtx); err != nil {
+		if err := sb.addLinkComponentThroughHooks(st, s, ic, postReboot, ic.DeviceCtx); err != nil {
 			return err
 		}
 	}
