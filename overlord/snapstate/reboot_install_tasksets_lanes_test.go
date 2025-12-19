@@ -83,7 +83,7 @@ func modelBaseCore20ForLaneMergeTest() *asserts.Model {
 }
 
 func snapInstallTaskSetForLaneMergeTest(st *state.State, snapName string, snapType snap.Type, base string, lane int) snapInstallTaskSet {
-	snapsup := &SnapSetup{
+	snapsup := SnapSetup{
 		SideInfo: &snap.SideInfo{
 			RealName: snapName,
 			SnapID:   snapName,
@@ -103,11 +103,13 @@ func snapInstallTaskSetForLaneMergeTest(st *state.State, snapName string, snapTy
 	autoConnect := st.NewTask("auto-connect", "...")
 	autoConnect.WaitFor(link)
 
-	for _, t := range []*state.Task{beforeLocal, unlink, link, autoConnect} {
-		t.JoinLane(lane)
-	}
+	ts := state.NewTaskSet(beforeLocal, unlink, link, autoConnect)
+	ts.JoinLane(lane)
 
 	return snapInstallTaskSet{
+		snapsup: snapsup,
+		ts:      ts,
+
 		beforeLocalSystemModificationsTasks: []*state.Task{beforeLocal},
 		beforeReboot:                        []*state.Task{unlink, link},
 		postReboot:                          []*state.Task{autoConnect},

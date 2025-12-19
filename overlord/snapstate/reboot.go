@@ -75,11 +75,11 @@ func maybeTaskSetSnapSetup(ts *state.TaskSet) *SnapSetup {
 
 func isEssentialSnap(snapName string, snapType snap.Type, bootBase string) bool {
 	switch snapType {
-	case snap.TypeBase:
+	case snap.TypeBase, snap.TypeOS:
 		if snapName == bootBase {
 			return true
 		}
-	case snap.TypeSnapd, snap.TypeOS, snap.TypeGadget, snap.TypeKernel:
+	case snap.TypeSnapd, snap.TypeGadget, snap.TypeKernel:
 		return true
 	}
 	return false
@@ -313,52 +313,20 @@ func mergeTaskSetLanes(lanesByTs map[*state.TaskSet][]int) {
 	}
 	for ts, tsLanes := range lanesByTs {
 		for _, l := range allLanes {
-			if !listContains(tsLanes, l) {
+			if !contains(tsLanes, l) {
 				ts.JoinLane(l)
 			}
 		}
 	}
 }
 
-func listContains(items []int, item int) bool {
+func contains[V comparable](items []V, item V) bool {
 	for _, i := range items {
 		if i == item {
 			return true
 		}
 	}
 	return false
-}
-
-func uniqueLanesFromTaskSlices(slices [][]*state.Task) []int {
-	seen := make(map[int]bool)
-	var lanes []int
-	for _, slice := range slices {
-		for _, t := range slice {
-			for _, l := range t.Lanes() {
-				if seen[l] {
-					continue
-				}
-				seen[l] = true
-				lanes = append(lanes, l)
-			}
-		}
-	}
-	return lanes
-}
-
-func joinLanesForTaskSlices(slices [][]*state.Task, lanes []int) {
-	for _, slice := range slices {
-		for _, t := range slice {
-			existing := t.Lanes()
-			for _, l := range lanes {
-				if listContains(existing, l) {
-					continue
-				}
-				t.JoinLane(l)
-				existing = append(existing, l)
-			}
-		}
-	}
 }
 
 // arrangeSnapTaskSetsLinkageAndRestart arranges the correct link-order between all
@@ -544,11 +512,29 @@ func arrangeSnapTaskSetsLinkageAndRestart(st *state.State, providedDeviceCtx Dev
 // However this may be configured into the following if conditions are right for single-reboot
 // snapd => boot-base (up to auto-connect) => gadget(up to auto-connect) =>
 // -  kernel (up to auto-connect, then reboot) => boot-base => gadget => kernel => bases => apps.
-func arrangeSnapInstallTaskSets(st *state.State, providedDeviceCtx DeviceContext, tasksets []snapInstallTaskSet) error {
-	for _, sts := range tasksets {
+func arrangeSnapInstallTaskSets(st *state.State, providedDeviceCtx DeviceContext, stss []snapInstallTaskSet) error {
+	for _, sts := range stss {
 		if len(sts.beforeLocalSystemModificationsTasks) == 0 || len(sts.beforeReboot) == 0 || len(sts.postReboot) == 0 {
-			return fmt.Errorf("internal error: snap install task set has empty slices")
+			return errors.New("internal error: snap install task set has empty slices")
 		}
+	}
+
+	head := func(tasks []*state.Task) *state.Task {
+		return tasks[0]
+	}
+
+	tail := func(tasks []*state.Task) *state.Task {
+		return tasks[len(tasks)-1]
+	}
+
+	findUnlink := func(sts snapInstallTaskSet) *state.Task {
+		for _, t := range sts.beforeReboot {
+			switch t.Kind() {
+			case "unlink-snap", "unlink-current-snap":
+				return t
+			}
+		}
+		return nil
 	}
 
 	bootBase, err := deviceModelBootBase(st, providedDeviceCtx)
@@ -556,216 +542,169 @@ func arrangeSnapInstallTaskSets(st *state.State, providedDeviceCtx DeviceContext
 		return err
 	}
 
-	byType := make(map[snap.Type]snapInstallTaskSet)
+	essentials := make(map[snap.Type]snapInstallTaskSet)
 	nonEssentialBases := make(map[string]snapInstallTaskSet)
 	apps := make(map[string]snapInstallTaskSet)
 
-	for _, sts := range tasksets {
-		// all slices are non-empty, so we can use any task to get SnapSetup
-		snapsup, err := TaskSnapSetup(sts.beforeLocalSystemModificationsTasks[0])
-		if err != nil {
-			return err
-		}
-
-		if isEssentialSnap(snapsup.InstanceName(), snapsup.Type, bootBase) {
-			byType[snapsup.Type] = sts
-		} else if snapsup.Type == snap.TypeBase {
-			nonEssentialBases[snapsup.InstanceName()] = sts
-		} else if snapsup.Type == snap.TypeApp {
-			apps[snapsup.InstanceName()] = sts
+	for _, sts := range stss {
+		switch {
+		case isEssentialSnap(sts.snapsup.InstanceName(), sts.snapsup.Type, bootBase):
+			essentials[sts.snapsup.Type] = sts
+		case sts.snapsup.Type == snap.TypeBase || sts.snapsup.Type == snap.TypeOS:
+			nonEssentialBases[sts.snapsup.InstanceName()] = sts
+		case sts.snapsup.Type == snap.TypeApp:
+			apps[sts.snapsup.InstanceName()] = sts
 		}
 	}
 
-	isUCSixteen := bootBase == "core"
-	beforeTss := make(map[snap.Type]snapInstallTaskSet)
-	afterTss := make(map[snap.Type]snapInstallTaskSet)
-	var lastEssentialTail *state.Task
-	lanesByType := make(map[snap.Type][]int)
-
-	chainEssential := func(sts snapInstallTaskSet, snapType snap.Type, transactional, split bool) error {
-		if transactional && !isUCSixteen {
-			lanesByType[snapType] = uniqueLanesFromTaskSlices([][]*state.Task{
-				sts.beforeLocalSystemModificationsTasks,
-				sts.beforeReboot,
-				sts.postReboot,
-			})
-		}
-
-		firstTask := sts.beforeReboot[0]
-		if isUCSixteen {
-			// Preserve the UC16 behavior from arrangeSnapTaskSetsLinkageAndRestart:
-			// chain essential task-sets at the very beginning (including downloads).
-			firstTask = sts.beforeLocalSystemModificationsTasks[0]
-		}
-		if lastEssentialTail != nil {
-			firstTask.WaitFor(lastEssentialTail)
-		}
-
-		if split && !isUCSixteen {
-			beforeTss[snapType] = sts
-			afterTss[snapType] = sts
-			lastEssentialTail = sts.beforeReboot[len(sts.beforeReboot)-1]
-		} else {
-			lastEssentialTail = sts.postReboot[len(sts.postReboot)-1]
-		}
-		return nil
-	}
-
-	// Order: snapd -> boot-base -> gadget -> kernel
-	if sts, ok := byType[snap.TypeSnapd]; ok {
-		if err := chainEssential(sts, snap.TypeSnapd, false, false); err != nil {
-			return err
-		}
-	}
-
-	bootSnapType := snap.TypeOS
-	if _, ok := byType[snap.TypeBase]; ok {
-		bootSnapType = snap.TypeBase
-	}
-
-	if sts, ok := byType[bootSnapType]; ok {
-		if err := chainEssential(sts, bootSnapType, true, true); err != nil {
-			return err
-		}
-	}
-
-	if sts, ok := byType[snap.TypeGadget]; ok {
-		split := !enforcedSingleRebootForGadgetKernelBase
-		if err := chainEssential(sts, snap.TypeGadget, true, split); err != nil {
-			return err
-		}
-	}
-
-	if sts, ok := byType[snap.TypeKernel]; ok {
-		if err := chainEssential(sts, snap.TypeKernel, true, true); err != nil {
-			return err
-		}
-	}
-
-	// Chain post-reboot parts
-	for _, o := range essentialSnapsRestartOrder {
-		if sts, ok := afterTss[o]; ok {
-			firstPost := sts.postReboot[0]
-			firstPost.WaitFor(lastEssentialTail)
-			lastEssentialTail = sts.postReboot[len(sts.postReboot)-1]
-		}
-	}
-
-	// Set boundaries
-	if len(beforeTss) > 0 {
-		// Do boundary on the last split essential
-		var lastSplit snapInstallTaskSet
-		haveLastSplit := false
-		for i := len(essentialSnapsRestartOrder) - 1; i >= 0; i-- {
-			if sts, ok := beforeTss[essentialSnapsRestartOrder[i]]; ok {
-				lastSplit = sts
-				haveLastSplit = true
-				break
+	var prev *state.Task
+	chain := func(begin, end *state.Task) {
+		if begin == nil || end == nil {
+			if begin != end {
+				panic("internal error: use of chain on partially empty range")
 			}
-		}
-		if haveLastSplit {
-			restart.MarkTaskAsRestartBoundary(lastSplit.beforeReboot[len(lastSplit.beforeReboot)-1], restart.RestartBoundaryDirectionDo)
+			return
 		}
 
-		// Undo boundary on the first split essential with unlink
-		for _, o := range essentialSnapsRestartOrder {
-			sts, ok := beforeTss[o]
+		if prev != nil {
+			begin.WaitFor(prev)
+		}
+		prev = end
+	}
+
+	isUC16 := bootBase == "core"
+	beforeBoot := func(sts snapInstallTaskSet) (*state.Task, *state.Task) {
+		if isUC16 {
+			return head(sts.beforeLocalSystemModificationsTasks), tail(sts.postReboot)
+		}
+
+		return head(sts.beforeReboot), tail(sts.beforeReboot)
+	}
+
+	afterBoot := func(sts snapInstallTaskSet) (*state.Task, *state.Task) {
+		if isUC16 {
+			return nil, nil
+		}
+		return head(sts.postReboot), tail(sts.postReboot)
+	}
+
+	// snapd fully goes first
+	if sts, ok := essentials[snap.TypeSnapd]; ok {
+		chain(beforeBoot(sts))
+		chain(afterBoot(sts))
+	}
+
+	// then all the pre-reboot tasks for essential snaps, in order
+	for _, t := range essentialSnapsRestartOrder {
+		sts, ok := essentials[t]
+		if !ok {
+			continue
+		}
+		chain(beforeBoot(sts))
+	}
+
+	// then all the post-reboot tasks for essential snaps, in order
+	for _, t := range essentialSnapsRestartOrder {
+		sts, ok := essentials[t]
+		if !ok {
+			continue
+		}
+		chain(afterBoot(sts))
+	}
+
+	finalEssential := prev
+
+	if !isUC16 {
+		for i := len(essentialSnapsRestartOrder) - 1; i >= 0; i-- {
+			sts, ok := essentials[essentialSnapsRestartOrder[i]]
 			if !ok {
 				continue
 			}
-			var unlink *state.Task
-			for _, t := range sts.beforeReboot {
-				if t.Kind() == "unlink-snap" || t.Kind() == "unlink-current-snap" {
-					unlink = t
-					break
-				}
+
+			_, end := beforeBoot(sts)
+			if end == nil {
+				return errors.New("internal error: all essential snaps must have before boot tasks")
 			}
-			if unlink != nil {
-				restart.MarkTaskAsRestartBoundary(unlink, restart.RestartBoundaryDirectionUndo)
-				break
+			restart.MarkTaskAsRestartBoundary(end, restart.RestartBoundaryDirectionDo)
+
+			break
+		}
+
+		for i := 0; i < len(essentialSnapsRestartOrder); i++ {
+			sts, ok := essentials[essentialSnapsRestartOrder[i]]
+			if !ok {
+				continue
 			}
+
+			unlink := findUnlink(sts)
+			if unlink == nil {
+				continue
+			}
+
+			restart.MarkTaskAsRestartBoundary(unlink, restart.RestartBoundaryDirectionUndo)
+
+			break
 		}
 	} else {
-		// Non-split boundaries
 		for _, o := range essentialSnapsRestartOrder {
-			if o == snap.TypeOS && bootBase != "core" {
-				continue
-			}
-			sts, ok := byType[o]
+			sts, ok := essentials[o]
 			if !ok {
 				continue
 			}
-			restart.MarkTaskAsRestartBoundary(sts.beforeReboot[len(sts.beforeReboot)-1], restart.RestartBoundaryDirectionDo)
-			var unlink *state.Task
-			for _, t := range sts.beforeReboot {
-				if t.Kind() == "unlink-snap" || t.Kind() == "unlink-current-snap" {
-					unlink = t
-					break
+
+			restart.MarkTaskAsRestartBoundary(tail(sts.beforeReboot), restart.RestartBoundaryDirectionDo)
+			unlinkSnap := findUnlink(sts)
+			if unlinkSnap != nil {
+				restart.MarkTaskAsRestartBoundary(unlinkSnap, restart.RestartBoundaryDirectionUndo)
+			}
+		}
+	}
+
+	mergeSnapInstallTaskSetLanes := func(stss []snapInstallTaskSet) {
+		rebootLanes := make(map[string][]int)
+		all := make([]int, 0, len(stss))
+		for _, sts := range stss {
+			lanes := unique(tail(sts.beforeReboot).Lanes())
+			rebootLanes[sts.snapsup.InstanceName()] = lanes
+			all = unique(append(all, lanes...))
+		}
+
+		for _, sts := range stss {
+			for _, l := range all {
+				if !contains(rebootLanes[sts.snapsup.InstanceName()], l) {
+					sts.ts.JoinLane(l)
 				}
 			}
-			if unlink != nil {
-				restart.MarkTaskAsRestartBoundary(unlink, restart.RestartBoundaryDirectionUndo)
-			}
 		}
 	}
 
-	// Merge lanes.
-	//
-	// We want transactional essential snaps to share lanes so they abort/undo together.
-	// Avoid introducing duplicate lanes, as Task.JoinLane just appends.
-	seenAll := make(map[int]bool)
-	var allLanes []int
-	for _, o := range essentialSnapsRestartOrder {
-		lanes, ok := lanesByType[o]
-		if !ok {
-			continue
-		}
-		for _, l := range lanes {
-			if seenAll[l] {
+	if !isUC16 {
+		var merge []snapInstallTaskSet
+		for _, sts := range essentials {
+			if sts.snapsup.Type == snap.TypeSnapd {
 				continue
 			}
-			seenAll[l] = true
-			allLanes = append(allLanes, l)
+			merge = append(merge, sts)
 		}
+		mergeSnapInstallTaskSetLanes(merge)
 	}
 
-	for _, o := range essentialSnapsRestartOrder {
-		if _, ok := lanesByType[o]; !ok {
-			continue
-		}
-		sts, ok := byType[o]
-		if !ok {
-			continue
-		}
-		joinLanesForTaskSlices([][]*state.Task{
-			sts.beforeLocalSystemModificationsTasks,
-			sts.beforeReboot,
-			sts.postReboot,
-		}, allLanes)
-	}
-
-	// Non-essential bases.
-	//
-	// Preserve the previous behavior (arrangeSnapTaskSetsLinkageAndRestart) for
-	// non-essential snaps by attaching ordering to the first task (which includes
-	// prerequisites/download work), so apps don't run prerequisites too early.
+	// make the bases just wait on the final essential snap to finish up
 	for _, sts := range nonEssentialBases {
-		if lastEssentialTail != nil {
-			sts.beforeLocalSystemModificationsTasks[0].WaitFor(lastEssentialTail)
+		if finalEssential != nil {
+			head(sts.beforeLocalSystemModificationsTasks).WaitFor(finalEssential)
 		}
 	}
 
-	// Apps.
-	for _, appSts := range apps {
-		if lastEssentialTail != nil {
-			appSts.beforeLocalSystemModificationsTasks[0].WaitFor(lastEssentialTail)
+	// make the apps wait on the final essential snap to finish up and their
+	// base, if it is being refreshed too
+	for _, sts := range apps {
+		if finalEssential != nil {
+			head(sts.beforeLocalSystemModificationsTasks).WaitFor(finalEssential)
 		}
-		snapsup, err := TaskSnapSetup(appSts.beforeLocalSystemModificationsTasks[0])
-		if err != nil {
-			return err
-		}
-		if baseSts, ok := nonEssentialBases[snapsup.Base]; ok {
-			appSts.beforeLocalSystemModificationsTasks[0].WaitFor(baseSts.postReboot[len(baseSts.postReboot)-1])
+
+		if baseSTS, ok := nonEssentialBases[sts.snapsup.Base]; ok {
+			head(sts.beforeLocalSystemModificationsTasks).WaitFor(tail(baseSTS.postReboot))
 		}
 	}
 

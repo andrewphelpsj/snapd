@@ -148,6 +148,8 @@ func mkInstallTaskSetForArrangeEquivalenceTest(st *state.State, snapName string,
 	autoConnect.Set("test-id", snapName+":auto")
 
 	sts := snapInstallTaskSet{
+		snapsup: *snapsup,
+
 		beforeLocalSystemModificationsTasks: []*state.Task{download},
 		beforeReboot:                        []*state.Task{unlink, link},
 		postReboot:                          []*state.Task{autoConnect},

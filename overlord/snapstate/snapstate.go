@@ -347,6 +347,9 @@ type installContext struct {
 // The idea mirrors componentInstallTaskSet and will be used when refactoring
 // doInstall to the new builder-based pattern.
 type snapInstallTaskSet struct {
+	snapsup SnapSetup
+
+	ts                                  *state.TaskSet
 	beforeLocalSystemModificationsTasks []*state.Task
 	beforeReboot                        []*state.Task
 	postReboot                          []*state.Task
@@ -770,43 +773,46 @@ func (sb *snapInstallBuilder) PostReboot(st *state.State, s *span, ic installCon
 	return nil
 }
 
-func (sb *snapInstallBuilder) build(st *state.State, ic installContext) (snapInstallTaskSet, *state.TaskSet, error) {
+func (sb *snapInstallBuilder) build(st *state.State, ic installContext) (snapInstallTaskSet, error) {
 	b := newBuilder()
 
 	// we need to know some of the characteristics of the device - it is
 	// expected to always have a model/device context at this point.
 	deviceCtx, err := DeviceCtx(st, nil, ic.DeviceCtx)
 	if err != nil {
-		return snapInstallTaskSet{}, nil, err
+		return snapInstallTaskSet{}, err
 	}
 	ic.DeviceCtx = deviceCtx
 
 	beforeLocalSystemMods := b.NewSpan()
 	if err := sb.BeforeLocalSystemMod(st, &beforeLocalSystemMods, ic); err != nil {
-		return snapInstallTaskSet{}, nil, err
+		return snapInstallTaskSet{}, err
 	}
 
 	beforeReboot := b.NewSpan()
 	if err := sb.BeforeReboot(st, &beforeReboot, ic); err != nil {
-		return snapInstallTaskSet{}, nil, err
+		return snapInstallTaskSet{}, err
 	}
 
 	postReboot := b.NewSpan()
 	if err := sb.PostReboot(st, &postReboot, ic); err != nil {
-		return snapInstallTaskSet{}, nil, err
+		return snapInstallTaskSet{}, err
 	}
 
 	if !ic.NoRestartBoundaries {
 		if err := SetEssentialSnapsRestartBoundaries(st, nil, []*state.TaskSet{b.TaskSet()}); err != nil {
-			return snapInstallTaskSet{}, nil, err
+			return snapInstallTaskSet{}, err
 		}
 	}
 
 	return snapInstallTaskSet{
+		snapsup: sb.snapsup,
+
+		ts:                                  b.TaskSet(),
 		beforeLocalSystemModificationsTasks: beforeLocalSystemMods.Tasks(),
 		beforeReboot:                        beforeReboot.Tasks(),
 		postReboot:                          postReboot.Tasks(),
-	}, b.TaskSet(), nil
+	}, nil
 }
 
 func (sb *snapInstallBuilder) addCleanupTasks(st *state.State, s *span, ic installContext) error {
@@ -948,12 +954,12 @@ func doInstallOrPreDownload(st *state.State, snapst *SnapState, snapsup SnapSetu
 	}
 
 	builder := newSnapInstallTaskBuilder(*snapst, snapsup, compsups)
-	sts, ts, err := builder.build(st, ic)
+	sts, err := builder.build(st, ic)
 	if err != nil {
 		return snapInstallTaskSet{}, nil, err
 	}
 
-	return sts, ts, nil
+	return sts, sts.ts, nil
 }
 
 // shouldPreDownloadSnap returns a timedBusySnapError when we should enqueue a
