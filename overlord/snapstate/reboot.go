@@ -329,6 +329,38 @@ func listContains(items []int, item int) bool {
 	return false
 }
 
+func uniqueLanesFromTaskSlices(slices [][]*state.Task) []int {
+	seen := make(map[int]bool)
+	var lanes []int
+	for _, slice := range slices {
+		for _, t := range slice {
+			for _, l := range t.Lanes() {
+				if seen[l] {
+					continue
+				}
+				seen[l] = true
+				lanes = append(lanes, l)
+			}
+		}
+	}
+	return lanes
+}
+
+func joinLanesForTaskSlices(slices [][]*state.Task, lanes []int) {
+	for _, slice := range slices {
+		for _, t := range slice {
+			existing := t.Lanes()
+			for _, l := range lanes {
+				if listContains(existing, l) {
+					continue
+				}
+				t.JoinLane(l)
+				existing = append(existing, l)
+			}
+		}
+	}
+}
+
 // arrangeSnapTaskSetsLinkageAndRestart arranges the correct link-order between all
 // the provided snap task-sets, and sets up restart boundaries for essential snaps (base, gadget, kernel).
 // Under normal circumstances link-order that will be configured is:
@@ -552,25 +584,11 @@ func arrangeSnapInstallTaskSets(st *state.State, providedDeviceCtx DeviceContext
 
 	chainEssential := func(sts *snapInstallTaskSet, snapType snap.Type, transactional, split bool) error {
 		if transactional && !isUCSixteen {
-			// Collect lanes from all tasks in all slices, preserving first-seen order.
-			seen := make(map[int]bool)
-			var lanes []int
-			for _, slice := range [][]*state.Task{
+			lanesBySts[sts] = uniqueLanesFromTaskSlices([][]*state.Task{
 				sts.beforeLocalSystemModificationsTasks,
 				sts.beforeReboot,
 				sts.postReboot,
-			} {
-				for _, t := range slice {
-					for _, l := range t.Lanes() {
-						if seen[l] {
-							continue
-						}
-						seen[l] = true
-						lanes = append(lanes, l)
-					}
-				}
-			}
-			lanesBySts[sts] = lanes
+			})
 		}
 
 		firstTask := sts.beforeReboot[0]
@@ -706,22 +724,11 @@ func arrangeSnapInstallTaskSets(st *state.State, providedDeviceCtx DeviceContext
 	}
 
 	for sts := range lanesBySts {
-		for _, slice := range [][]*state.Task{
+		joinLanesForTaskSlices([][]*state.Task{
 			sts.beforeLocalSystemModificationsTasks,
 			sts.beforeReboot,
 			sts.postReboot,
-		} {
-			for _, t := range slice {
-				existing := t.Lanes()
-				for _, l := range allLanes {
-					if listContains(existing, l) {
-						continue
-					}
-					t.JoinLane(l)
-					existing = append(existing, l)
-				}
-			}
-		}
+		}, allLanes)
 	}
 
 	// Non-essential bases.
