@@ -21,7 +21,6 @@ package snapstate
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/snapcore/snapd/dirs"
@@ -163,7 +162,7 @@ func mkInstallTaskSetForArrangeEquivalenceTest(st *state.State, snapName string,
 	}
 }
 
-func TestArrangeImplementationOnlyDiffersInDownloadParallelization(t *testing.T) {
+func TestArrangeInstallTaskSetsFromTaskSetsMatchesInstallTaskSets(t *testing.T) {
 	dirs.SetRootDir(t.TempDir())
 	defer dirs.SetRootDir("")
 
@@ -228,8 +227,8 @@ func TestArrangeImplementationOnlyDiffersInDownloadParallelization(t *testing.T)
 		ids = append(ids, id)
 	}
 
-	if err := arrangeSnapTaskSetsLinkageAndRestart(stOld, nil, oldTaskSets); err != nil {
-		t.Fatalf("arrangeSnapTaskSetsLinkageAndRestart returned error: %v", err)
+	if err := arrangeSnapInstallTaskSetsFromTaskSets(stOld, nil, oldTaskSets); err != nil {
+		t.Fatalf("arrangeSnapInstallTaskSetsFromTaskSets returned error: %v", err)
 	}
 	if err := arrangeSnapInstallTaskSets(stNew, nil, newTaskSets); err != nil {
 		t.Fatalf("arrangeSnapInstallTaskSets returned error: %v", err)
@@ -241,7 +240,6 @@ func TestArrangeImplementationOnlyDiffersInDownloadParallelization(t *testing.T)
 	oldReach := computeReachability(ids, oldAdj)
 	newReach := computeReachability(ids, newAdj)
 
-	diffCount := 0
 	for _, u := range ids {
 		for _, v := range ids {
 			if u == v {
@@ -252,18 +250,7 @@ func TestArrangeImplementationOnlyDiffersInDownloadParallelization(t *testing.T)
 			if old == new {
 				continue
 			}
-			diffCount++
-
-			if !strings.HasSuffix(v, ":download") {
-				t.Fatalf("unexpected ordering difference %q -> %q (old=%v new=%v)", u, v, old, new)
-			}
-			if !(old && !new) {
-				t.Fatalf("ordering difference was not a relaxation %q -> %q (old=%v new=%v)", u, v, old, new)
-			}
+			t.Fatalf("unexpected ordering difference %q -> %q (old=%v new=%v)", u, v, old, new)
 		}
-	}
-
-	if diffCount == 0 {
-		t.Fatalf("expected at least one ordering difference, got none")
 	}
 }
