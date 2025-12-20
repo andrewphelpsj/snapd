@@ -306,76 +306,6 @@ func (s *rebootSuite) TestSetEssentialSnapsRestartBoundariesUC20(c *C) {
 	c.Check(s.hasRestartBoundaries(c, tss[4]), Equals, false)
 }
 
-func (s *rebootSuite) TestSplitTaskSetByRebootEdgesHappy(c *C) {
-	s.state.Lock()
-	defer s.state.Unlock()
-
-	t1 := s.state.NewTask("first", "...")
-	t2 := s.state.NewTask("second", "...")
-	t2.WaitFor(t1)
-	t3 := s.state.NewTask("third", "...")
-	t3.WaitFor(t2)
-	t4 := s.state.NewTask("fourth", "...")
-	t4.WaitFor(t3)
-	t5 := s.state.NewTask("fifth", "...")
-	t5.WaitFor(t4)
-	ts := state.NewTaskSet(t1, t2, t3, t4, t5)
-
-	// 4 required edges
-	ts.MarkEdge(t1, snapstate.BeginEdge)
-	ts.MarkEdge(t3, snapstate.MaybeRebootEdge)
-	ts.MarkEdge(t4, snapstate.MaybeRebootWaitEdge)
-	ts.MarkEdge(t5, snapstate.EndEdge)
-
-	// Split it into two task-sets with new edges
-	before, after, err := snapstate.SplitTaskSetByRebootEdges(ts)
-	c.Check(err, IsNil)
-	c.Check(before, NotNil)
-	c.Check(after, NotNil)
-
-	// verify the new task-sets have edges set
-	c.Check(before.MaybeEdge(snapstate.BeginEdge), Equals, t1)
-	c.Check(before.MaybeEdge(snapstate.EndEdge), Equals, t3)
-
-	c.Check(after.MaybeEdge(snapstate.BeginEdge), Equals, t4)
-	c.Check(after.MaybeEdge(snapstate.EndEdge), Equals, t5)
-
-	// verify that before and after consists of expected tasks
-	c.Check(before.Tasks(), HasLen, 3)
-	c.Check(after.Tasks(), HasLen, 2)
-}
-
-func (s *rebootSuite) TestSplitTaskSetByRebootEdgesMissingEdges(c *C) {
-	s.state.Lock()
-	defer s.state.Unlock()
-
-	t := s.state.NewTask("first", "...")
-	ts := state.NewTaskSet(t)
-
-	// Test without any edges
-	before, after, err := snapstate.SplitTaskSetByRebootEdges(ts)
-	c.Check(err, ErrorMatches, `internal error: task-set is missing required edges \("begin"/"end"\)`)
-	c.Check(before, IsNil)
-	c.Check(after, IsNil)
-
-	// Set begin, end
-	ts.MarkEdge(t, snapstate.BeginEdge)
-	ts.MarkEdge(t, snapstate.EndEdge)
-
-	before, after, err = snapstate.SplitTaskSetByRebootEdges(ts)
-	c.Check(err, ErrorMatches, `internal error: task-set is missing required edge "maybe-reboot"`)
-	c.Check(before, IsNil)
-	c.Check(after, IsNil)
-
-	// set MaybeRebootEdge
-	ts.MarkEdge(t, snapstate.MaybeRebootEdge)
-
-	before, after, err = snapstate.SplitTaskSetByRebootEdges(ts)
-	c.Check(err, ErrorMatches, `internal error: task-set is missing required edge "maybe-reboot-wait"`)
-	c.Check(before, IsNil)
-	c.Check(after, IsNil)
-}
-
 func (s *rebootSuite) setDependsOn(c *C, ts, dep *state.TaskSet) bool {
 	firstTaskOfTs, err := ts.Edge(snapstate.BeginEdge)
 	c.Assert(err, IsNil)
@@ -388,38 +318,6 @@ func (s *rebootSuite) setDependsOn(c *C, ts, dep *state.TaskSet) bool {
 		}
 	}
 	return false
-}
-
-func (s *rebootSuite) TestArrangeSnapToWaitForBaseIfPresentHappy(c *C) {
-	s.state.Lock()
-	defer s.state.Unlock()
-
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("my-base", "", snap.TypeBase),
-		s.taskSetForSnapSetup("my-app", "my-base", snap.TypeApp),
-	}
-
-	err := snapstate.ArrangeSnapToWaitForBaseIfPresent(tss[1], map[string]*state.TaskSet{
-		"my-base": tss[0],
-	})
-	c.Check(err, IsNil)
-	c.Check(s.setDependsOn(c, tss[1], tss[0]), Equals, true)
-}
-
-func (s *rebootSuite) TestArrangeSnapToWaitForBaseIfPresentNotPresent(c *C) {
-	s.state.Lock()
-	defer s.state.Unlock()
-
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("my-base", "", snap.TypeBase),
-		s.taskSetForSnapSetup("my-app", "my-other-base", snap.TypeApp),
-	}
-
-	err := snapstate.ArrangeSnapToWaitForBaseIfPresent(tss[1], map[string]*state.TaskSet{
-		"my-base": tss[0],
-	})
-	c.Check(err, IsNil)
-	c.Check(s.setDependsOn(c, tss[1], tss[0]), Equals, false)
 }
 
 func (s *rebootSuite) TestArrangeSnapInstallTaskSetsUC16NoSplits(c *C) {

@@ -140,8 +140,6 @@ var (
 	TaskSetsByTypeForEssentialSnaps        = taskSetsByTypeForEssentialSnaps
 	SetDefaultRestartBoundaries            = setDefaultRestartBoundaries
 	DeviceModelBootBase                    = deviceModelBootBase
-	SplitTaskSetByRebootEdges              = splitTaskSetByRebootEdges
-	ArrangeSnapToWaitForBaseIfPresent      = arrangeSnapToWaitForBaseIfPresent
 	ArrangeSnapInstallTaskSetsFromTaskSets = arrangeSnapInstallTaskSetsFromTaskSets
 	ReRefreshSummary                       = reRefreshSummary
 
