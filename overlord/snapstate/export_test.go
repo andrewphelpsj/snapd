@@ -21,7 +21,6 @@ package snapstate
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/snapcore/snapd/asserts"
@@ -51,6 +50,8 @@ type (
 	Target = target
 
 	InstallContext = installContext
+
+	SnapInstallTaskSet = snapInstallTaskSet
 )
 
 var ComponentSetupTask = componentSetupTask
@@ -134,14 +135,14 @@ var (
 
 	AffectedByRefresh = affectedByRefresh
 
-	GetDirMigrationOpts                    = getDirMigrationOpts
-	WriteSeqFile                           = writeSeqFile
-	TriggeredMigration                     = triggeredMigration
-	TaskSetsByTypeForEssentialSnaps        = taskSetsByTypeForEssentialSnaps
-	SetDefaultRestartBoundaries            = setDefaultRestartBoundaries
-	DeviceModelBootBase                    = deviceModelBootBase
-	ArrangeSnapInstallTaskSetsFromTaskSets = arrangeSnapInstallTaskSetsFromTaskSets
-	ReRefreshSummary                       = reRefreshSummary
+	GetDirMigrationOpts             = getDirMigrationOpts
+	WriteSeqFile                    = writeSeqFile
+	TriggeredMigration              = triggeredMigration
+	TaskSetsByTypeForEssentialSnaps = taskSetsByTypeForEssentialSnaps
+	SetDefaultRestartBoundaries     = setDefaultRestartBoundaries
+	DeviceModelBootBase             = deviceModelBootBase
+	ArrangeSnapInstallTaskSets      = arrangeSnapInstallTaskSets
+	ReRefreshSummary                = reRefreshSummary
 
 	MaybeFindTasksetForSnap = maybeFindTasksetForSnap
 )
@@ -150,88 +151,15 @@ func PreviousSideInfo(snapst *SnapState) *snap.SideInfo {
 	return snapst.previousSideInfo()
 }
 
-func arrangeSnapInstallTaskSetsFromTaskSets(st *state.State, providedDeviceCtx DeviceContext, tss []*state.TaskSet) error {
-	stss := make([]snapInstallTaskSet, len(tss))
-	for i, ts := range tss {
-		sts, err := snapInstallTaskSetFromTaskSet(ts)
-		if err != nil {
-			return err
-		}
-		stss[i] = sts
-	}
-	return arrangeSnapInstallTaskSets(st, providedDeviceCtx, stss)
-}
-
-func snapInstallTaskSetFromTaskSet(ts *state.TaskSet) (snapInstallTaskSet, error) {
-	if ts == nil {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: nil task-set")
-	}
-
-	firstTask := ts.MaybeEdge(BeginEdge)
-	lastTask := ts.MaybeEdge(EndEdge)
-	if firstTask == nil || lastTask == nil {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: task-set is missing required edges (%q/%q)", BeginEdge, EndEdge)
-	}
-
-	linkSnap := ts.MaybeEdge(MaybeRebootEdge)
-	if linkSnap == nil {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: task-set is missing required edge %q", MaybeRebootEdge)
-	}
-	autoConnect := ts.MaybeEdge(MaybeRebootWaitEdge)
-	if autoConnect == nil {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: task-set is missing required edge %q", MaybeRebootWaitEdge)
-	}
-
-	snapsup, err := TaskSnapSetup(firstTask)
-	if err != nil {
-		return snapInstallTaskSet{}, err
-	}
-
-	tasks := ts.Tasks()
-	if len(tasks) == 0 {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: empty task-set")
-	}
-
-	linkIndex := -1
-	autoIndex := -1
-	unlinkIndex := -1
-	for i, task := range tasks {
-		if task == linkSnap {
-			linkIndex = i
-		}
-		if task == autoConnect {
-			autoIndex = i
-		}
-		if unlinkIndex == -1 {
-			switch task.Kind() {
-			case "unlink-snap", "unlink-current-snap":
-				unlinkIndex = i
-			}
-		}
-	}
-
-	if linkIndex == -1 || autoIndex == -1 || autoIndex < linkIndex {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: task-set is missing required edge %q", MaybeRebootWaitEdge)
-	}
-	if unlinkIndex == -1 {
-		unlinkIndex = linkIndex
-	}
-
-	beforeLocal := tasks[:unlinkIndex]
-	beforeReboot := tasks[unlinkIndex : linkIndex+1]
-	postReboot := tasks[autoIndex:]
-	if len(beforeLocal) == 0 || len(beforeReboot) == 0 || len(postReboot) == 0 {
-		return snapInstallTaskSet{}, fmt.Errorf("internal error: snap install task set has empty slices")
-	}
-
+func NewSnapInstallTaskSetForTest(snapsup SnapSetup, ts *state.TaskSet, beforeLocal, beforeReboot, postReboot []*state.Task) SnapInstallTaskSet {
 	return snapInstallTaskSet{
-		snapsup: *snapsup,
+		snapsup: snapsup,
 		ts:      ts,
 
 		beforeLocalSystemModificationsTasks: beforeLocal,
 		beforeReboot:                        beforeReboot,
 		postReboot:                          postReboot,
-	}, nil
+	}
 }
 
 // helpers

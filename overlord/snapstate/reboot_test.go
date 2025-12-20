@@ -73,7 +73,7 @@ func (s *rebootSuite) taskSetForSnapSetup(snapName, base string, snapType snap.T
 	return ts
 }
 
-func (s *rebootSuite) taskSetForSnapSetupButNoTasks(snapName string, snapType snap.Type) *state.TaskSet {
+func (s *rebootSuite) installTaskSetForSnapSetup(snapName, base string, snapType snap.Type) (snapstate.SnapInstallTaskSet, *state.TaskSet) {
 	snapsup := &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
 			RealName: snapName,
@@ -81,11 +81,41 @@ func (s *rebootSuite) taskSetForSnapSetupButNoTasks(snapName string, snapType sn
 			Revision: snap.R(1),
 		},
 		Type: snapType,
+		Base: base,
 	}
 	t1 := s.state.NewTask("snap-task", "...")
 	t1.Set("snap-setup", snapsup)
-	ts := state.NewTaskSet(t1)
-	return ts
+	t2 := s.state.NewTask("unlink-snap", "...")
+	t2.WaitFor(t1)
+	t3 := s.state.NewTask("link-snap", "...")
+	t3.WaitFor(t2)
+	t4 := s.state.NewTask("auto-connect", "...")
+	t4.WaitFor(t3)
+	ts := state.NewTaskSet(t1, t2, t3, t4)
+	// 4 required edges
+	ts.MarkEdge(t1, snapstate.BeginEdge)
+	ts.MarkEdge(t3, snapstate.MaybeRebootEdge)
+	ts.MarkEdge(t4, snapstate.MaybeRebootWaitEdge)
+	ts.MarkEdge(t4, snapstate.EndEdge)
+	// Assign each TS a lane
+	ts.JoinLane(s.state.NewLane())
+	sts := snapstate.NewSnapInstallTaskSetForTest(*snapsup, ts, []*state.Task{t1}, []*state.Task{t2, t3}, []*state.Task{t4})
+	return sts, ts
+}
+
+func (s *rebootSuite) installTaskSetsForSnapSetups(setups []struct {
+	name  string
+	base  string
+	type_ snap.Type
+}) ([]snapstate.SnapInstallTaskSet, []*state.TaskSet) {
+	stss := make([]snapstate.SnapInstallTaskSet, 0, len(setups))
+	tss := make([]*state.TaskSet, 0, len(setups))
+	for _, setup := range setups {
+		sts, ts := s.installTaskSetForSnapSetup(setup.name, setup.base, setup.type_)
+		stss = append(stss, sts)
+		tss = append(tss, ts)
+	}
+	return stss, tss
 }
 
 func (s *rebootSuite) TestTaskSetsByTypeForEssentialSnapsNoBootBase(c *C) {
@@ -327,13 +357,17 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsUC16NoSplits(c *C) {
 	defer s.state.Unlock()
 
 	// Run without gadget, as that will make it also non-split currently
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("core", "", snap.TypeOS),
-		s.taskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("my-app", "", snap.TypeApp),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "core", type_: snap.TypeOS},
+		{name: "my-kernel", type_: snap.TypeKernel},
+		{name: "core20", type_: snap.TypeBase},
+		{name: "my-app", type_: snap.TypeApp},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// core, kernel should have individual restart boundaries
@@ -352,14 +386,18 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapdAndEssential(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("snapd", "", snap.TypeSnapd),
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
-		s.taskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
-		s.taskSetForSnapSetup("my-app", "", snap.TypeApp),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "snapd", type_: snap.TypeSnapd},
+		{name: "core20", type_: snap.TypeBase},
+		{name: "brand-gadget", type_: snap.TypeGadget},
+		{name: "my-kernel", type_: snap.TypeKernel},
+		{name: "my-app", type_: snap.TypeApp},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Snapd should have no restart boundaries
@@ -386,11 +424,15 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseKernel(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "core20", type_: snap.TypeBase},
+		{name: "my-kernel", type_: snap.TypeKernel},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Expect restart boundaries on both
@@ -456,11 +498,15 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseGadget(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "core20", type_: snap.TypeBase},
+		{name: "brand-gadget", type_: snap.TypeGadget},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Expect restart boundaries on both
@@ -526,11 +572,15 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsGadgetKernel(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
-		s.taskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "brand-gadget", type_: snap.TypeGadget},
+		{name: "my-kernel", type_: snap.TypeKernel},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Expect restart boundaries on both
@@ -596,12 +646,16 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBaseGadgetKernel(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
-		s.taskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "core20", type_: snap.TypeBase},
+		{name: "brand-gadget", type_: snap.TypeGadget},
+		{name: "my-kernel", type_: snap.TypeKernel},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	linkSnapBase := tss[0].MaybeEdge(snapstate.MaybeRebootEdge)
@@ -682,11 +736,15 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapd(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("snapd", "", snap.TypeSnapd),
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "snapd", type_: snap.TypeSnapd},
+		{name: "core20", type_: snap.TypeBase},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Do not expect any restart boundaries to be set on snapd
@@ -706,12 +764,16 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsBootBaseAndOtherBases(c *C) 
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("core18", "", snap.TypeBase),
-		s.taskSetForSnapSetup("my-app", "", snap.TypeApp),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "core20", type_: snap.TypeBase},
+		{name: "core18", type_: snap.TypeBase},
+		{name: "my-app", type_: snap.TypeApp},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Only the boot-base should have restart boundary.
@@ -730,12 +792,16 @@ func (s *rebootSuite) TestArrangeSnapTaskSetsLinkageForSnapWithBaseAndWithout(c 
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("snap-base", "", snap.TypeBase),
-		s.taskSetForSnapSetup("snap-base-app", "snap-base", snap.TypeApp),
-		s.taskSetForSnapSetup("snap-other-app", "other-base", snap.TypeApp),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "snap-base", type_: snap.TypeBase},
+		{name: "snap-base-app", base: "snap-base", type_: snap.TypeApp},
+		{name: "snap-other-app", base: "other-base", type_: snap.TypeApp},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// No restart boundaries
@@ -760,12 +826,16 @@ func (s *rebootSuite) TestArrangeSnapTaskSetsLinkageForSnapWithBootBaseAndWithou
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("snap-core20-app", "snap-core20", snap.TypeApp),
-		s.taskSetForSnapSetup("snap-other-app", "other-base", snap.TypeApp),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "core20", type_: snap.TypeBase},
+		{name: "snap-core20-app", base: "snap-core20", type_: snap.TypeApp},
+		{name: "snap-other-app", base: "other-base", type_: snap.TypeApp},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// Restart boundaries is set for core20 as the boot-base
@@ -791,15 +861,19 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsAll(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetup("snapd", "", snap.TypeSnapd),
-		s.taskSetForSnapSetup("core20", "", snap.TypeBase),
-		s.taskSetForSnapSetup("brand-gadget", "", snap.TypeGadget),
-		s.taskSetForSnapSetup("my-kernel", "", snap.TypeKernel),
-		s.taskSetForSnapSetup("core", "", snap.TypeOS),
-		s.taskSetForSnapSetup("my-app", "", snap.TypeApp),
-	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
+	stss, tss := s.installTaskSetsForSnapSetups([]struct {
+		name  string
+		base  string
+		type_ snap.Type
+	}{
+		{name: "snapd", type_: snap.TypeSnapd},
+		{name: "core20", type_: snap.TypeBase},
+		{name: "brand-gadget", type_: snap.TypeGadget},
+		{name: "my-kernel", type_: snap.TypeKernel},
+		{name: "core", type_: snap.TypeOS},
+		{name: "my-app", type_: snap.TypeApp},
+	})
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
 	c.Assert(err, IsNil)
 
 	// snapd has no restart boundaries set
@@ -827,9 +901,9 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsFailsSplit(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	tss := []*state.TaskSet{
-		s.taskSetForSnapSetupButNoTasks("my-kernel", snap.TypeKernel),
+	stss := []snapstate.SnapInstallTaskSet{
+		snapstate.NewSnapInstallTaskSetForTest(snapstate.SnapSetup{}, nil, nil, nil, nil),
 	}
-	err := snapstate.ArrangeSnapInstallTaskSetsFromTaskSets(s.state, nil, tss)
-	c.Assert(err, ErrorMatches, `internal error: task-set is missing required edges \("begin"/"end"\)`)
+	err := snapstate.ArrangeSnapInstallTaskSets(s.state, nil, stss)
+	c.Assert(err, ErrorMatches, `internal error: snap install task set has empty slices`)
 }
