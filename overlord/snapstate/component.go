@@ -571,13 +571,17 @@ func (cc *componentInstallChoreographer) PostHookToBeforeDiscard(st *state.State
 func (cc *componentInstallChoreographer) choreograph(st *state.State) (componentInstallTaskSet, error) {
 	b := newTaskChainBuilder()
 
-	beforeLocalSystemMods := b.NewSpan()
-	if err := cc.BeforeLocalSystemMod(st, &beforeLocalSystemMods); err != nil {
+	beforeLocalSystemMods, err := b.Span(func(s *taskChainSpan) error {
+		return cc.BeforeLocalSystemMod(st, s)
+	})
+	if err != nil {
 		return componentInstallTaskSet{}, err
 	}
 
-	beforeLink := b.NewSpan()
-	if err := cc.BeforeLink(st, &beforeLink); err != nil {
+	beforeLink, err := b.Span(func(s *taskChainSpan) error {
+		return cc.BeforeLink(st, s)
+	})
+	if err != nil {
 		return componentInstallTaskSet{}, err
 	}
 
@@ -597,8 +601,10 @@ func (cc *componentInstallChoreographer) choreograph(st *state.State) (component
 		b.Append(maybeLink)
 	}
 
-	postOpHookToBeforeDiscard := b.NewSpan()
-	if err := cc.PostHookToBeforeDiscard(st, &postOpHookToBeforeDiscard); err != nil {
+	postOpHookToBeforeDiscard, err := b.Span(func(s *taskChainSpan) error {
+		return cc.PostHookToBeforeDiscard(st, s)
+	})
+	if err != nil {
 		return componentInstallTaskSet{}, err
 	}
 
@@ -618,10 +624,10 @@ func (cc *componentInstallChoreographer) choreograph(st *state.State) (component
 		ts:              b.TaskSet(),
 		compSetupTaskID: cc.compsupTask.ID(),
 
-		beforeLocalSystemModificationsTasks: beforeLocalSystemMods.Tasks(),
-		beforeLinkTasks:                     beforeLink.Tasks(),
+		beforeLocalSystemModificationsTasks: beforeLocalSystemMods,
+		beforeLinkTasks:                     beforeLink,
 		maybeLinkTask:                       maybeLink,
-		postHookToDiscardTasks:              postOpHookToBeforeDiscard.Tasks(),
+		postHookToDiscardTasks:              postOpHookToBeforeDiscard,
 		maybeDiscardTask:                    maybeDiscard,
 	}, nil
 }

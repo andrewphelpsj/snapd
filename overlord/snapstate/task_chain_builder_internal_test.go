@@ -35,21 +35,24 @@ func (s *taskChainBuilderTestSuite) TestAppendWithTaskData(c *C) {
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-	span := b.NewSpan()
 
 	// this task data will be applied to all tasks added via this taskChainBuilder or any
 	// child taskChainSpans
-	span.SetTaskData(map[string]any{"snap-setup": "snapsup-task"})
-
-	// Append applies the taskChainBuilder's task data and chains the task to the tail
 	t1 := st.NewTask("task-1", "test")
-	span.Append(t1)
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.SetTaskData(map[string]any{"snap-setup": "snapsup-task"})
+
+		// Append applies the taskChainBuilder's task data and chains the task to the tail
+		s.Append(t1)
+		return nil
+	})
+	c.Assert(err, IsNil)
 
 	var snapsup string
 	c.Assert(t1.Get("snap-setup", &snapsup), IsNil)
 	c.Check(snapsup, Equals, "snapsup-task")
 
-	c.Check(span.Tasks(), DeepEquals, []*state.Task{t1})
+	c.Check(spanTasks, DeepEquals, []*state.Task{t1})
 	c.Check(b.TaskSet().Tasks(), DeepEquals, []*state.Task{t1})
 
 	// Append applies the taskChainBuilder's task data and chains the task to the tail. note,
@@ -63,7 +66,7 @@ func (s *taskChainBuilderTestSuite) TestAppendWithTaskData(c *C) {
 	c.Check(snapsup, Equals, "snapsup-task")
 
 	c.Check(t2.WaitTasks(), DeepEquals, []*state.Task{t1})
-	c.Check(span.Tasks(), DeepEquals, []*state.Task{t1})
+	c.Check(spanTasks, DeepEquals, []*state.Task{t1})
 	c.Check(b.TaskSet().Tasks(), DeepEquals, []*state.Task{t1, t2})
 }
 
@@ -74,20 +77,22 @@ func (s *taskChainBuilderTestSuite) TestSpanAppendWithoutData(c *C) {
 
 	b := newTaskChainBuilder()
 
-	span := b.NewSpan()
-	span.SetTaskData(map[string]any{"snap-setup": "snapsup-task"})
-
 	task := st.NewTask("task-1", "test")
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.SetTaskData(map[string]any{"snap-setup": "snapsup-task"})
 
-	// skips adding task data but still chains the task
-	span.AppendWithoutData(task)
+		// skips adding task data but still chains the task
+		s.AppendWithoutData(task)
+		return nil
+	})
+	c.Assert(err, IsNil)
 
 	var snapsup string
 	c.Check(task.Get("snap-setup", &snapsup), Not(IsNil))
 	c.Check(snapsup, Equals, "")
 
 	c.Check(b.TaskSet().Tasks(), DeepEquals, []*state.Task{task})
-	c.Check(span.Tasks(), DeepEquals, []*state.Task{task})
+	c.Check(spanTasks, DeepEquals, []*state.Task{task})
 }
 
 func (s *taskChainBuilderTestSuite) TestSpanAppendChaining(c *C) {
@@ -96,21 +101,22 @@ func (s *taskChainBuilderTestSuite) TestSpanAppendChaining(c *C) {
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-	span := b.NewSpan()
-
 	first := st.NewTask("task-1", "first")
-	span.Append(first)
-
 	second := st.NewTask("task-2", "second")
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.Append(first)
 
-	// each task waits for the previous task in the chain
-	span.Append(second)
+		// each task waits for the previous task in the chain
+		s.Append(second)
+		return nil
+	})
+	c.Assert(err, IsNil)
 
 	c.Check(first.WaitTasks(), HasLen, 0)
 	c.Check(second.WaitTasks(), DeepEquals, []*state.Task{first})
 
 	// taskChainSpan.tasks tracks all tasks added to this taskChainSpan, in order
-	c.Check(span.Tasks(), DeepEquals, []*state.Task{first, second})
+	c.Check(spanTasks, DeepEquals, []*state.Task{first, second})
 }
 
 func (s *taskChainBuilderTestSuite) TestSpanChainWithoutAppending(c *C) {
@@ -119,10 +125,12 @@ func (s *taskChainBuilderTestSuite) TestSpanChainWithoutAppending(c *C) {
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-	span := b.NewSpan()
-
 	first := st.NewTask("task-1", "first")
-	span.Append(first)
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.Append(first)
+		return nil
+	})
+	c.Assert(err, IsNil)
 	second := st.NewTask("task-2", "second")
 
 	// ChainWithoutAppending chains the task but does not add it to the taskChainBuilder or the taskChainSpan
@@ -131,7 +139,7 @@ func (s *taskChainBuilderTestSuite) TestSpanChainWithoutAppending(c *C) {
 	// second waits for first but is not kept around in the taskChainBuilder or the taskChainSpan
 	c.Check(second.WaitTasks(), DeepEquals, []*state.Task{first})
 	c.Check(b.TaskSet().Tasks(), DeepEquals, []*state.Task{first})
-	c.Check(span.Tasks(), DeepEquals, []*state.Task{first})
+	c.Check(spanTasks, DeepEquals, []*state.Task{first})
 }
 
 func (s *taskChainBuilderTestSuite) TestChainWithoutAppendingSharedTask(c *C) {
@@ -140,16 +148,20 @@ func (s *taskChainBuilderTestSuite) TestChainWithoutAppendingSharedTask(c *C) {
 	defer st.Unlock()
 
 	b1 := newTaskChainBuilder()
-	span1 := b1.NewSpan()
-
 	t1 := st.NewTask("task-1", "in-taskChainBuilder-1")
-	span1.Append(t1)
+	span1Tasks, err := b1.Span(func(s *taskChainSpan) error {
+		s.Append(t1)
+		return nil
+	})
+	c.Assert(err, IsNil)
 
 	b2 := newTaskChainBuilder()
-	span2 := b2.NewSpan()
-
 	t2 := st.NewTask("task-2", "in-taskChainBuilder-2")
-	span2.Append(t2)
+	span2Tasks, err := b2.Span(func(s *taskChainSpan) error {
+		s.Append(t2)
+		return nil
+	})
+	c.Assert(err, IsNil)
 
 	// ChainWithoutAppending adds the same task to both chains
 	chained := st.NewTask("chained", "in-both")
@@ -166,6 +178,8 @@ func (s *taskChainBuilderTestSuite) TestChainWithoutAppendingSharedTask(c *C) {
 	// cannot contain a task more than once.
 	c.Check(b1.TaskSet().Tasks(), DeepEquals, []*state.Task{t1})
 	c.Check(b2.TaskSet().Tasks(), DeepEquals, []*state.Task{t2})
+	c.Check(span1Tasks, DeepEquals, []*state.Task{t1})
+	c.Check(span2Tasks, DeepEquals, []*state.Task{t2})
 }
 
 func (s *taskChainBuilderTestSuite) TestSpanUpdateEdge(c *C) {
@@ -174,24 +188,26 @@ func (s *taskChainBuilderTestSuite) TestSpanUpdateEdge(c *C) {
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-	span := b.NewSpan()
-
-	first := st.NewTask("task-1", "first")
-	span.Append(first)
-
 	edge := state.TaskSetEdge("begin-edge")
-	span.UpdateEdge(first, edge)
+	first := st.NewTask("task-1", "first")
+	second := st.NewTask("task-2", "second")
+	var edgeTaskAfterFirst *state.Task
+	_, err := b.Span(func(s *taskChainSpan) error {
+		s.Append(first)
+
+		s.UpdateEdge(first, edge)
+		edgeTaskAfterFirst = b.TaskSet().MaybeEdge(edge)
+
+		s.Append(second)
+
+		// edges can be overwritten with a different task
+		s.UpdateEdge(second, edge)
+		return nil
+	})
+	c.Assert(err, IsNil)
+	c.Check(edgeTaskAfterFirst, Equals, first)
 
 	edgeTask := b.TaskSet().MaybeEdge(edge)
-	c.Check(edgeTask, Equals, first)
-
-	second := st.NewTask("task-2", "second")
-	span.Append(second)
-
-	// edges can be overwritten with a different task
-	span.UpdateEdge(second, edge)
-
-	edgeTask = b.TaskSet().MaybeEdge(edge)
 	c.Check(edgeTask, Equals, second)
 }
 
@@ -201,23 +217,23 @@ func (s *taskChainBuilderTestSuite) TestSpanUpdateEdgeIfUnset(c *C) {
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-	span := b.NewSpan()
-
+	edge := state.TaskSetEdge("begin-edge")
 	first := st.NewTask("task-1", "first")
 	second := st.NewTask("task-2", "second")
+	var edgeTaskAfterFirst *state.Task
+	_, err := b.Span(func(s *taskChainSpan) error {
+		// edge gets set when it's unset
+		s.UpdateEdgeIfUnset(first, edge)
+		edgeTaskAfterFirst = b.TaskSet().MaybeEdge(edge)
 
-	edge := state.TaskSetEdge("begin-edge")
-
-	// edge gets set when it's unset
-	span.UpdateEdgeIfUnset(first, edge)
+		// attempting to set the same edge again does nothing
+		s.UpdateEdgeIfUnset(second, edge)
+		return nil
+	})
+	c.Assert(err, IsNil)
+	c.Check(edgeTaskAfterFirst, Equals, first)
 
 	edgeTask := b.TaskSet().MaybeEdge(edge)
-	c.Check(edgeTask, Equals, first)
-
-	// attempting to set the same edge again does nothing
-	span.UpdateEdgeIfUnset(second, edge)
-
-	edgeTask = b.TaskSet().MaybeEdge(edge)
 	c.Check(edgeTask, Equals, first)
 }
 
@@ -227,15 +243,10 @@ func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutData(c *C) {
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-	span := b.NewSpan()
-
-	// add an empty task set, just to make sure we don't panic
-	span.AppendTSWithoutData(state.NewTaskSet())
 
 	first := st.NewTask("first", "first")
-	span.Append(first)
 
-	// create a diamond-shaped task set:
+	// create a diamond-shaped section of the graph:
 	//     t2
 	//    /  \
 	// t1      t4
@@ -250,16 +261,26 @@ func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutData(c *C) {
 	t4.WaitFor(t2)
 	t4.WaitFor(t3)
 
-	// AppendTSWithoutData adds an entire TaskSet, preserving its internal
-	// dependencies. only head tasks wait for the current tail, and only tail
-	// tasks become the new tail.
-	otherTS := state.NewTaskSet(t1, t2, t3, t4)
-	span.AppendTSWithoutData(otherTS)
-
 	last := st.NewTask("last", "last")
-	span.Append(last)
 
-	// t1 (head of otherTS) waits for first
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		// add an empty task set, just to make sure we don't panic
+		s.AppendTSWithoutData(state.NewTaskSet())
+
+		s.Append(first)
+
+		// AppendTSWithoutData adds an entire TaskSet, preserving its internal
+		// dependencies. only head tasks wait for the current tail, and only tail
+		// tasks become the new tail.
+		s.AppendTSWithoutData(state.NewTaskSet(t1, t2, t3, t4))
+
+		s.Append(last)
+
+		return nil
+	})
+	c.Assert(err, IsNil)
+
+	// t1 waits for first
 	c.Check(t1.WaitTasks(), DeepEquals, []*state.Task{first})
 
 	// t2 and t3 only wait for t1 (their original dependencies within the task set)
@@ -269,13 +290,135 @@ func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutData(c *C) {
 	// t4 waits for t2 and t3 (its original dependencies within the task set)
 	c.Check(t4.WaitTasks(), DeepEquals, []*state.Task{t2, t3})
 
-	// last waits only on t4 (the tail of otherTS), not all tasks in the task
-	// set
+	// last waits only on t4, not all tasks in the task set
 	c.Check(last.WaitTasks(), DeepEquals, []*state.Task{t4})
 
 	// all tasks are contained within the taskChainBuilder and taskChainSpan
 	c.Check(b.TaskSet().Tasks(), DeepEquals, []*state.Task{first, t1, t2, t3, t4, last})
-	c.Check(span.Tasks(), DeepEquals, []*state.Task{first, t1, t2, t3, t4, last})
+	c.Check(spanTasks, DeepEquals, []*state.Task{first, t1, t2, t3, t4, last})
+}
+
+func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutDataOrdersTasks(c *C) {
+	st := state.New(nil)
+	st.Lock()
+	defer st.Unlock()
+
+	b := newTaskChainBuilder()
+
+	t1 := st.NewTask("t1", "first")
+	t2 := st.NewTask("t2", "second")
+	t3 := st.NewTask("t3", "third")
+	t2.WaitFor(t1)
+	t3.WaitFor(t2)
+
+	otherTS := state.NewTaskSet(t2, t1, t3)
+
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.AppendTSWithoutData(otherTS)
+		return nil
+	})
+	c.Assert(err, IsNil)
+
+	c.Check(spanTasks, DeepEquals, []*state.Task{t1, t2, t3})
+}
+
+func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutDataOrdersDiamondTasks(c *C) {
+	st := state.New(nil)
+	st.Lock()
+	defer st.Unlock()
+
+	b := newTaskChainBuilder()
+
+	// create a diamond-shaped section of the graph:
+	//     t2
+	//    /  \
+	// t1      t4
+	//    \  /
+	//     t3
+	t1 := st.NewTask("t1", "head of diamond")
+	t2 := st.NewTask("t2", "left branch")
+	t3 := st.NewTask("t3", "right branch")
+	t4 := st.NewTask("t4", "tail of diamond")
+	t2.WaitFor(t1)
+	t3.WaitFor(t1)
+	t4.WaitFor(t2)
+	t4.WaitFor(t3)
+
+	// create task set with a shuffled order
+	otherTS := state.NewTaskSet(t3, t1, t4, t2)
+
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.AppendTSWithoutData(otherTS)
+		return nil
+	})
+	c.Assert(err, IsNil)
+
+	c.Assert(spanTasks, HasLen, 4)
+
+	// ensure we put the head of the diamond first, and the tail last. this is
+	// despite intentionally adding the tasks to the task set out of order
+	c.Check(spanTasks[0], Equals, t1)
+	c.Check(spanTasks[len(spanTasks)-1], Equals, t4)
+}
+
+func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutDataSingleTaskOrder(c *C) {
+	st := state.New(nil)
+	st.Lock()
+	defer st.Unlock()
+
+	b := newTaskChainBuilder()
+
+	t1 := st.NewTask("t1", "only task")
+	otherTS := state.NewTaskSet(t1)
+
+	spanTasks, err := b.Span(func(s *taskChainSpan) error {
+		s.AppendTSWithoutData(otherTS)
+		return nil
+	})
+	c.Assert(err, IsNil)
+
+	c.Check(spanTasks, DeepEquals, []*state.Task{t1})
+}
+
+func (s *taskChainBuilderTestSuite) TestSpanAppendTSWithoutDataMultipleHeadsPanics(c *C) {
+	st := state.New(nil)
+	st.Lock()
+	defer st.Unlock()
+
+	b := newTaskChainBuilder()
+
+	t1 := st.NewTask("t1", "head-1")
+	t2 := st.NewTask("t2", "head-2")
+	otherTS := state.NewTaskSet(t1, t2)
+
+	c.Check(func() {
+		_, _ = b.Span(func(s *taskChainSpan) error {
+			s.AppendTSWithoutData(otherTS)
+			return nil
+		})
+	}, PanicMatches, `internal error: cannot start task chain span with multiple heads`)
+}
+
+func (s *taskChainBuilderTestSuite) TestSpanMultipleTailsPanics(c *C) {
+	st := state.New(nil)
+	st.Lock()
+	defer st.Unlock()
+
+	b := newTaskChainBuilder()
+
+	t1 := st.NewTask("t1", "head")
+	t2 := st.NewTask("t2", "tail-1")
+	t3 := st.NewTask("t3", "tail-2")
+	t2.WaitFor(t1)
+	t3.WaitFor(t1)
+	otherTS := state.NewTaskSet(t1, t2, t3)
+
+	c.Check(func() {
+		_, _ = b.Span(func(s *taskChainSpan) error {
+			s.AppendTSWithoutData(otherTS)
+			return nil
+		})
+	}, PanicMatches, `internal error: cannot end task chain span with multiple tails`)
 }
 
 func (s *taskChainBuilderTestSuite) TestMultipleSpansShareTaskChainBuilder(c *C) {
@@ -284,19 +427,22 @@ func (s *taskChainBuilderTestSuite) TestMultipleSpansShareTaskChainBuilder(c *C)
 	defer st.Unlock()
 
 	b := newTaskChainBuilder()
-
-	span1 := b.NewSpan()
-
 	first := st.NewTask("task-1", "first")
-	span1.Append(first)
-
-	span2 := b.NewSpan()
-
 	second := st.NewTask("task-2", "second")
-	span2.Append(second)
-
 	third := st.NewTask("task-3", "third")
-	span2.Append(third)
+	span1Tasks, err := b.Span(func(s *taskChainSpan) error {
+		s.Append(first)
+		return nil
+	})
+	c.Assert(err, IsNil)
+
+	span2Tasks, err := b.Span(func(s *taskChainSpan) error {
+		s.Append(second)
+
+		s.Append(third)
+		return nil
+	})
+	c.Assert(err, IsNil)
 
 	c.Check(first.WaitTasks(), HasLen, 0)
 
@@ -307,15 +453,16 @@ func (s *taskChainBuilderTestSuite) TestMultipleSpansShareTaskChainBuilder(c *C)
 
 	// each taskChainSpan tracks only the tasks it added, enabling callers to keep track
 	// of ranges
-	c.Check(span1.Tasks(), DeepEquals, []*state.Task{first})
-	c.Check(span2.Tasks(), DeepEquals, []*state.Task{second, third})
+	c.Check(span1Tasks, DeepEquals, []*state.Task{first})
+	c.Check(span2Tasks, DeepEquals, []*state.Task{second, third})
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksEmpty(c *C) {
 	ts := state.NewTaskSet()
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, IsNil)
 	c.Check(tails, IsNil)
+	c.Check(remainder, IsNil)
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksSingle(c *C) {
@@ -326,9 +473,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksSingle(c *C) {
 	t1 := st.NewTask("task-1", "only task")
 	ts := state.NewTaskSet(t1)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1})
 	c.Check(tails, DeepEquals, []*state.Task{t1})
+	c.Check(remainder, IsNil)
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksLinearChain(c *C) {
@@ -345,9 +493,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksLinearChain(c *C) {
 
 	ts := state.NewTaskSet(t1, t2, t3)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1})
 	c.Check(tails, DeepEquals, []*state.Task{t3})
+	c.Check(remainder, DeepEquals, []*state.Task{t2})
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksDiamond(c *C) {
@@ -368,9 +517,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksDiamond(c *C) {
 
 	ts := state.NewTaskSet(t1, t2, t3, t4)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1})
 	c.Check(tails, DeepEquals, []*state.Task{t4})
+	c.Check(remainder, DeepEquals, []*state.Task{t2, t3})
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksDisconnected(c *C) {
@@ -384,9 +534,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksDisconnected(c *C) {
 
 	ts := state.NewTaskSet(t1, t2)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1, t2})
 	c.Check(tails, DeepEquals, []*state.Task{t1, t2})
+	c.Check(remainder, IsNil)
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksMultipleHeads(c *C) {
@@ -404,9 +555,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksMultipleHeads(c *C) 
 
 	ts := state.NewTaskSet(t1, t2, t3)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1, t2})
 	c.Check(tails, DeepEquals, []*state.Task{t3})
+	c.Check(remainder, IsNil)
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksMultipleTails(c *C) {
@@ -424,9 +576,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksMultipleTails(c *C) 
 
 	ts := state.NewTaskSet(t1, t2, t3)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1})
 	c.Check(tails, DeepEquals, []*state.Task{t2, t3})
+	c.Check(remainder, IsNil)
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksTwoChains(c *C) {
@@ -451,9 +604,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksTwoChains(c *C) {
 
 	ts := state.NewTaskSet(t1, t2, t3, t4, t5, t6)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	c.Check(heads, DeepEquals, []*state.Task{t1, t4})
 	c.Check(tails, DeepEquals, []*state.Task{t3, t6})
+	c.Check(remainder, DeepEquals, []*state.Task{t2, t5})
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksIgnoresExternalDeps(c *C) {
@@ -474,10 +628,11 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksIgnoresExternalDeps(
 	// only include t1, t2, t3 in the set (not external)
 	ts := state.NewTaskSet(t1, t2, t3)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	// t1 is still the only head (external dep is ignored)
 	c.Check(heads, DeepEquals, []*state.Task{t1})
 	c.Check(tails, DeepEquals, []*state.Task{t3})
+	c.Check(remainder, DeepEquals, []*state.Task{t2})
 }
 
 func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksWithExternalWaitAndHalt(c *C) {
@@ -498,9 +653,10 @@ func (s *taskChainBuilderTestSuite) TestFindHeadAndTailTasksWithExternalWaitAndH
 	// only include t1, t2 in the set
 	ts := state.NewTaskSet(t1, t2)
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(ts.Tasks())
 	// t1 is still the head (external predecessor is ignored)
 	c.Check(heads, DeepEquals, []*state.Task{t1})
 	// t2 is still the tail (external successor is ignored)
 	c.Check(tails, DeepEquals, []*state.Task{t2})
+	c.Check(remainder, IsNil)
 }

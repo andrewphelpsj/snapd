@@ -612,18 +612,24 @@ func (sc *snapInstallChoreographer) addCleanupTasks(st *state.State, s *taskChai
 func (sc *snapInstallChoreographer) choreograph(st *state.State, ic installContext) (snapInstallTaskSet, error) {
 	b := newTaskChainBuilder()
 
-	beforeLocalSystemMods := b.NewSpan()
-	if err := sc.BeforeLocalSystemMod(st, &beforeLocalSystemMods, ic); err != nil {
+	beforeLocalSystemMods, err := b.Span(func(s *taskChainSpan) error {
+		return sc.BeforeLocalSystemMod(st, s, ic)
+	})
+	if err != nil {
 		return snapInstallTaskSet{}, err
 	}
 
-	upToLinkSnapAndBeforeReboot := b.NewSpan()
-	if err := sc.UpToLinkSnapAndBeforeReboot(st, &upToLinkSnapAndBeforeReboot, ic); err != nil {
+	upToLinkSnapAndBeforeReboot, err := b.Span(func(s *taskChainSpan) error {
+		return sc.UpToLinkSnapAndBeforeReboot(st, s, ic)
+	})
+	if err != nil {
 		return snapInstallTaskSet{}, err
 	}
 
-	afterLinkSnapAndPostReboot := b.NewSpan()
-	if err := sc.AfterLinkSnapAndPostReboot(st, &afterLinkSnapAndPostReboot, ic); err != nil {
+	afterLinkSnapAndPostReboot, err := b.Span(func(s *taskChainSpan) error {
+		return sc.AfterLinkSnapAndPostReboot(st, s, ic)
+	})
+	if err != nil {
 		return snapInstallTaskSet{}, err
 	}
 
@@ -637,9 +643,9 @@ func (sc *snapInstallChoreographer) choreograph(st *state.State, ic installConte
 		ts:      b.TaskSet(),
 		snapsup: sc.snapsup,
 
-		beforeLocalSystemModificationsTasks: beforeLocalSystemMods.Tasks(),
-		upToLinkSnapAndBeforeReboot:         upToLinkSnapAndBeforeReboot.Tasks(),
-		afterLinkSnapAndPostReboot:          afterLinkSnapAndPostReboot.Tasks(),
+		beforeLocalSystemModificationsTasks: beforeLocalSystemMods,
+		upToLinkSnapAndBeforeReboot:         upToLinkSnapAndBeforeReboot,
+		afterLinkSnapAndPostReboot:          afterLinkSnapAndPostReboot,
 	}, nil
 }
 

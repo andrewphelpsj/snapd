@@ -54,9 +54,19 @@ func (b *taskChainBuilder) Append(t *state.Task) {
 	tmp.Append(t)
 }
 
-// NewSpan creates a new taskChainSpan that shares this taskChainBuilder's task set and tail.
-func (b *taskChainBuilder) NewSpan() taskChainSpan {
-	return taskChainSpan{b: b}
+// Span creates a new taskChainSpan that shares this taskChainBuilder's task set and tail.
+// It runs fn to populate the span and returns the tasks added to it.
+func (b *taskChainBuilder) Span(fn func(s *taskChainSpan) error) ([]*state.Task, error) {
+	s := taskChainSpan{b: b}
+	if err := fn(&s); err != nil {
+		return nil, err
+	}
+
+	if len(b.tails) > 1 {
+		panic("internal error: cannot end task chain span with multiple tails")
+	}
+
+	return s.tasks, nil
 }
 
 // JoinOn makes the given task wait for the current tail and updates the tail to
@@ -133,7 +143,11 @@ func (s *taskChainSpan) AppendTSWithoutData(ts *state.TaskSet) {
 		return
 	}
 
-	heads, tails := findHeadAndTailTasks(ts)
+	heads, tails, remainder := findHeadAndTailTasks(tasks)
+
+	if len(s.tasks) == 0 && len(heads) > 1 {
+		panic("internal error: cannot start task chain span with multiple heads")
+	}
 
 	// only head tasks need to wait on the existing tails
 	for _, head := range heads {
@@ -142,23 +156,33 @@ func (s *taskChainSpan) AppendTSWithoutData(ts *state.TaskSet) {
 		}
 	}
 
+	order := heads
+	order = append(order, remainder...)
+	order = append(order, tails...)
+
+	// note, the set of tasks in heads could equal tails. in that case,
+	// remainder would be empty. but we still must make sure not to add heads
+	// and tails twice.
+	added := make(map[*state.Task]bool, len(tasks))
+	for _, t := range order {
+		if added[t] {
+			continue
+		}
+
+		s.tasks = append(s.tasks, t)
+		added[t] = true
+	}
+
 	s.b.ts.AddAll(ts)
 	s.b.tails = tails
-	s.tasks = append(s.tasks, tasks...)
-}
-
-// Tasks returns the tasks owned by this taskChainSpan.
-func (s *taskChainSpan) Tasks() []*state.Task {
-	return s.tasks
 }
 
 // findHeadAndTailTasks identifies entry and exit points within a task set based
 // on internal dependencies. Head tasks have no predecessors within the set, and
 // tail tasks have no successors within the set.
-func findHeadAndTailTasks(ts *state.TaskSet) (heads, tails []*state.Task) {
-	tasks := ts.Tasks()
+func findHeadAndTailTasks(tasks []*state.Task) (heads, tails, remainder []*state.Task) {
 	if len(tasks) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	inSet := make(map[string]bool, len(tasks))
@@ -194,7 +218,11 @@ func findHeadAndTailTasks(ts *state.TaskSet) (heads, tails []*state.Task) {
 		if tail {
 			tails = append(tails, t)
 		}
+
+		if !head && !tail {
+			remainder = append(remainder, t)
+		}
 	}
 
-	return heads, tails
+	return heads, tails, remainder
 }
