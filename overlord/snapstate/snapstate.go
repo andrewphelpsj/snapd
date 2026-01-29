@@ -1713,10 +1713,8 @@ func doUpdate(st *state.State, requested []string, updates []update, opts Option
 		installTasksets = append(installTasksets, installTS.ts)
 	}
 
-	if len(snapInstallTasks) > 0 {
-		if err := arrangeSnapInstallTaskSets(st, nil, snapInstallTasks); err != nil {
-			return nil, false, nil, err
-		}
+	if err := arrangeSnapInstallTaskSets(st, snapInstallTasks); err != nil {
+		return nil, false, nil, err
 	}
 
 	if len(newAutoAliases) != 0 {
