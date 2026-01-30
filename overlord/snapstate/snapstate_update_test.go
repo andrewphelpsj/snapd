@@ -18894,3 +18894,312 @@ func (s *snapmgrTestSuite) TestBlockUnlinkAffectingHook(c *C) {
 		}
 	}
 }
+
+func (s *snapmgrTestSuite) TestUpdateManySeedRefreshEarlyDownloadDepsEnabled(c *C) {
+	restore := release.MockOnClassic(false)
+	defer restore()
+	restore = snapstate.MockRevisionDate(nil)
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	tr := config.NewTransaction(s.state)
+	c.Assert(tr.Set("core", "experimental.seed-refresh", true), IsNil)
+	tr.Commit()
+
+	restore = snapstatetest.MockDeviceModel(MakeModel(map[string]any{
+		"kernel": "kernel",
+		"base":   "core18",
+	}))
+	defer restore()
+
+	kernel := snap.SideInfo{
+		RealName: "kernel",
+		Revision: snap.R(7),
+		SnapID:   "kernel-id",
+	}
+	base := snap.SideInfo{
+		RealName: "core18",
+		Revision: snap.R(7),
+		SnapID:   "core18-snap-id",
+	}
+	app := snap.SideInfo{
+		RealName: "some-app",
+		Revision: snap.R(7),
+		SnapID:   "some-app-id",
+	}
+
+	types := map[string]string{
+		"kernel":   "kernel",
+		"core18":   "base",
+		"some-app": "app",
+	}
+
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s", kernel.RealName), &kernel)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", base.RealName), &base)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", app.RealName), &app)
+
+	for _, si := range []snap.SideInfo{kernel, base, app} {
+		si := si
+		s.fakeStore.registerID(si.RealName, si.SnapID)
+		snapstate.Set(s.state, si.RealName, &snapstate.SnapState{
+			Active:          true,
+			Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&si}),
+			Current:         si.Revision,
+			TrackingChannel: "latest/stable",
+			SnapType:        types[si.RealName],
+		})
+	}
+
+	affected, tss, err := snapstate.UpdateMany(context.Background(), s.state,
+		[]string{"kernel", "core18", "some-app"}, nil, s.user.ID, &snapstate.Flags{})
+	c.Assert(err, IsNil)
+	c.Assert(affected, testutil.DeepUnsortedMatches, []string{"core18", "kernel", "some-app"})
+
+	chg := s.state.NewChange("refresh", "refresh kernel, base, and app")
+	var baseTS, kernelTS, appTS *state.TaskSet
+	for _, ts := range tss {
+		chg.AddAll(ts)
+		for _, t := range ts.Tasks() {
+			snapsup, err := snapstate.TaskSnapSetup(t)
+			if err != nil {
+				continue
+			}
+
+			switch snapsup.Type {
+			case snap.TypeKernel:
+				kernelTS = ts
+			case snap.TypeBase:
+				baseTS = ts
+			case snap.TypeApp:
+				appTS = ts
+			}
+
+			break
+		}
+	}
+
+	lastBeforeLocalBase, err := baseTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+	lastBeforeLocalKernel, err := kernelTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	// verify that all snaps' first task after local modifications waits for all
+	// essential snaps' last download task
+	firstLocalModKernel := firstTaskAfterLocalModifications(c, kernelTS)
+	firstLocalModBase := firstTaskAfterLocalModifications(c, baseTS)
+	firstLocalModApp := firstTaskAfterLocalModifications(c, appTS)
+
+	// all local modification tasks wait on all essential snap downloads
+	for _, firstLocalMod := range []*state.Task{firstLocalModKernel, firstLocalModBase, firstLocalModApp} {
+		c.Check(firstLocalMod.WaitTasks(), testutil.Contains, lastBeforeLocalBase)
+		c.Check(firstLocalMod.WaitTasks(), testutil.Contains, lastBeforeLocalKernel)
+	}
+}
+
+func (s *snapmgrTestSuite) TestUpdateManySeedRefreshEarlyDownloadModelSnap(c *C) {
+	restore := release.MockOnClassic(false)
+	defer restore()
+	restore = snapstate.MockRevisionDate(nil)
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	tr := config.NewTransaction(s.state)
+	c.Assert(tr.Set("core", "experimental.seed-refresh", true), IsNil)
+	tr.Commit()
+
+	restore = snapstatetest.MockDeviceModel(MakeModel(map[string]any{
+		"kernel":         "kernel",
+		"base":           "core18",
+		"required-snaps": []any{"some-app"},
+	}))
+	defer restore()
+
+	kernel := snap.SideInfo{
+		RealName: "kernel",
+		Revision: snap.R(7),
+		SnapID:   "kernel-id",
+	}
+	base := snap.SideInfo{
+		RealName: "core18",
+		Revision: snap.R(7),
+		SnapID:   "core18-snap-id",
+	}
+	app := snap.SideInfo{
+		RealName: "some-app",
+		Revision: snap.R(7),
+		SnapID:   "some-app-id",
+	}
+	extraApp := snap.SideInfo{
+		RealName: "some-other-snap",
+		Revision: snap.R(7),
+		SnapID:   "some-other-snap-id",
+	}
+
+	types := map[string]string{
+		"kernel":          "kernel",
+		"core18":          "base",
+		"some-app":        "app",
+		"some-other-snap": "app",
+	}
+
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s", kernel.RealName), &kernel)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", base.RealName), &base)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", app.RealName), &app)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", extraApp.RealName), &extraApp)
+
+	for _, si := range []snap.SideInfo{kernel, base, app, extraApp} {
+		si := si
+		s.fakeStore.registerID(si.RealName, si.SnapID)
+		snapstate.Set(s.state, si.RealName, &snapstate.SnapState{
+			Active:          true,
+			Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&si}),
+			Current:         si.Revision,
+			TrackingChannel: "latest/stable",
+			SnapType:        types[si.RealName],
+		})
+	}
+
+	affected, tss, err := snapstate.UpdateMany(context.Background(), s.state,
+		[]string{"kernel", "core18", "some-app", "some-other-snap"}, nil, s.user.ID, &snapstate.Flags{})
+	c.Assert(err, IsNil)
+	c.Assert(affected, testutil.DeepUnsortedMatches, []string{"core18", "kernel", "some-app", "some-other-snap"})
+
+	chg := s.state.NewChange("refresh", "refresh kernel, base, and app")
+	var baseTS, kernelTS, appTS, extraAppTS *state.TaskSet
+	for _, ts := range tss {
+		chg.AddAll(ts)
+		for _, t := range ts.Tasks() {
+			snapsup, err := snapstate.TaskSnapSetup(t)
+			if err != nil {
+				continue
+			}
+
+			switch snapsup.InstanceName() {
+			case "kernel":
+				kernelTS = ts
+			case "core18":
+				baseTS = ts
+			case "some-app":
+				appTS = ts
+			case "some-other-snap":
+				extraAppTS = ts
+			}
+
+			break
+		}
+	}
+	if baseTS == nil || kernelTS == nil || appTS == nil || extraAppTS == nil {
+		c.Fatalf("missing task sets: base=%v kernel=%v app=%v extraApp=%v", baseTS != nil, kernelTS != nil, appTS != nil, extraAppTS != nil)
+	}
+
+	lastEssentialSnapTask, err := kernelTS.Edge(snapstate.EndEdge)
+	c.Assert(err, IsNil)
+
+	// model app downloads early, but doesn't perform any local modifications
+	// until all essential snaps are complete.
+	firstLocalModApp := firstTaskAfterLocalModifications(c, appTS)
+	c.Check(firstLocalModApp.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
+
+	firstTaskOfExtraSnap, err := extraAppTS.Edge(snapstate.BeginEdge)
+	c.Assert(err, IsNil)
+
+	// non-model app starts download after all essential snaps are complete
+	c.Check(firstTaskOfExtraSnap.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
+}
+
+func (s *snapmgrTestSuite) TestUpdateManySeedRefreshEarlyDownloadDepsDisabled(c *C) {
+	restore := release.MockOnClassic(false)
+	defer restore()
+	restore = snapstate.MockRevisionDate(nil)
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	restore = snapstatetest.MockDeviceModel(MakeModel(map[string]any{
+		"kernel": "kernel",
+		"base":   "core18",
+	}))
+	defer restore()
+
+	kernel := snap.SideInfo{
+		RealName: "kernel",
+		Revision: snap.R(7),
+		SnapID:   "kernel-id",
+	}
+	base := snap.SideInfo{
+		RealName: "core18",
+		Revision: snap.R(7),
+		SnapID:   "core18-snap-id",
+	}
+	app := snap.SideInfo{
+		RealName: "some-app",
+		Revision: snap.R(7),
+		SnapID:   "some-app-id",
+	}
+
+	types := map[string]string{
+		"kernel":   "kernel",
+		"core18":   "base",
+		"some-app": "app",
+	}
+
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s", kernel.RealName), &kernel)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", base.RealName), &base)
+	snaptest.MockSnap(c, fmt.Sprintf("name: %s\nbase: core18", app.RealName), &app)
+
+	for _, si := range []snap.SideInfo{kernel, base, app} {
+		si := si
+		s.fakeStore.registerID(si.RealName, si.SnapID)
+		snapstate.Set(s.state, si.RealName, &snapstate.SnapState{
+			Active:          true,
+			Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{&si}),
+			Current:         si.Revision,
+			TrackingChannel: "latest/stable",
+			SnapType:        types[si.RealName],
+		})
+	}
+
+	affected, tss, err := snapstate.UpdateMany(context.Background(), s.state,
+		[]string{"kernel", "core18", "some-app"}, nil, s.user.ID, &snapstate.Flags{})
+	c.Assert(err, IsNil)
+	c.Assert(affected, testutil.DeepUnsortedMatches, []string{"core18", "kernel", "some-app"})
+
+	chg := s.state.NewChange("refresh", "refresh kernel, base, and app")
+	var baseTS, kernelTS, appTS *state.TaskSet
+	for _, ts := range tss {
+		chg.AddAll(ts)
+		for _, t := range ts.Tasks() {
+			snapsup, err := snapstate.TaskSnapSetup(t)
+			if err != nil {
+				continue
+			}
+
+			switch snapsup.Type {
+			case snap.TypeKernel:
+				kernelTS = ts
+			case snap.TypeBase:
+				baseTS = ts
+			case snap.TypeApp:
+				appTS = ts
+			}
+
+			break
+		}
+	}
+
+	lastBeforeLocalBase, err := baseTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+	lastBeforeLocalKernel, err := kernelTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
+	c.Assert(err, IsNil)
+
+	// verify that the app's first local modification task does NOT wait for
+	// essential snap downloads (unlike when seed-refresh is enabled)
+	firstLocalModApp := firstTaskAfterLocalModifications(c, appTS)
+	c.Check(firstLocalModApp.WaitTasks(), Not(testutil.Contains), lastBeforeLocalBase)
+	c.Check(firstLocalModApp.WaitTasks(), Not(testutil.Contains), lastBeforeLocalKernel)
+}
