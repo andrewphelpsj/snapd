@@ -138,6 +138,50 @@ func contains[T comparable](items []T, item T) bool {
 	return false
 }
 
+// addEarlyDownloadDeps sets up dependencies so that all early-download snaps'
+// beforeLocalSystemModificationsTasks complete before any snap's
+// upToLinkSnapAndBeforeReboot tasks begin. The head of each snap's
+// upToLinkSnapAndBeforeReboot chain waits on the tail of each early-download
+// snap's beforeLocalSystemModificationsTasks chain.
+func addEarlyDownloadDeps(stss []snapInstallTaskSet, earlyDownloadSnaps map[string]struct{}) error {
+	if len(earlyDownloadSnaps) == 0 {
+		return nil
+	}
+
+	head := func(tasks []*state.Task) *state.Task {
+		return tasks[0]
+	}
+
+	tail := func(tasks []*state.Task) *state.Task {
+		return tasks[len(tasks)-1]
+	}
+
+	earlyTails := make(map[string]*state.Task, len(earlyDownloadSnaps))
+	for _, sts := range stss {
+		if len(sts.beforeLocalSystemModificationsTasks) == 0 ||
+			len(sts.upToLinkSnapAndBeforeReboot) == 0 {
+			return errors.New("internal error: snap install task set has empty slices")
+		}
+
+		name := sts.snapsup.InstanceName()
+		if _, ok := earlyDownloadSnaps[name]; ok {
+			earlyTails[name] = tail(sts.beforeLocalSystemModificationsTasks)
+		}
+	}
+
+	for _, sts := range stss {
+		headUpToLink := head(sts.upToLinkSnapAndBeforeReboot)
+		for name, tailTask := range earlyTails {
+			if name == sts.snapsup.InstanceName() {
+				continue
+			}
+			headUpToLink.WaitFor(tailTask)
+		}
+	}
+
+	return nil
+}
+
 // arrangeSnapInstallTaskSets arranges the correct link-order between all the
 // provided snap install task-sets, and sets up restart boundaries for essential
 // snaps (base, gadget, kernel).
