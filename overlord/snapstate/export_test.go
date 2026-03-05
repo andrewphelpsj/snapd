@@ -637,4 +637,4 @@ func NewSnapInstallTaskSetForTest(
 	}
 }
 
-var ArrangeInstallTasksForSingleReboot = arrangeInstallTasksForSingleReboot
+var ArrangeRebootAndUpdateSeed = arrangeRebootAndUpdateSeed

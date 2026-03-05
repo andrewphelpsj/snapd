@@ -1131,21 +1131,24 @@ func currentEssentialSnapNames(st *state.State, providedDeviceCtx DeviceContext)
 	return names, nil
 }
 
-func currentSeedSnapNames(st *state.State, providedDeviceCtx DeviceContext) (map[string]bool, error) {
-	deviceCtx, err := DeviceCtx(st, nil, providedDeviceCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	names := make(map[string]bool)
-	for _, sn := range deviceCtx.Model().AllSnaps() {
-		names[sn.SnapName()] = true
+func seedSnapsToUpdate(stss []snapInstallTaskSet, dctx DeviceContext) map[string]snapInstallTaskSet {
+	seedSnaps := make(map[string]bool)
+	for _, sn := range dctx.Model().AllSnaps() {
+		seedSnaps[sn.SnapName()] = true
 	}
 
 	// some models have an implicit snapd, make sure that we account for it here
-	names["snapd"] = true
+	seedSnaps["snapd"] = true
 
-	return names, nil
+	seedUpdates := make(map[string]snapInstallTaskSet, len(seedSnaps))
+	for _, sts := range stss {
+		name := sts.snapsup.InstanceName()
+		if seedSnaps[name] {
+			seedUpdates[name] = sts
+		}
+	}
+
+	return seedUpdates
 }
 
 // ResolveValidationSetsEnforcementError installs and updates snaps in order to
@@ -1618,6 +1621,10 @@ func doPotentiallySplitUpdate(st *state.State, requested []string, updates []upd
 }
 
 func doUpdate(st *state.State, requested []string, updates []update, opts Options) ([]string, bool, *UpdateTaskSets, error) {
+	if opts.DeviceCtx == nil {
+		return nil, false, nil, errors.New("internal error: device context is expected at this point")
+	}
+
 	var tss []*state.TaskSet
 	var predownloadTSS []*state.TaskSet
 
@@ -1738,13 +1745,13 @@ func doUpdate(st *state.State, requested []string, updates []update, opts Option
 		scheduleUpdate(up.Setup.InstanceName(), sts.ts)
 	}
 
-	earlyDownloads, err := seedRefreshEarlyDownloads(st, snapInstallTSS, opts.DeviceCtx)
+	seedTS, err := arrangeRebootAndUpdateSeed(st, snapInstallTSS, nil, opts.DeviceCtx)
 	if err != nil {
 		return nil, false, nil, err
 	}
 
-	if err := arrangeInstallTasksForSingleReboot(st, snapInstallTSS, earlyDownloads); err != nil {
-		return nil, false, nil, err
+	if seedTS != nil {
+		tss = append(tss, seedTS)
 	}
 
 	if len(newAutoAliases) != 0 {

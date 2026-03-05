@@ -223,39 +223,102 @@ func addEarlyDownloadDeps(stss []snapInstallTaskSet, earlyDownloads map[string]b
 	return nil
 }
 
-// seedRefreshEarlyDownloads checks if the experimental seed-refresh feature
-// flag is set, and if so, returns the set of seed snaps that are being
-// refreshed and should be treated as early-downloads.
-func seedRefreshEarlyDownloads(st *state.State, stss []snapInstallTaskSet, deviceCtx DeviceContext) (map[string]bool, error) {
+func seedRefreshEnabled(st *state.State) (bool, error) {
 	tr := config.NewTransaction(st)
 	seedRefresh, err := features.Flag(tr, features.SeedRefresh)
 	if err != nil && !config.IsNoOption(err) {
-		return nil, err
+		return false, err
+	}
+	return seedRefresh, nil
+}
+
+// seedRefreshTasksAndUpdates checks if the experimental seed-refresh feature
+// flag is set, and if so, returns the set of seed snaps that are being
+// refreshed and should be treated as early-downloads.
+func seedRefreshTasksAndUpdates(st *state.State, stss []snapInstallTaskSet, deviceCtx DeviceContext) (*SeedRefreshTaskSet, map[string]snapInstallTaskSet, error) {
+	enabled, err := seedRefreshEnabled(st)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if !seedRefresh {
-		return nil, nil
+	if !enabled {
+		return nil, nil, nil
 	}
 
-	seedSnaps, err := currentSeedSnapNames(st, deviceCtx)
+	deviceCtx, err = DeviceCtx(st, nil, deviceCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	seedSnapUpdates := seedSnapsToUpdate(stss, deviceCtx)
+
+	// none of the seed snaps are being updated, in that case there isn't
+	// anything to do.
+	if len(seedSnapUpdates) == 0 {
+		return nil, nil, nil
+	}
+
+	seedSnapTSS := make([]snapInstallTaskSet, 0, len(seedSnapUpdates))
+	for _, sts := range stss {
+		name := sts.snapsup.InstanceName()
+		if _, ok := seedSnapUpdates[name]; ok {
+			seedSnapTSS = append(seedSnapTSS, sts)
+		}
+	}
+
+	seedTS, err := seedRefreshTasksFromUpdates(st, seedSnapTSS)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return seedTS, seedSnapUpdates, nil
+}
+
+func setupTaskIDsForSeedCreation(stss []snapInstallTaskSet) (snapsupIDs, compsupIDs []string, err error) {
+	for _, sts := range stss {
+		t, err := sts.ts.Edge(SnapSetupEdge)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		snapsup, err := TaskSnapSetup(t)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if !snapsup.ComponentExclusiveOperation {
+			snapsupIDs = append(snapsupIDs, t.ID())
+		}
+
+		var compsups []string
+		if err := t.Get("component-setup-tasks", &compsups); err != nil && !errors.Is(err, state.ErrNoState) {
+			return nil, nil, err
+		}
+
+		compsupIDs = append(compsupIDs, compsups...)
+	}
+
+	return snapsupIDs, compsupIDs, nil
+}
+
+func seedRefreshTasksFromUpdates(st *state.State, stss []snapInstallTaskSet) (*SeedRefreshTaskSet, error) {
+	snapsupIDs, compsupIDs, err := setupTaskIDsForSeedCreation(stss)
 	if err != nil {
 		return nil, err
 	}
 
-	earlyDownloads := make(map[string]bool, len(stss))
-	for _, sts := range stss {
-		name := sts.snapsup.InstanceName()
-		if seedSnaps[name] {
-			earlyDownloads[name] = true
-		}
+	seedTS, err := SeedRefreshTasks(st, snapsupIDs, compsupIDs)
+	if err != nil {
+		return nil, err
 	}
 
-	return earlyDownloads, nil
+	return seedTS, nil
 }
 
-// arrangeInstallTasksForSingleReboot arranges the correct link-order between all the
-// provided snap install task-sets, and sets up restart boundaries for essential
-// snaps (base, gadget, kernel).
+// arrangeRebootAndUpdateSeed arranges the correct link-order between all the
+// provided snap install task-sets, sets up restart boundaries for essential
+// snaps (base, gadget, kernel), and returns the task set needed to update the
+// seed when seed-refresh applies.
 //
 // Under normal circumstances link-order that will be configured is:
 // snapd => boot-base (reboot) => gadget (reboot) => kernel (reboot) => bases => apps.
@@ -263,13 +326,32 @@ func seedRefreshEarlyDownloads(st *state.State, stss []snapInstallTaskSet, devic
 // However this may be configured into the following if conditions are right for single-reboot:
 // snapd => boot-base (up to auto-connect) => gadget(up to auto-connect) =>
 // -  kernel (up to auto-connect, then reboot) => boot-base => gadget => kernel => bases => apps.
-func arrangeInstallTasksForSingleReboot(st *state.State, stss []snapInstallTaskSet, earlyDownloads map[string]bool) error {
+func arrangeRebootAndUpdateSeed(
+	st *state.State,
+	stss []snapInstallTaskSet,
+	earlyDownloads map[string]bool,
+	dctx DeviceContext,
+) (*state.TaskSet, error) {
 	for _, sts := range stss {
 		if len(sts.beforeLocalSystemModificationsTasks) == 0 ||
 			len(sts.upToLinkSnapAndBeforeReboot) == 0 ||
 			len(sts.afterLinkSnapAndPostReboot) == 0 {
-			return errors.New("internal error: snap install task set has empty slices")
+			return nil, errors.New("internal error: snap install task set has empty slices")
 		}
+	}
+
+	seedTS, seedSnapUpdates, err := seedRefreshTasksAndUpdates(st, stss, dctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// since we need seed snaps to be available before we create the seed
+	// itself, we add the seed snaps to the early download cohort
+	for name := range seedSnapUpdates {
+		if earlyDownloads == nil {
+			earlyDownloads = make(map[string]bool, len(seedSnapUpdates))
+		}
+		earlyDownloads[name] = true
 	}
 
 	head := func(tasks []*state.Task) *state.Task {
@@ -282,7 +364,7 @@ func arrangeInstallTasksForSingleReboot(st *state.State, stss []snapInstallTaskS
 
 	bootBase, err := deviceModelBootBase(st, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	essentials := make(map[snap.Type]snapInstallTaskSet)
@@ -322,6 +404,7 @@ func arrangeInstallTasksForSingleReboot(st *state.State, stss []snapInstallTaskS
 	}
 
 	isUC16 := bootBase == "core"
+
 	beforeReboot := func(sts snapInstallTaskSet) (*state.Task, *state.Task) {
 		// on UC16, everything is before reboot
 		if isUC16 {
@@ -375,6 +458,23 @@ func arrangeInstallTasksForSingleReboot(st *state.State, stss []snapInstallTaskS
 		chain(beforeReboot(sts))
 	}
 
+	if seedTS != nil {
+		// if no tasks have been added to the chain yet, appending the seed task
+		// to the end of the chain will not result in the seed tasks waiting on
+		// the early download phase. in that case, we must add those
+		// dependencies explicitly.
+		//
+		// this can happen if the seed is being updated due to non-essential
+		// snap refreshes
+		if prev == nil {
+			for _, sts := range seedSnapUpdates {
+				seedTS.Create.WaitFor(tail(sts.beforeLocalSystemModificationsTasks))
+			}
+		}
+
+		chain(seedTS.Create, seedTS.Finalize)
+	}
+
 	// then all the post-reboot tasks for essential snaps, in order
 	for _, t := range essentialSnapsRestartOrder {
 		sts, ok := essentials[t]
@@ -413,20 +513,26 @@ func arrangeInstallTasksForSingleReboot(st *state.State, stss []snapInstallTaskS
 	// UC16 systems enforce different reboot boundaries, which can result in
 	// multiple reboots while refreshing many essential snaps.
 	if !isUC16 {
-		// set the reboot boundary on the final pre-reboot essential snap task
-		for i := len(essentialSnapsRestartOrder) - 1; i >= 0; i-- {
-			sts, ok := essentials[essentialSnapsRestartOrder[i]]
-			if !ok {
-				continue
-			}
+		// when seed-refresh is active, the recovery-system task set sits
+		// between the pre- and post-reboot essential chains and carries the do
+		// boundary. thus, we only need the do boundary if we don't have a seed
+		// refresh.
+		if seedTS == nil {
+			// set the reboot boundary on the final pre-reboot essential snap task
+			for i := len(essentialSnapsRestartOrder) - 1; i >= 0; i-- {
+				sts, ok := essentials[essentialSnapsRestartOrder[i]]
+				if !ok {
+					continue
+				}
 
-			_, end := beforeReboot(sts)
-			if end == nil {
-				return errors.New("internal error: all essential snaps must have before boot tasks")
-			}
-			restart.MarkTaskAsRestartBoundary(end, restart.RestartBoundaryDirectionDo)
+				_, end := beforeReboot(sts)
+				if end == nil {
+					return nil, errors.New("internal error: all essential snaps must have before boot tasks")
+				}
+				restart.MarkTaskAsRestartBoundary(end, restart.RestartBoundaryDirectionDo)
 
-			break
+				break
+			}
 		}
 
 		// set the reboot undo boundary on the first post-reboot essential
@@ -506,10 +612,14 @@ func arrangeInstallTasksForSingleReboot(st *state.State, stss []snapInstallTaskS
 	}
 
 	if err := addEarlyDownloadDeps(stss, earlyDownloads); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	if seedTS == nil {
+		return nil, nil
+	}
+
+	return state.NewTaskSet(seedTS.Create, seedTS.Finalize), nil
 }
 
 // SetEssentialSnapsRestartBoundaries sets up default restart boundaries for a list of task-sets. If the
