@@ -108,9 +108,51 @@ func (s *seededSystem) sameAs(other *seededSystem) bool {
 		s.Revision == other.Revision
 }
 
-func (m *DeviceManager) recordSeededSystem(st *state.State, whatSeeded *seededSystem) error {
+func seededSystems(st *state.State) ([]seededSystem, error) {
 	var seeded []seededSystem
-	if err := st.Get("seeded-systems", &seeded); err != nil && !errors.Is(err, state.ErrNoState) {
+	if err := st.Get("seeded-systems", &seeded); err != nil {
+		if errors.Is(err, state.ErrNoState) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return seeded, nil
+}
+
+func setSeededSystems(st *state.State, seeded []seededSystem) {
+	if len(seeded) == 0 {
+		st.Set("seeded-systems", nil)
+		return
+	}
+	st.Set("seeded-systems", seeded)
+}
+
+func dropSeedRefreshSeededSystem(st *state.State, label string) (bool, error) {
+	seeded, err := seededSystems(st)
+	if err != nil {
+		return false, err
+	}
+
+	filtered := make([]seededSystem, 0, len(seeded))
+	removed := false
+	for _, sys := range seeded {
+		if sys.System == label && sys.SeedRefresh {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, sys)
+	}
+
+	if removed {
+		setSeededSystems(st, filtered)
+	}
+
+	return removed, nil
+}
+
+func (m *DeviceManager) recordSeededSystem(st *state.State, whatSeeded *seededSystem) error {
+	seeded, err := seededSystems(st)
+	if err != nil {
 		return err
 	}
 	for _, sys := range seeded {
@@ -123,7 +165,7 @@ func (m *DeviceManager) recordSeededSystem(st *state.State, whatSeeded *seededSy
 	// front, as it is not considered candidate like for the other entries,
 	// but rather it describes the currently existing
 	seeded = append([]seededSystem{*whatSeeded}, seeded...)
-	st.Set("seeded-systems", seeded)
+	setSeededSystems(st, seeded)
 	return nil
 }
 

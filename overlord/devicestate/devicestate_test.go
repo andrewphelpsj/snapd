@@ -2213,6 +2213,65 @@ func (s *deviceMgrSuite) TestCreateSeedRefreshTasksUsesNextAvailableLabel(c *C) 
 	c.Check(systemSetupData["test-system"], Equals, true)
 }
 
+func (s *deviceMgrSuite) TestCreateSeedRefreshTasksIncludesCleanupForOutdatedSeedRefreshSystems(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	restore := devicestate.MockTimeNow(func() time.Time {
+		return time.Date(2026, 2, 27, 10, 0, 0, 0, time.UTC)
+	})
+	defer restore()
+
+	s.state.Set("seeded-systems", []devicestate.SeededSystem{
+		{System: "current-manual"},
+		{System: "keep-seed-refresh", SeedRefresh: true},
+		{System: "drop-seed-refresh-1", SeedRefresh: true},
+		{System: "manual-history"},
+		{System: "drop-seed-refresh-2", SeedRefresh: true},
+	})
+
+	tSnap := s.state.NewTask("fake-download", "...")
+
+	seedTS, err := devicestate.SeedRefreshTasks(s.state, []string{tSnap.ID()}, nil)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS.Cleanup, HasLen, 2)
+
+	var setup devicestate.RemoveRecoverySystemSetup
+	c.Assert(seedTS.Cleanup[0].Get("remove-recovery-system-setup", &setup), IsNil)
+	c.Check(setup.Label, Equals, "drop-seed-refresh-1")
+	c.Assert(seedTS.Cleanup[1].Get("remove-recovery-system-setup", &setup), IsNil)
+	c.Check(setup.Label, Equals, "drop-seed-refresh-2")
+}
+
+func (s *deviceMgrSuite) TestCreateSeedRefreshTasksRetainsCurrentSeedRefreshSeed(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	restore := devicestate.MockTimeNow(func() time.Time {
+		return time.Date(2026, 2, 27, 11, 0, 0, 0, time.UTC)
+	})
+	defer restore()
+
+	s.state.Set("seeded-systems", []devicestate.SeededSystem{
+		{System: "current-seed-refresh", SeedRefresh: true},
+		{System: "drop-seed-refresh-1", SeedRefresh: true},
+		{System: "manual-history"},
+		{System: "drop-seed-refresh-2", SeedRefresh: true},
+	})
+
+	tSnap := s.state.NewTask("fake-download", "...")
+
+	seedTS, err := devicestate.SeedRefreshTasks(s.state, []string{tSnap.ID()}, nil)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS.Cleanup, HasLen, 2)
+
+	var setup devicestate.RemoveRecoverySystemSetup
+	c.Assert(seedTS.Cleanup[0].Get("remove-recovery-system-setup", &setup), IsNil)
+	c.Check(setup.Label, Equals, "drop-seed-refresh-1")
+	c.Assert(seedTS.Cleanup[1].Get("remove-recovery-system-setup", &setup), IsNil)
+	c.Check(setup.Label, Equals, "drop-seed-refresh-2")
+}
+
 func (s *deviceMgrSuite) TestCanAutoRefreshNTP(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()

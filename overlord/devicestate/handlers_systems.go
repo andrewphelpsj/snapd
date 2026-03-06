@@ -242,12 +242,14 @@ func (m *DeviceManager) doRemoveRecoverySystem(t *state.Task, _ *tomb.Tomb) erro
 			return fmt.Errorf("cannot get snaps to remove from task: %w", err)
 		}
 
-		uniqueSnapPaths, err := snapsUniqueToRecoverySystem(setup.Label, systems)
-		if err != nil {
-			return fmt.Errorf("cannot get snaps unique to recovery system %q: %w", setup.Label, err)
-		}
+		if found {
+			uniqueSnapPaths, err := snapsUniqueToRecoverySystem(setup.Label, systems)
+			if err != nil {
+				return fmt.Errorf("cannot get snaps unique to recovery system %q: %w", setup.Label, err)
+			}
 
-		snapsToRemove.SnapPaths = uniqueSnapPaths
+			snapsToRemove.SnapPaths = uniqueSnapPaths
+		}
 
 		t.Set("snaps-to-remove", snapsToRemove)
 
@@ -273,6 +275,10 @@ func (m *DeviceManager) doRemoveRecoverySystem(t *state.Task, _ *tomb.Tomb) erro
 
 	if err := os.RemoveAll(filepath.Join(recoverySystemsDir, setup.Label)); err != nil {
 		return fmt.Errorf("cannot remove recovery system %q: %w", setup.Label, err)
+	}
+
+	if _, err := dropSeedRefreshSeededSystem(st, setup.Label); err != nil {
+		return fmt.Errorf("cannot update seeded systems after removing recovery system %q: %w", setup.Label, err)
 	}
 
 	t.SetStatus(state.DoneStatus)

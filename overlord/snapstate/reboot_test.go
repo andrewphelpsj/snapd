@@ -990,6 +990,66 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSeedRefreshComponentExclusiv
 	c.Check(taskSetLanes(seedUpdateTS), DeepEquals, taskSetLanes(stss[0].TaskSet()))
 }
 
+func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSeedRefreshCleanupRunsLast(c *C) {
+	defer snapstatetest.MockDeviceModel(MakeModel(map[string]any{
+		"base":           "core20",
+		"required-snaps": []any{"some-app"},
+	}))()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	tr := config.NewTransaction(s.state)
+	c.Assert(tr.Set("core", "experimental.seed-refresh", true), IsNil)
+	tr.Commit()
+
+	oldSeedRefreshTasks := snapstate.SeedRefreshTasks
+	snapstate.SeedRefreshTasks = func(st *state.State, snapSetupTasks, compSetupTasks []string) (*snapstate.SeedRefreshTaskSet, error) {
+		create := st.NewTask("create-recovery-system", "...")
+		finalize := st.NewTask("finalize-recovery-system", "...")
+		finalize.WaitFor(create)
+		cleanup1 := st.NewTask("remove-recovery-system", "...")
+		cleanup2 := st.NewTask("remove-recovery-system", "...")
+		return &snapstate.SeedRefreshTaskSet{
+			Create:   create,
+			Finalize: finalize,
+			Cleanup:  []*state.Task{cleanup1, cleanup2},
+		}, nil
+	}
+	defer func() {
+		snapstate.SeedRefreshTasks = oldSeedRefreshTasks
+	}()
+
+	stss := []snapstate.SnapInstallTaskSet{
+		s.componentExclusiveInstallTaskSetForSnapSetup("some-app", snap.TypeApp),
+		s.snapInstallTaskSetForSnapSetup("some-other-snap", "core20", snap.TypeApp),
+	}
+
+	seedUpdateTS, err := snapstate.ArrangeRebootAndUpdateSeed(s.state, stss, nil, s.deviceCtx(c))
+	c.Assert(err, IsNil)
+	c.Assert(seedUpdateTS, NotNil)
+	c.Assert(seedUpdateTS.Tasks(), HasLen, 4)
+
+	seedCreate := seedUpdateTS.Tasks()[0]
+	seedFinalize := seedUpdateTS.Tasks()[1]
+	cleanup1 := seedUpdateTS.Tasks()[2]
+	cleanup2 := seedUpdateTS.Tasks()[3]
+
+	appEnd, err := stss[0].TaskSet().Edge(snapstate.EndEdge)
+	c.Assert(err, IsNil)
+	extraAppEnd, err := stss[1].TaskSet().Edge(snapstate.EndEdge)
+	c.Assert(err, IsNil)
+
+	c.Check(cleanup1.WaitTasks(), testutil.Contains, seedFinalize)
+	c.Check(cleanup1.WaitTasks(), testutil.Contains, appEnd)
+	c.Check(cleanup1.WaitTasks(), testutil.Contains, extraAppEnd)
+	c.Check(cleanup2.WaitTasks(), testutil.Contains, cleanup1)
+	c.Check(cleanup1.Lanes(), HasLen, 1)
+	c.Check(cleanup2.Lanes(), DeepEquals, cleanup1.Lanes())
+	c.Check(seedCreate.Lanes(), Not(testutil.Contains), cleanup1.Lanes()[0])
+	c.Check(seedFinalize.Lanes(), Not(testutil.Contains), cleanup1.Lanes()[0])
+}
+
 func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSnapd(c *C) {
 	defer snapstatetest.MockDeviceModel(MakeModel20("brand-gadget", nil))()
 

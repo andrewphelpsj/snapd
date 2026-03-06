@@ -54,9 +54,7 @@ var essentialSnapsRestartOrder = []snap.Type{
 type SeedRefreshTaskSet struct {
 	Create   *state.Task
 	Finalize *state.Task
-
-	// TODO: this will also carry the tasks that will remove any seeds that
-	// should no longer be tracked by the seed-refresh mode
+	Cleanup  []*state.Task
 }
 
 // SeedRefreshTasks is set by devicestate to avoid an import cycle. See
@@ -630,7 +628,31 @@ func arrangeRebootAndUpdateSeed(
 		return nil, nil
 	}
 
-	return state.NewTaskSet(seedTS.Create, seedTS.Finalize), nil
+	if len(seedTS.Cleanup) > 0 {
+		cleanupLane := st.NewLane()
+		for _, task := range seedTS.Cleanup {
+			task.JoinLane(cleanupLane)
+		}
+
+		firstCleanup := seedTS.Cleanup[0]
+		firstCleanup.WaitFor(seedTS.Finalize)
+		for _, sts := range stss {
+			end, err := sts.ts.Edge(EndEdge)
+			if err != nil {
+				return nil, err
+			}
+			firstCleanup.WaitFor(end)
+		}
+
+		for i := 1; i < len(seedTS.Cleanup); i++ {
+			seedTS.Cleanup[i].WaitFor(seedTS.Cleanup[i-1])
+		}
+	}
+
+	tasks := []*state.Task{seedTS.Create, seedTS.Finalize}
+	tasks = append(tasks, seedTS.Cleanup...)
+
+	return state.NewTaskSet(tasks...), nil
 }
 
 // SetEssentialSnapsRestartBoundaries sets up default restart boundaries for a list of task-sets. If the

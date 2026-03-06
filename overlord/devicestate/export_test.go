@@ -299,6 +299,7 @@ type (
 	RegistrationContext               = registrationContext
 	RemodelContext                    = remodelContext
 	SeededSystem                      = seededSystem
+	RemoveRecoverySystemSetup         = removeRecoverySystemSetup
 	RecoverySystemSetup               = recoverySystemSetup
 	ExtraSnapdKernelCmdlineFragmentID = extraSnapdKernelCommandLineFragmentID
 )

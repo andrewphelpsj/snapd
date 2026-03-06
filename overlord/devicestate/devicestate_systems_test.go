@@ -6822,6 +6822,71 @@ func (s *deviceMgrSystemsCreateSuite) TestRemoveRecoverySystem(c *C) {
 	s.testRemoveRecoverySystem(c, mockRetry)
 }
 
+func (s *deviceMgrSystemsCreateSuite) TestRemoveRecoverySystemMissingSeedIsIdempotent(c *C) {
+	restore := seed.MockTrusted(s.storeSigning.Trusted)
+	s.AddCleanup(restore)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	devicestate.SetBootOkRan(s.mgr, true)
+	s.mockStandardSnapsModeenvAndBootloaderState(c)
+
+	const markDefault = false
+	s.createSystemForRemoval(c, "keep", 0, nil, markDefault)
+	s.createSystemForRemoval(c, "remove", 0, nil, markDefault)
+
+	chg, err := devicestate.RemoveRecoverySystem(s.state, "remove")
+	c.Assert(err, IsNil)
+	c.Assert(os.RemoveAll(filepath.Join(dirs.SnapSeedDir, "systems", "remove")), IsNil)
+
+	s.state.Unlock()
+	s.settle(c)
+	s.state.Lock()
+
+	c.Check(chg.Err(), IsNil)
+	c.Check(chg.Status(), Equals, state.DoneStatus)
+	c.Check(filepath.Join(dirs.SnapSeedDir, "systems", "remove"), testutil.FileAbsent)
+}
+
+func (s *deviceMgrSystemsCreateSuite) TestRemoveRecoverySystemDropsSeedRefreshEntry(c *C) {
+	restore := seed.MockTrusted(s.storeSigning.Trusted)
+	s.AddCleanup(restore)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	devicestate.SetBootOkRan(s.mgr, true)
+	s.mockStandardSnapsModeenvAndBootloaderState(c)
+
+	const markDefault = false
+	s.createSystemForRemoval(c, "keep", 0, nil, markDefault)
+	s.createSystemForRemoval(c, "remove", 0, nil, markDefault)
+
+	s.state.Set("seeded-systems", []devicestate.SeededSystem{
+		{System: "keep"},
+		{System: "remove", SeedRefresh: true},
+		{System: "manual-history"},
+	})
+
+	chg, err := devicestate.RemoveRecoverySystem(s.state, "remove")
+	c.Assert(err, IsNil)
+
+	s.state.Unlock()
+	s.settle(c)
+	s.state.Lock()
+
+	c.Check(chg.Err(), IsNil)
+	c.Check(chg.Status(), Equals, state.DoneStatus)
+
+	var seededSystems []devicestate.SeededSystem
+	c.Assert(s.state.Get("seeded-systems", &seededSystems), IsNil)
+	c.Check(seededSystems, DeepEquals, []devicestate.SeededSystem{
+		{System: "keep"},
+		{System: "manual-history"},
+	})
+}
+
 func (s *deviceMgrSystemsCreateSuite) testRemoveRecoverySystem(c *C, mockRetry bool) {
 	restore := seed.MockTrusted(s.storeSigning.Trusted)
 	s.AddCleanup(restore)

@@ -1762,12 +1762,39 @@ func removeRecoverySystemTasks(st *state.State, label string) (*state.TaskSet, e
 	return state.NewTaskSet(remove), nil
 }
 
+func outdatedSeedRefreshLabels(st *state.State) ([]string, error) {
+	seeded, err := seededSystems(st)
+	if err != nil {
+		return nil, err
+	}
+
+	var outdated []string
+	keptPreviousSeedRefresh := false
+	for _, sys := range seeded {
+		if !sys.SeedRefresh {
+			continue
+		}
+		if !keptPreviousSeedRefresh {
+			keptPreviousSeedRefresh = true
+			continue
+		}
+		outdated = append(outdated, sys.System)
+	}
+
+	return outdated, nil
+}
+
 // SeedRefreshTasks returns a [snapstate.SeedRefreshTaskSet] that carries the
 // tasks needed to refresh the seed managed by seed-refresh mode. The caller
 // must provide the tasks IDs that can be used by the seed creation tasks to
 // find the new snaps to include in the seed. Otherwise, already installed snaps
 // will be used to create the seed.
 func SeedRefreshTasks(st *state.State, snapSetupTasks, compSetupTasks []string) (*snapstate.SeedRefreshTaskSet, error) {
+	cleanupLabels, err := outdatedSeedRefreshLabels(st)
+	if err != nil {
+		return nil, err
+	}
+
 	labelBase := timeNow().Format("20060102")
 	label, err := pickRecoverySystemLabel(labelBase)
 	if err != nil {
@@ -1797,9 +1824,19 @@ func SeedRefreshTasks(st *state.State, snapSetupTasks, compSetupTasks []string) 
 		return nil, errors.New("internal error: expected create and finalize recovery system tasks")
 	}
 
+	cleanup := make([]*state.Task, 0, len(cleanupLabels))
+	for _, label := range cleanupLabels {
+		removeTS, err := removeRecoverySystemTasks(st, label)
+		if err != nil {
+			return nil, err
+		}
+		cleanup = append(cleanup, removeTS.Tasks()...)
+	}
+
 	return &snapstate.SeedRefreshTaskSet{
 		Create:   create,
 		Finalize: finalize,
+		Cleanup:  cleanup,
 	}, nil
 }
 
