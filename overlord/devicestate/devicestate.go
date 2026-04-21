@@ -300,6 +300,7 @@ func delayedCrossMgrInit() {
 	snapstate.RemodelingChange = RemodelingChange
 	snapstate.SeedRefreshTasks = SeedRefreshTasks
 	snapstate.UpdateSeedRefreshChange = UpdateSeedRefreshChange
+	snapstate.CheckSeedRefreshRemove = CheckSeedRefreshRemove
 }
 
 // proxyStore returns the store assertion for the proxy store if one is set.
@@ -1875,6 +1876,22 @@ func appendSeedRefreshCandidate(create *state.Task, snapSetupTasks, compSetupTas
 	setup.ComponentSetupTasks = appendUnique(setup.ComponentSetupTasks, compSetupTasks...)
 
 	return setTaskRecoverySystemSetup(create, setup)
+}
+
+// CheckSeedRefreshRemove temporarily prevents removing optional snaps that are
+// still present in the current seed while seed-refresh is enabled.
+// TODO:SEEDREFRESH: remove this once we support seed-refresh seeds
+// gaining/losing snaps
+func CheckSeedRefreshRemove(st *state.State, si *snap.Info, dctx snapstate.DeviceContext) error {
+	triggers, err := seedRefreshTriggers(st, dctx)
+	if err != nil {
+		return err
+	}
+	if !triggers[si.SnapName()] {
+		return nil
+	}
+
+	return errors.New("cannot remove snap present in the current seed while seed-refresh is enabled")
 }
 
 func seedRefreshTriggers(st *state.State, dctx snapstate.DeviceContext) (map[string]bool, error) {
