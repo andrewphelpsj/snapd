@@ -633,6 +633,7 @@ func NewSnapInstallTaskSetForTest(
 	snapsup *SnapSetup,
 	ts *state.TaskSet,
 	beforeLocalSystemModificationsTasks []*state.Task,
+	prerequisitesSync *state.Task,
 	mountSnap *state.Task,
 	upToLinkSnapAndBeforeReboot, afterLinkSnapAndPostReboot []*state.Task,
 ) SnapInstallTaskSet {
@@ -640,6 +641,7 @@ func NewSnapInstallTaskSetForTest(
 		ts:                                  ts,
 		snapsup:                             snapsup,
 		beforeLocalSystemModificationsTasks: beforeLocalSystemModificationsTasks,
+		prerequisitesSync:                   prerequisitesSync,
 		mountSnap:                           mountSnap,
 		upToLinkSnapAndBeforeReboot:         upToLinkSnapAndBeforeReboot,
 		afterLinkSnapAndPostReboot:          afterLinkSnapAndPostReboot,

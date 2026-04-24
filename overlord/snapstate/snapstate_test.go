@@ -823,6 +823,7 @@ func (s *snapmgrTestSuite) testRevertTasksFullFlags(flags fullFlags, c *C) {
 	c.Assert(taskKinds(tasks), DeepEquals, []string{
 		"prerequisites",
 		"prepare-snap",
+		"prerequisites",
 		"stop-snap-services",
 		"remove-aliases",
 		"unlink-current-snap",
@@ -936,6 +937,7 @@ func (s *snapmgrTestSuite) TestRevertCreatesNoGCTasks(c *C) {
 	c.Assert(taskKinds(ts.Tasks()), DeepEquals, []string{
 		"prerequisites",
 		"prepare-snap",
+		"prerequisites",
 		"stop-snap-services",
 		"remove-aliases",
 		"unlink-current-snap",

@@ -56,21 +56,14 @@ type snapInstallTaskSet struct {
 	snapsup *SnapSetup
 
 	beforeLocalSystemModificationsTasks []*state.Task
+	prerequisitesSync                   *state.Task
 	mountSnap                           *state.Task
 	upToLinkSnapAndBeforeReboot         []*state.Task
 	afterLinkSnapAndPostReboot          []*state.Task
 }
 
 func (sts snapInstallTaskSet) firstLocalMod() *state.Task {
-	if sts.mountSnap != nil {
-		return sts.mountSnap
-	}
-
-	if len(sts.upToLinkSnapAndBeforeReboot) == 0 {
-		panic("internal error: cannot find first local modification task")
-	}
-
-	return sts.upToLinkSnapAndBeforeReboot[0]
+	return sts.prerequisitesSync
 }
 
 // snapInstallChoreographer orchestrates the construction of a task graph for
@@ -652,6 +645,11 @@ func (sc *snapInstallChoreographer) choreograph(st *state.State, ic installConte
 		return snapInstallTaskSet{}, err
 	}
 
+	prerequisitesSync := st.NewTask("prerequisites", fmt.Sprintf(
+		i18n.G("Ensure prerequisites for %q are available"), sc.snapsup.InstanceName()))
+	prerequisitesSync.Set("prerequisites-sync", true)
+	b.Append(prerequisitesSync)
+
 	// mount-snap will be the first task after local modifications, if it is
 	// needed. we keep a pointer to mount-snap specifically so that single-reboot
 	// coordination can orchestrate all mount early in the refresh
@@ -683,6 +681,7 @@ func (sc *snapInstallChoreographer) choreograph(st *state.State, ic installConte
 		snapsup: sc.snapsup,
 
 		beforeLocalSystemModificationsTasks: beforeLocalSystemMods,
+		prerequisitesSync:                   prerequisitesSync,
 		mountSnap:                           mountSnap,
 		upToLinkSnapAndBeforeReboot:         upToLinkSnapAndBeforeReboot,
 		afterLinkSnapAndPostReboot:          afterLinkSnapAndPostReboot,

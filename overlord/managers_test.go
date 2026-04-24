@@ -5156,6 +5156,8 @@ const (
 
 func validateInstallTasks(c *C, tasks []*state.Task, name, revno string, flags int) int {
 	var i int
+	c.Assert(tasks[i].Summary(), Equals, fmt.Sprintf(`Ensure prerequisites for "%s" are available`, name))
+	i++
 	c.Assert(tasks[i].Summary(), Equals, fmt.Sprintf(`Mount snap "%s" (%s)`, name, revno))
 	i++
 	if flags&isGadget != 0 || flags&isKernel != 0 {
@@ -5215,6 +5217,8 @@ func validateInstallTasks(c *C, tasks []*state.Task, name, revno string, flags i
 
 func validateRefreshTasks(c *C, tasks []*state.Task, name, revno string, flags int) int {
 	var i int
+	c.Assert(tasks[i].Summary(), Equals, fmt.Sprintf(`Ensure prerequisites for "%s" are available`, name))
+	i++
 	c.Assert(tasks[i].Summary(), Equals, fmt.Sprintf(`Mount snap "%s" (%s)`, name, revno))
 	i++
 	c.Assert(tasks[i].Summary(), Equals, fmt.Sprintf(`Run pre-refresh hook of "%s" snap if present`, name))
