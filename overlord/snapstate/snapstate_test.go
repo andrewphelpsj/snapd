@@ -10384,8 +10384,10 @@ func validateEnforcementOrder(c *C, st *state.State, tss []*state.TaskSet, class
 					break
 				}
 				firstLocal := firstTaskAfterLocalModifications(c, sts.ts)
-				if baseFirstLocal := firstTaskAfterLocalModifications(c, baseTS); baseFirstLocal != nil {
-					c.Assert(waitsOnTransitively(firstLocal, baseFirstLocal), Equals, true)
+				if !strutil.ListContains(essentials, sts.snapsup.Base) {
+					baseLastBeforeLocal, err := baseTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
+					c.Assert(err, IsNil)
+					c.Assert(waitsOnTransitively(firstLocal, baseLastBeforeLocal), Equals, true)
 				}
 				if findKindInTaskSet(sts.ts, "mount-snap") != nil {
 					firstPostMount := firstTaskAfterMount(c, sts.ts)

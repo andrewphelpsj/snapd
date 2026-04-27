@@ -977,6 +977,7 @@ func (s *rebootSuite) TestArrangeSnapInstallTaskSetsSeedRefreshComponentExclusiv
 		ts,
 		[]*state.Task{downloadComp},
 		prereqSync,
+		nil,
 		[]*state.Task{setupSecurity, linkComp},
 		[]*state.Task{postLink},
 	)

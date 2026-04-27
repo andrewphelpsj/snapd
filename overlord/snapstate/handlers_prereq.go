@@ -285,6 +285,14 @@ func skipOrRetryPrereq(prereqs *state.Task, snapName string, required bool) (boo
 		return false, nil
 	}
 
+	// the first prerequisites (there are two in a snap's installation graph)
+	// task must not block on work already scheduled in this same change.
+	// the secondary prerequisites sync task is responsible for polling until
+	// that in-flight work has completed.
+	if !prereqs.Has("prerequisites-sync") && link.Change().ID() == prereqs.Change().ID() {
+		return skip, nil
+	}
+
 	// in flight, but not a required prereq
 	if !required {
 		// already in the same change, just skip it
@@ -350,6 +358,8 @@ func ensurePrerequisite(t *state.Task, contentAttrs []string, sn StoreSnap, opts
 		return nil, nil
 	}
 
+	syncTask := t.Has("prerequisites-sync")
+
 	installed, err := isInstalled(st, sn.InstanceName)
 	if err != nil {
 		return nil, err
@@ -357,8 +367,29 @@ func ensurePrerequisite(t *state.Task, contentAttrs []string, sn StoreSnap, opts
 
 	var ts *state.TaskSet
 	if !installed {
+		if syncTask {
+			if required {
+				return nil, fmt.Errorf("prerequisite %q is not available during prerequisites synchronization", sn.InstanceName)
+			}
+
+			// not a required prereq, skip it
+			return nil, nil
+		}
 		_, ts, err = InstallOne(context.TODO(), st, StoreInstallGoal(sn), opts)
 	} else {
+		if syncTask {
+			provided, err := hasAllContentAttrs(st, sn.InstanceName, contentAttrs)
+			if err != nil {
+				return nil, err
+			}
+
+			if required && !provided {
+				return nil, fmt.Errorf("prerequisite %q is missing required content during prerequisites synchronization", sn.InstanceName)
+			}
+
+			// not a required prereq, skip it
+			return nil, nil
+		}
 		ts, err = maybeUpdateContentProvider(t, sn.InstanceName, contentAttrs, opts)
 	}
 	if err != nil {

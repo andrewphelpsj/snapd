@@ -11170,16 +11170,23 @@ NextSnap1:
 			// that
 			if snapdEndTask != nil {
 				firstTaskOfCurrent := firstTaskAfterLocalModifications(c, currentTs)
-				c.Check(firstTaskOfCurrent.WaitTasks(), testutil.Contains, snapdEndTask)
+				c.Check(waitsOnTransitively(firstTaskOfCurrent, snapdEndTask), Equals, true)
 			}
 		} else {
 			firstTaskOfCurrent := firstTaskAfterLocalModifications(c, currentTs)
-			firstTaskOfPrev := firstTaskAfterLocalModifications(c, prevRebootTs)
 			linkSnapOfPrev, err := prevRebootTs.Edge(snapstate.MaybeRebootEdge)
 			c.Assert(err, IsNil)
-			c.Check(firstTaskOfCurrent.WaitTasks(), testutil.Contains, firstTaskOfPrev)
 
-			if findKindInTaskSet(currentTs, "mount-snap") != nil {
+			currentMount := findKindInTaskSet(currentTs, "mount-snap")
+			prevMount := findKindInTaskSet(prevRebootTs, "mount-snap")
+			if currentMount != nil && prevMount != nil {
+				c.Check(currentMount.WaitTasks(), testutil.Contains, prevMount)
+			} else {
+				firstTaskOfPrev := firstTaskAfterLocalModifications(c, prevRebootTs)
+				c.Check(waitsOnTransitively(firstTaskOfCurrent, firstTaskOfPrev), Equals, true)
+			}
+
+			if currentMount != nil {
 				firstPostMountOfCurrent := firstTaskAfterMount(c, currentTs)
 				c.Check(firstPostMountOfCurrent.WaitTasks(), testutil.Contains, linkSnapOfPrev)
 			} else {
@@ -11407,7 +11414,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseAndSnapdOrder(c *C) {
 	lastTaskOfSnapd, err := snapdTs.Edge(snapstate.EndEdge)
 	c.Assert(err, IsNil)
 	c.Check(beginTaskOfBase.WaitTasks(), testutil.Contains, lastTaskOfSnapd)
-	c.Check(firstTaskOfBase.WaitTasks(), testutil.Contains, lastTaskOfSnapd)
+	c.Check(waitsOnTransitively(firstTaskOfBase, lastTaskOfSnapd), Equals, true)
 
 	s.fakeBackend.linkSnapMaybeReboot = true
 	s.fakeBackend.linkSnapRebootFor = map[string]bool{
@@ -20429,9 +20436,11 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesDoNotMergeW
 	c.Assert(chg.IsReady(), Equals, false)
 }
 
-// TODO:SEEDREFRESH: update this test once this scenario is supported
-func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesFailsForProviderSwitchingToInFlightNonEssentialBase(c *C) {
-	_, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
+func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesProviderSwitchesToInFlightNonEssentialBase(c *C) {
+	restore := snapstate.MockPrerequisitesRetryTimeout(10 * time.Millisecond)
+	defer restore()
+
+	_, restore = s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
 		"kernel":         "kernel",
 		"base":           "core18",
 		"required-snaps": []any{"content-provider", "some-app"},
@@ -20462,6 +20471,7 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesFailsForPro
 
 		return nil
 	}
+	mockSeedRefreshRebootHandlers(s, c, nil)
 
 	s.installSeedRefreshSnaps(c,
 		seedRefreshSnap{name: "kernel", snapID: "kernel-id", snapType: "kernel"},
@@ -20471,9 +20481,10 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesFailsForPro
 		seedRefreshSnap{name: "some-app", snapID: "some-app-id", snapType: "app", base: "core18"},
 	)
 
-	uts, _ := runSeedRefreshUpdate(c, s.state, s.user.ID, []snapstate.StoreUpdate{{InstanceName: "some-app"}, {InstanceName: "some-base"}})
-	taskSetsBySnap, _ := parseSeedRefreshTaskSets(uts)
+	uts, chg := runSeedRefreshUpdate(c, s.state, s.user.ID, []snapstate.StoreUpdate{{InstanceName: "some-app"}, {InstanceName: "some-base"}})
+	taskSetsBySnap, seedTS := parseSeedRefreshTaskSets(uts)
 	appTS := mustTaskSetForSnap(c, taskSetsBySnap, "some-app")
+	seedCreate, _, _ := splitSeedRefreshTasks(c, seedTS)
 
 	prereqs := findKindInTaskSet(appTS, "prerequisites")
 	c.Assert(prereqs, NotNil)
@@ -20482,15 +20493,17 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesFailsForPro
 	err := s.o.SettleWithBreakCondition(testutil.HostScaledTimeout(10*time.Second), func() bool {
 		s.state.Lock()
 		defer s.state.Unlock()
-		return prereqs.Status().Ready()
+		return seedCreate.Status() == state.WaitStatus
 	})
 	s.state.Lock()
 	c.Assert(err, IsNil)
+	s.mockRestartAndSettle(c, chg)
 
-	c.Assert(prereqs.Status(), Equals, state.ErrorStatus)
-
-	c.Assert(prereqs.Status(), Equals, state.ErrorStatus)
-	c.Assert(strings.Join(prereqs.Log(), "\n"), Matches, `(?s).*cannot install prerequisite "content-provider": cannot automatically update prerequisite "content-provider" during seed-refresh while base "some-base" waits for create-recovery-system.*`)
+	c.Assert(prereqs.Status(), Equals, state.DoneStatus)
+	c.Assert(countTasksOfKind(chg.Tasks(), "create-recovery-system"), Equals, 1)
+	c.Assert(countTasksOfKind(chg.Tasks(), "finalize-recovery-system"), Equals, 1)
+	c.Assert(chg.Err(), IsNil)
+	c.Assert(chg.IsReady(), Equals, true)
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshAllowsRequestedModelContentProviderRefresh(c *C) {
