@@ -127,6 +127,10 @@ func changeHasPendingSeedRefresh(chg *state.Change) bool {
 // seedRefreshAndSeedSnapTaskSets returns the seed-refresh tasks and the task
 // sets for snaps that are involved in the seed refresh.
 func seedRefreshAndSeedSnapTaskSets(st *state.State, stss []snapInstallTaskSet, opts Options) (*SeedRefreshTaskSet, map[string]snapInstallTaskSet, error) {
+	if opts.NoSeedRefresh {
+		return nil, nil, nil
+	}
+
 	enabled, err := seedRefreshEnabled(st)
 	if err != nil {
 		return nil, nil, err
