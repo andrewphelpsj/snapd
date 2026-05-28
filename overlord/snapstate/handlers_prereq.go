@@ -161,6 +161,36 @@ func defaultPrereqSnapsChannel() string {
 func installPrereqs(t *state.Task, base string, prereq map[string][]string, tm timings.Measurer, opts Options) error {
 	st := t.State()
 
+	var seedTS *SeedRefreshTaskSet
+	trackSeedTS := func(ts *state.TaskSet) error {
+		if seedTS != nil {
+			return nil
+		}
+
+		enabled, err := seedRefreshEnabled(st)
+		if err != nil {
+			return err
+		}
+
+		if !enabled || ts == nil || t.Has("prerequisites-sync") {
+			return nil
+		}
+
+		seedTS, err = PendingSeedRefreshTasks(ts)
+		if err != nil {
+			return err
+		}
+
+		// ensure that future snap refreshes don't trigger more seed refreshes
+		opts.NoSeedRefresh = seedTS != nil
+
+		return nil
+	}
+
+	if err := trackSeedTS(state.NewTaskSet(t.Change().Tasks()...)); err != nil {
+		return err
+	}
+
 	// We try to install all wanted snaps. If one snap cannot be installed
 	// because of change conflicts or similar we retry. Only if all snaps can be
 	// installed together we add the tasks to the change.
@@ -182,6 +212,9 @@ func installPrereqs(t *state.Task, base string, prereq map[string][]string, tm t
 		if ts == nil {
 			continue
 		}
+		if err := trackSeedTS(ts); err != nil {
+			return err
+		}
 		tss = append(tss, ts)
 	}
 
@@ -200,6 +233,9 @@ func installPrereqs(t *state.Task, base string, prereq map[string][]string, tm t
 		})
 		if err != nil {
 			return prereqError("snap base", base, err)
+		}
+		if err := trackSeedTS(baseTS); err != nil {
+			return err
 		}
 	}
 
@@ -220,6 +256,19 @@ func installPrereqs(t *state.Task, base string, prereq map[string][]string, tm t
 		})
 		if err != nil {
 			return prereqError("system snap", "snapd", err)
+		}
+		if err := trackSeedTS(snapdTS); err != nil {
+			return err
+		}
+	}
+
+	for _, ts := range append([]*state.TaskSet{snapdTS, baseTS}, tss...) {
+		if seedTS == nil || ts == nil {
+			continue
+		}
+
+		if err := maybeMergeLateSeedRefreshPrereq(seedTS, opts.DeviceCtx, ts); err != nil {
+			return err
 		}
 	}
 
@@ -404,12 +453,6 @@ func ensurePrerequisite(t *state.Task, contentAttrs []string, sn StoreSnap, opts
 		}
 		return nil, err
 	}
-	if ts != nil {
-		if err := maybeMergeLateSeedRefreshPrereq(t.Change(), opts.DeviceCtx, ts); err != nil {
-			return nil, err
-		}
-	}
-
 	return ts, nil
 }
 

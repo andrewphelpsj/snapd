@@ -111,19 +111,6 @@ func seedRefreshEnabled(st *state.State) (bool, error) {
 	return seedRefresh, nil
 }
 
-func changeHasPendingSeedRefresh(chg *state.Change) bool {
-	for _, t := range chg.Tasks() {
-		switch t.Kind() {
-		case "create-recovery-system", "finalize-recovery-system":
-			if !t.Status().Ready() {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
 // seedRefreshAndSeedSnapTaskSets returns the seed-refresh tasks and the task
 // sets for snaps that are involved in the seed refresh.
 func seedRefreshAndSeedSnapTaskSets(st *state.State, stss []snapInstallTaskSet, opts Options) (*SeedRefreshTaskSet, map[string]snapInstallTaskSet, error) {
@@ -137,12 +124,6 @@ func seedRefreshAndSeedSnapTaskSets(st *state.State, stss []snapInstallTaskSet, 
 	}
 
 	if !enabled {
-		return nil, nil, nil
-	}
-
-	// if the tasks here are being created from within a change that is still
-	// performing a seed refresh, then we don't want to create another one.
-	if chg := st.Change(opts.FromChange); chg != nil && changeHasPendingSeedRefresh(chg) {
 		return nil, nil, nil
 	}
 
@@ -183,29 +164,34 @@ func seedRefreshAndSeedSnapTaskSets(st *state.State, stss []snapInstallTaskSet, 
 // creation even when the snap is not part of the seed refresh. if the snap is
 // part of the seed refresh, its task set is also folded into the recovery-system
 // payload.
-func maybeMergeLateSeedRefreshPrereq(chg *state.Change, dctx DeviceContext, providerTS *state.TaskSet) error {
-	if !changeHasPendingSeedRefresh(chg) {
-		return nil
-	}
-
-	seedTS, err := PendingSeedRefreshTasks(state.NewTaskSet(chg.Tasks()...))
-	if err != nil {
-		return err
-	}
+func maybeMergeLateSeedRefreshPrereq(seedTS *SeedRefreshTaskSet, dctx DeviceContext, ts *state.TaskSet) error {
 	if seedTS == nil {
 		return nil
 	}
 
-	prereq, err := providerTS.Edge(BeginEdge)
+	// if this task set already carries the seed creation tasks, then there
+	// isn't anything more to do
+	for _, t := range ts.Tasks() {
+		if t.ID() == seedTS.Create.ID() {
+			return nil
+		}
+	}
+
+	prereq, err := ts.Edge(BeginEdge)
 	if err != nil {
 		return errors.New("internal error: seed-refresh provider task set is missing required edge")
 	}
+
 	for _, lane := range seedTS.Create.Lanes() {
 		prereq.JoinLane(lane)
 	}
+
+	// seed creation must wait on all prerequisite tasks spawned by a refresh.
+	// this ensure that we're recursively resolved all prerequisites prior to
+	// seed creation.
 	seedTS.Create.WaitFor(prereq)
 
-	candidate, err := seedRefreshCandidateForTaskSet(providerTS)
+	candidate, err := seedRefreshCandidateForTaskSet(ts)
 	if err != nil {
 		return err
 	}
@@ -219,7 +205,7 @@ func maybeMergeLateSeedRefreshPrereq(chg *state.Change, dctx DeviceContext, prov
 		return nil
 	}
 
-	return mergeLateSeedRefreshPrereq(seedTS, providerTS)
+	return mergeLateSeedRefreshPrereq(seedTS, ts)
 }
 
 // mergeLateSeedRefreshPrereq folds a prerequisite refresh selected by

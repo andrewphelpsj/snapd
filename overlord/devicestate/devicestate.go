@@ -1985,6 +1985,9 @@ func findSeedRefreshTasks(ts *state.TaskSet) (*snapstate.SeedRefreshTaskSet, err
 	if create == nil || create.Kind() != "create-recovery-system" {
 		return nil, errors.New("internal error: seed-refresh change is missing paired create-recovery-system task")
 	}
+	if create.Status().Ready() {
+		return nil, errors.New("internal error: seed-refresh creation task is ready while finalization is still pending")
+	}
 
 	return &snapstate.SeedRefreshTaskSet{
 		Create:   create,

@@ -20624,6 +20624,107 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesCreatedFirs
 	c.Assert(chg.IsReady(), Equals, true)
 }
 
+func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesCreatedFirstDoesNotCreateDuplicateSeedRefresh(c *C) {
+	_, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
+		"kernel":         "kernel",
+		"base":           "core18",
+		"required-snaps": []any{"content-provider", "sibling-provider"},
+	}, []string{"content-provider", "sibling-provider"})
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	ifacerepo.Replace(s.state, interfaces.NewRepository())
+	s.fakeStore.mutateSnapInfo = func(info *snap.Info) error {
+		if info.InstanceName() != "some-app" {
+			return nil
+		}
+
+		info.Plugs = map[string]*snap.PlugInfo{
+			"shared-content": {
+				Snap:      info,
+				Name:      "shared-content",
+				Interface: "content",
+				Attrs: map[string]any{
+					"default-provider": "content-provider",
+					"content":          "shared-content",
+				},
+			},
+			"sibling-content": {
+				Snap:      info,
+				Name:      "sibling-content",
+				Interface: "content",
+				Attrs: map[string]any{
+					"default-provider": "sibling-provider",
+					"content":          "sibling-content",
+				},
+			},
+		}
+
+		return nil
+	}
+
+	mockSeedRefreshRebootHandlers(s, c, nil)
+
+	s.installSeedRefreshSnaps(c,
+		seedRefreshSnap{name: "kernel", snapID: "kernel-id", snapType: "kernel"},
+		seedRefreshSnap{name: "core18", snapID: "core18-snap-id", snapType: "base"},
+		seedRefreshSnap{name: "content-provider", snapID: "content-provider-id", snapType: "app", base: "core18"},
+		seedRefreshSnap{name: "sibling-provider", snapID: "sibling-provider-id", snapType: "app", base: "core18"},
+		seedRefreshSnap{name: "some-app", snapID: "some-app-id", snapType: "app", base: "core18"},
+	)
+
+	uts, chg := runSeedRefreshUpdate(c, s.state, s.user.ID, []snapstate.StoreUpdate{{InstanceName: "some-app"}})
+	_, seedTS := parseSeedRefreshTaskSets(uts)
+	c.Assert(seedTS, IsNil)
+
+	s.settle(c)
+
+	c.Assert(countTasksOfKind(chg.Tasks(), "create-recovery-system"), Equals, 1)
+	c.Assert(countTasksOfKind(chg.Tasks(), "finalize-recovery-system"), Equals, 1)
+
+	var seedCreate, seedFinalize *state.Task
+	for _, task := range chg.Tasks() {
+		switch task.Kind() {
+		case "create-recovery-system":
+			seedCreate = task
+		case "finalize-recovery-system":
+			seedFinalize = task
+		}
+	}
+	c.Assert(seedCreate, NotNil)
+	c.Assert(seedFinalize, NotNil)
+
+	var providerPrereq, siblingPrereq *state.Task
+	for _, task := range chg.Tasks() {
+		if task.Kind() != "prerequisites" || task.Has("prerequisites-sync") {
+			continue
+		}
+
+		snapsup, err := snapstate.TaskSnapSetup(task)
+		c.Assert(err, IsNil)
+		switch snapsup.InstanceName() {
+		case "content-provider":
+			providerPrereq = task
+		case "sibling-provider":
+			siblingPrereq = task
+		}
+	}
+	c.Assert(providerPrereq, NotNil)
+	c.Assert(siblingPrereq, NotNil)
+
+	c.Check(waitsOnTransitively(seedCreate, providerPrereq), Equals, true)
+	c.Check(waitsOnTransitively(seedCreate, siblingPrereq), Equals, true)
+	c.Check(waitTasksContainKindForSnap(c, seedFinalize, "content-provider", "run-hook"), Equals, true)
+	c.Check(waitTasksContainKindForSnap(c, seedFinalize, "sibling-provider", "run-hook"), Equals, true)
+
+	s.mockRestartAndSettle(c, chg)
+
+	c.Assert(chg.Err(), IsNil)
+	c.Assert(chg.IsReady(), Equals, true)
+}
+
 func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesDoNotMergeWhenSeedRefreshAlreadyReady(c *C) {
 	observed, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
 		"kernel":         "kernel",
@@ -21370,74 +21471,6 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshNoEssentialsWithAddition
 	appEndTask, err := appTS.Edge(snapstate.EndEdge)
 	c.Assert(err, IsNil)
 	c.Check(waitsOnTransitively(seedEnd, appEndTask), Equals, true)
-}
-
-func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshSkippedWhileParentSeedRefreshNotReady(c *C) {
-	_, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
-		"kernel":         "kernel",
-		"base":           "core18",
-		"required-snaps": []any{"some-app", "content-provider"},
-	}, []string{"some-app"})
-	defer restore()
-
-	s.state.Lock()
-	defer s.state.Unlock()
-
-	s.installSeedRefreshSnaps(c,
-		seedRefreshSnap{name: "kernel", snapID: "kernel-id", snapType: "kernel"},
-		seedRefreshSnap{name: "core18", snapID: "core18-snap-id", snapType: "base"},
-		seedRefreshSnap{name: "some-app", snapID: "some-app-id", snapType: "app", base: "core18"},
-		seedRefreshSnap{name: "content-provider", snapID: "content-provider-id", snapType: "app", base: "core18"},
-	)
-
-	uts, chg := runSeedRefreshUpdate(c, s.state, s.user.ID, []snapstate.StoreUpdate{{InstanceName: "some-app"}})
-	c.Assert(findSeedRefreshTaskSet(uts.Refresh), NotNil)
-	c.Assert(countTasksOfKind(chg.Tasks(), "create-recovery-system"), Equals, 1)
-	c.Assert(countTasksOfKind(chg.Tasks(), "finalize-recovery-system"), Equals, 1)
-
-	goal := snapstate.StoreUpdateGoal(snapstate.StoreUpdate{InstanceName: "content-provider"})
-	ts, err := snapstate.UpdateOne(context.Background(), s.state, goal, nil, snapstate.Options{
-		UserID:          s.user.ID,
-		ConflictOptions: snapstate.ConflictOptions{FromChange: chg.ID()},
-	})
-	c.Assert(err, IsNil)
-
-	c.Check(countTasksOfKind(ts.Tasks(), "create-recovery-system"), Equals, 0)
-	c.Check(countTasksOfKind(ts.Tasks(), "finalize-recovery-system"), Equals, 0)
-}
-
-func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshAllowedOnceParentSeedRefreshReady(c *C) {
-	_, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
-		"kernel": "kernel",
-		"base":   "core18",
-	}, []string{"core18"})
-	defer restore()
-
-	s.state.Lock()
-	defer s.state.Unlock()
-
-	s.installSeedRefreshSnaps(c,
-		seedRefreshSnap{name: "kernel", snapID: "kernel-id", snapType: "kernel"},
-		seedRefreshSnap{name: "core18", snapID: "core18-snap-id", snapType: "base"},
-	)
-
-	uts, chg := runSeedRefreshUpdate(c, s.state, s.user.ID, []snapstate.StoreUpdate{{InstanceName: "core18"}})
-	seedTS := findSeedRefreshTaskSet(uts.Refresh)
-	c.Assert(seedTS, NotNil)
-
-	seedCreate, seedFinalize, _ := splitSeedRefreshTasks(c, seedTS)
-	seedCreate.SetStatus(state.DoneStatus)
-	seedFinalize.SetStatus(state.DoneStatus)
-
-	goal := snapstate.StoreUpdateGoal(snapstate.StoreUpdate{InstanceName: "core18"})
-	ts, err := snapstate.UpdateOne(context.Background(), s.state, goal, nil, snapstate.Options{
-		UserID:          s.user.ID,
-		ConflictOptions: snapstate.ConflictOptions{FromChange: chg.ID()},
-	})
-	c.Assert(err, IsNil)
-
-	c.Check(countTasksOfKind(ts.Tasks(), "create-recovery-system"), Equals, 1)
-	c.Check(countTasksOfKind(ts.Tasks(), "finalize-recovery-system"), Equals, 1)
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshReRefreshCreatesSecondSeed(c *C) {

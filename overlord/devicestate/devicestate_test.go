@@ -2582,6 +2582,19 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeUsesPendingSeedRefreshTasks(
 	c.Check(currentSetup.SnapSetupTasks, DeepEquals, []string{currentSnapTask.ID(), nextSnapTask.ID()})
 }
 
+func (s *deviceMgrSuite) TestPendingSeedRefreshTasksErrorsWhenCreateReadyAndFinalizePending(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	create := s.state.NewTask("create-recovery-system", "...")
+	finalize := s.state.NewTask("finalize-recovery-system", "...")
+	finalize.Set("recovery-system-setup-task", create.ID())
+	create.SetStatus(state.DoneStatus)
+
+	_, err := devicestate.PendingSeedRefreshTasks(state.NewTaskSet(create, finalize))
+	c.Assert(err, ErrorMatches, "internal error: seed-refresh creation task is ready while finalization is still pending")
+}
+
 func seedRefreshSnapYAML(name, snapType string) string {
 	if snapType == "" {
 		snapType = "app"
