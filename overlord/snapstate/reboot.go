@@ -492,13 +492,32 @@ func arrangeRebootAndUpdateSeed(
 		}
 	}
 
-	// some non-essential snaps might have been a part of the early download
-	// cohort. in that case, we need to make sure that we don't accidentally
-	// create a dependency cycle. thus, early downloaded snaps will have their
-	// first modification-inducing task wait on the final essential snap, rather
-	// than their first download task.
+	// seed creation must wait for every snap's initial prerequisites task, even
+	// for snaps that are not part of the seed refresh. initial prerequisites can
+	// inject prerequisite snap task sets that must be accounted for before the
+	// recovery system is built. those tasks join the seed lanes so a later failure
+	// in a non-seed snap lane cannot undo the already completed seed refresh
+	// through this dependency.
+	if seedTS != nil {
+		for _, sts := range stss {
+			prereq := head(sts.beforeLocalSystemModificationsTasks)
+			for _, lane := range seedTS.Create.Lanes() {
+				prereq.JoinLane(lane)
+			}
+			waitForIfNeeded(seedTS.Create, prereq)
+		}
+	}
+
+	// some non-essential snaps might be part of the early download cohort. in
+	// that case, only their first modification-inducing task waits on the final
+	// essential task, rather than their first download task, to avoid dependency
+	// cycles.
+	//
+	// seed refresh uses the same split for all non-essential snaps: initial
+	// prerequisites must run before create-recovery-system, but local
+	// modifications still wait until the seed/essential path is complete.
 	nonEssentialWaitHead := func(sts snapInstallTaskSet) *state.Task {
-		if earlyDownloads[sts.snapsup.InstanceName()] {
+		if seedTS != nil || earlyDownloads[sts.snapsup.InstanceName()] {
 			return sts.firstLocalMod()
 		}
 		return head(sts.beforeLocalSystemModificationsTasks)

@@ -20223,9 +20223,12 @@ func (s *snapmgrTestSuite) testUpdateWithGoalSeedRefreshEarlyDownloadModelSnap(c
 
 	firstTaskOfExtraSnap, err := extraAppTS.Edge(snapstate.BeginEdge)
 	c.Assert(err, IsNil)
+	c.Check(waitsOnTransitively(seedCreate, firstTaskOfExtraSnap), Equals, true)
 
-	// non-model app starts download after all essential snaps are complete
-	c.Check(firstTaskOfExtraSnap.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
+	// non-model app performs its initial prerequisite check before seed creation,
+	// but defers local modifications until all essential snaps are complete.
+	extraFirstLocalMod := firstTaskAfterLocalModifications(c, extraAppTS)
+	c.Check(extraFirstLocalMod.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
 
 	// ensure that seed finalize task doens't wait on non-seed snap
 	extraAppEndTask, err := extraAppTS.Edge(snapstate.EndEdge)
@@ -20667,9 +20670,12 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshEarlyDownloadWithSnapd(c
 
 	firstTaskOfExtraSnap, err := extraAppTS.Edge(snapstate.BeginEdge)
 	c.Assert(err, IsNil)
+	c.Check(waitsOnTransitively(seedCreate, firstTaskOfExtraSnap), Equals, true)
 
-	// non-model app starts download after all essential snaps are complete.
-	c.Check(firstTaskOfExtraSnap.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
+	// non-model app performs its initial prerequisite check before seed creation,
+	// but defers local modifications until all essential snaps are complete.
+	extraFirstLocalMod := firstTaskAfterLocalModifications(c, extraAppTS)
+	c.Check(extraFirstLocalMod.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
 
 	// ensure that seed finalize task doens't wait on non-seed snap
 	extraAppEndTask, err := extraAppTS.Edge(snapstate.EndEdge)
