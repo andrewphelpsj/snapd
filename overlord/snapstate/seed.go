@@ -57,7 +57,7 @@ var SeedRefreshTasks = func(st *state.State, dctx DeviceContext, candidates []Se
 
 // PendingSeedRefreshTasks is set by devicestate to avoid an import cycle. See
 // devicestate.PendingSeedRefreshTasks.
-var PendingSeedRefreshTasks = func(chg *state.Change) (*SeedRefreshTaskSet, error) {
+var PendingSeedRefreshTasks = func(ts *state.TaskSet) (*SeedRefreshTaskSet, error) {
 	panic("internal error: snapstate.PendingSeedRefreshTasks is unset")
 }
 
@@ -184,7 +184,7 @@ func maybeMergeLateSeedRefreshPrereq(chg *state.Change, dctx DeviceContext, prov
 		return nil
 	}
 
-	seedTS, err := PendingSeedRefreshTasks(chg)
+	seedTS, err := PendingSeedRefreshTasks(state.NewTaskSet(chg.Tasks()...))
 	if err != nil {
 		return err
 	}

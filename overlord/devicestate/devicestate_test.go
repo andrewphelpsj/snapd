@@ -2324,7 +2324,6 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChange(c *C) {
 		{"name": "snap-1"},
 		{"name": "snap-2", "presence": "optional"},
 	}, "snap-2", "snap-3")
-	chg := s.state.NewChange("seed-refresh", "...")
 	snap1Task := s.state.NewTask("fake-download", "...")
 	snap2Task := s.state.NewTask("fake-download", "...")
 	snap3Task := s.state.NewTask("fake-download", "...")
@@ -2339,11 +2338,9 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChange(c *C) {
 	finalize.Set("recovery-system-setup-task", create.ID())
 	remove := s.state.NewTask("remove-recovery-system", "...")
 	remove.WaitFor(finalize)
-	chg.AddTask(create)
-	chg.AddTask(finalize)
-	chg.AddTask(remove)
+	seedRefreshTS := state.NewTaskSet(create, finalize, remove)
 
-	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	seedTS, err := devicestate.PendingSeedRefreshTasks(seedRefreshTS)
 	c.Assert(err, IsNil)
 	c.Assert(seedTS, NotNil)
 
@@ -2392,7 +2389,6 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeComponentExclusive(c *C) {
 		{"name": "snap-1"},
 		{"name": "snap-2", "presence": "optional"},
 	}, "snap-2")
-	chg := s.state.NewChange("seed-refresh", "...")
 	snap1Task := s.state.NewTask("fake-download", "...")
 	compTask1 := s.state.NewTask("fake-download-component", "...")
 	compTask2 := s.state.NewTask("fake-download-component", "...")
@@ -2405,10 +2401,9 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeComponentExclusive(c *C) {
 	})
 	finalize := s.state.NewTask("finalize-recovery-system", "...")
 	finalize.Set("recovery-system-setup-task", create.ID())
-	chg.AddTask(create)
-	chg.AddTask(finalize)
+	seedRefreshTS := state.NewTaskSet(create, finalize)
 
-	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	seedTS, err := devicestate.PendingSeedRefreshTasks(seedRefreshTS)
 	c.Assert(err, IsNil)
 	c.Assert(seedTS, NotNil)
 	added, err := devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
@@ -2459,7 +2454,6 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeSkipsOptionalSnapNotInCurren
 		{"name": "snap-1"},
 		{"name": "snap-2", "presence": "optional"},
 	})
-	chg := s.state.NewChange("seed-refresh", "...")
 	snap1Task := s.state.NewTask("fake-download", "...")
 	snap2Task := s.state.NewTask("fake-download", "...")
 	create := s.state.NewTask("create-recovery-system", "...")
@@ -2470,10 +2464,9 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeSkipsOptionalSnapNotInCurren
 	})
 	finalize := s.state.NewTask("finalize-recovery-system", "...")
 	finalize.Set("recovery-system-setup-task", create.ID())
-	chg.AddTask(create)
-	chg.AddTask(finalize)
+	seedRefreshTS := state.NewTaskSet(create, finalize)
 
-	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	seedTS, err := devicestate.PendingSeedRefreshTasks(seedRefreshTS)
 	c.Assert(err, IsNil)
 	c.Assert(seedTS, NotNil)
 	added, err := devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
@@ -2534,8 +2527,6 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeUsesPendingSeedRefreshTasks(
 		{"name": "snap-1"},
 		{"name": "snap-2"},
 	})
-	chg := s.state.NewChange("seed-refresh", "...")
-
 	oldSnapTask := s.state.NewTask("fake-download", "...")
 	oldCreate := s.state.NewTask("create-recovery-system", "...")
 	oldCreate.Set("recovery-system-setup", &devicestate.RecoverySystemSetup{
@@ -2562,16 +2553,10 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeUsesPendingSeedRefreshTasks(
 	currentFinalize.Set("recovery-system-setup-task", currentCreate.ID())
 	currentRemove := s.state.NewTask("remove-recovery-system", "...")
 	currentRemove.WaitFor(currentFinalize)
-
-	chg.AddTask(oldCreate)
-	chg.AddTask(oldFinalize)
-	chg.AddTask(oldRemove)
-	chg.AddTask(currentCreate)
-	chg.AddTask(currentFinalize)
-	chg.AddTask(currentRemove)
+	seedRefreshTS := state.NewTaskSet(oldCreate, oldFinalize, oldRemove, currentCreate, currentFinalize, currentRemove)
 
 	nextSnapTask := s.state.NewTask("fake-download", "...")
-	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	seedTS, err := devicestate.PendingSeedRefreshTasks(seedRefreshTS)
 	c.Assert(err, IsNil)
 	c.Assert(seedTS, NotNil)
 	c.Check(seedTS.Create, Equals, currentCreate)

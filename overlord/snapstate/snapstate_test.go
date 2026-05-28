@@ -126,7 +126,7 @@ func mockSeedRefreshHooks(triggers []string) (*observedSeedRefreshCandidates, fu
 		return currentSeedTS, added, nil
 	}
 
-	snapstate.PendingSeedRefreshTasks = func(*state.Change) (*snapstate.SeedRefreshTaskSet, error) {
+	snapstate.PendingSeedRefreshTasks = func(*state.TaskSet) (*snapstate.SeedRefreshTaskSet, error) {
 		return currentSeedTS, nil
 	}
 

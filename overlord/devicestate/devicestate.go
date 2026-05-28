@@ -1841,10 +1841,10 @@ func SeedRefreshTasks(st *state.State, dctx snapstate.DeviceContext, candidates 
 	}, added, nil
 }
 
-// PendingSeedRefreshTasks returns the pending seed-refresh task set for the
-// provided change, or nil when the change has no pending seed refresh.
-func PendingSeedRefreshTasks(chg *state.Change) (*snapstate.SeedRefreshTaskSet, error) {
-	return findSeedRefreshTasks(chg)
+// PendingSeedRefreshTasks returns the pending seed-refresh task set in the
+// provided task set, or nil when it has no pending seed refresh.
+func PendingSeedRefreshTasks(ts *state.TaskSet) (*snapstate.SeedRefreshTaskSet, error) {
+	return findSeedRefreshTasks(ts)
 }
 
 // UpdateSeedRefreshChange adds a late candidate to an existing seed-refresh
@@ -1946,10 +1946,10 @@ func seedRefreshTriggers(st *state.State, dctx snapstate.DeviceContext) (map[str
 	return triggers, nil
 }
 
-func findSeedRefreshTasks(chg *state.Change) (*snapstate.SeedRefreshTaskSet, error) {
+func findSeedRefreshTasks(ts *state.TaskSet) (*snapstate.SeedRefreshTaskSet, error) {
 	var finalize *state.Task
 	var removals []*state.Task
-	for _, t := range chg.Tasks() {
+	for _, t := range ts.Tasks() {
 		switch t.Kind() {
 		case "finalize-recovery-system":
 			if t.Status().Ready() {
@@ -1975,8 +1975,14 @@ func findSeedRefreshTasks(chg *state.Change) (*snapstate.SeedRefreshTaskSet, err
 		return nil, err
 	}
 
-	create := chg.State().Task(createID)
-	if create == nil || create.Change().ID() != chg.ID() || create.Kind() != "create-recovery-system" {
+	var create *state.Task
+	for _, t := range ts.Tasks() {
+		if t.ID() == createID {
+			create = t
+			break
+		}
+	}
+	if create == nil || create.Kind() != "create-recovery-system" {
 		return nil, errors.New("internal error: seed-refresh change is missing paired create-recovery-system task")
 	}
 
