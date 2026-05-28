@@ -404,6 +404,11 @@ func ensurePrerequisite(t *state.Task, contentAttrs []string, sn StoreSnap, opts
 		}
 		return nil, err
 	}
+	if ts != nil {
+		if err := maybeMergeLateSeedRefreshPrereq(t.Change(), opts.DeviceCtx, ts); err != nil {
+			return nil, err
+		}
+	}
 
 	return ts, nil
 }
@@ -441,9 +446,6 @@ func maybeUpdateContentProvider(t *state.Task, snapName string, contentAttrs []s
 		return nil, nil
 	}
 
-	if err := maybeMergeLateSeedRefreshPrereq(t.Change(), opts.DeviceCtx, ts); err != nil {
-		return nil, err
-	}
 	return ts, nil
 }
 
