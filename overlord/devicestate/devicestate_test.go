@@ -2343,32 +2343,36 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChange(c *C) {
 	chg.AddTask(finalize)
 	chg.AddTask(remove)
 
-	seedTS, err := devicestate.UpdateSeedRefreshChange(chg, dctx, snapstate.SeedRefreshCandidate{
+	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS, NotNil)
+
+	added, err := devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
 		InstanceName:          "snap-2",
 		SnapSetupTaskIDs:      []string{snap2Task.ID()},
 		ComponentSetupTaskIDs: []string{"comp-2", "comp-1"},
 	})
 	c.Assert(err, IsNil)
-	c.Assert(seedTS, NotNil)
+	c.Assert(added, Equals, true)
 	c.Check(seedTS.Create, Equals, create)
 	c.Check(seedTS.Finalize, Equals, finalize)
 	c.Check(seedTS.Remove, DeepEquals, []*state.Task{remove})
 
-	seedTS, err = devicestate.UpdateSeedRefreshChange(chg, dctx, snapstate.SeedRefreshCandidate{
+	added, err = devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
 		InstanceName:          "snap-1",
 		SnapSetupTaskIDs:      []string{snap1Task.ID()},
 		ComponentSetupTaskIDs: []string{"comp-3"},
 	})
 	c.Assert(err, IsNil)
-	c.Assert(seedTS, NotNil)
+	c.Assert(added, Equals, true)
 
-	seedTS, err = devicestate.UpdateSeedRefreshChange(chg, dctx, snapstate.SeedRefreshCandidate{
+	added, err = devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
 		InstanceName:          "snap-3",
 		SnapSetupTaskIDs:      []string{snap3Task.ID()},
 		ComponentSetupTaskIDs: []string{"comp-4"},
 	})
 	c.Assert(err, IsNil)
-	c.Check(seedTS, IsNil)
+	c.Check(added, Equals, false)
 
 	var setup devicestate.RecoverySystemSetup
 	c.Assert(create.Get("recovery-system-setup", &setup), IsNil)
@@ -2404,12 +2408,15 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeComponentExclusive(c *C) {
 	chg.AddTask(create)
 	chg.AddTask(finalize)
 
-	seedTS, err := devicestate.UpdateSeedRefreshChange(chg, dctx, snapstate.SeedRefreshCandidate{
+	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS, NotNil)
+	added, err := devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
 		InstanceName:          "snap-2",
 		ComponentSetupTaskIDs: []string{compTask2.ID(), compTask1.ID()},
 	})
 	c.Assert(err, IsNil)
-	c.Assert(seedTS, NotNil)
+	c.Assert(added, Equals, true)
 
 	var setup devicestate.RecoverySystemSetup
 	c.Assert(create.Get("recovery-system-setup", &setup), IsNil)
@@ -2466,12 +2473,15 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeSkipsOptionalSnapNotInCurren
 	chg.AddTask(create)
 	chg.AddTask(finalize)
 
-	seedTS, err := devicestate.UpdateSeedRefreshChange(chg, dctx, snapstate.SeedRefreshCandidate{
+	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS, NotNil)
+	added, err := devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
 		InstanceName:     "snap-2",
 		SnapSetupTaskIDs: []string{snap2Task.ID()},
 	})
 	c.Assert(err, IsNil)
-	c.Check(seedTS, IsNil)
+	c.Check(added, Equals, false)
 
 	var setup devicestate.RecoverySystemSetup
 	c.Assert(create.Get("recovery-system-setup", &setup), IsNil)
@@ -2561,12 +2571,19 @@ func (s *deviceMgrSuite) TestUpdateSeedRefreshChangeUsesPendingSeedRefreshTasks(
 	chg.AddTask(currentRemove)
 
 	nextSnapTask := s.state.NewTask("fake-download", "...")
-	seedTS, err := devicestate.UpdateSeedRefreshChange(chg, dctx, snapstate.SeedRefreshCandidate{
+	seedTS, err := devicestate.PendingSeedRefreshTasks(chg)
+	c.Assert(err, IsNil)
+	c.Assert(seedTS, NotNil)
+	c.Check(seedTS.Create, Equals, currentCreate)
+	c.Check(seedTS.Finalize, Equals, currentFinalize)
+	c.Check(seedTS.Remove, DeepEquals, []*state.Task{currentRemove})
+
+	added, err := devicestate.UpdateSeedRefreshChange(seedTS, dctx, snapstate.SeedRefreshCandidate{
 		InstanceName:     "snap-2",
 		SnapSetupTaskIDs: []string{nextSnapTask.ID()},
 	})
 	c.Assert(err, IsNil)
-	c.Assert(seedTS, NotNil)
+	c.Assert(added, Equals, true)
 	c.Check(seedTS.Create, Equals, currentCreate)
 	c.Check(seedTS.Finalize, Equals, currentFinalize)
 	c.Check(seedTS.Remove, DeepEquals, []*state.Task{currentRemove})
