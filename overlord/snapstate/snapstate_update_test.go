@@ -20503,6 +20503,127 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshRecursivePrerequisitesBe
 	c.Assert(chg.IsReady(), Equals, true)
 }
 
+func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesCreatedFirstWaitOnSiblingPrerequisites(c *C) {
+	_, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
+		"kernel":         "kernel",
+		"base":           "core18",
+		"required-snaps": []any{"content-provider"},
+	}, []string{"content-provider"})
+	defer restore()
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	ifacerepo.Replace(s.state, interfaces.NewRepository())
+	s.fakeStore.mutateSnapInfo = func(info *snap.Info) error {
+		if info.InstanceName() != "some-app" {
+			return nil
+		}
+
+		info.Plugs = map[string]*snap.PlugInfo{
+			"shared-content": {
+				Snap:      info,
+				Name:      "shared-content",
+				Interface: "content",
+				Attrs: map[string]any{
+					"default-provider": "content-provider",
+					"content":          "shared-content",
+				},
+			},
+			"sibling-content": {
+				Snap:      info,
+				Name:      "sibling-content",
+				Interface: "content",
+				Attrs: map[string]any{
+					"default-provider": "sibling-provider",
+					"content":          "sibling-content",
+				},
+			},
+		}
+
+		return nil
+	}
+
+	mockSeedRefreshRebootHandlers(s, c, nil)
+
+	s.installSeedRefreshSnaps(c,
+		seedRefreshSnap{name: "kernel", snapID: "kernel-id", snapType: "kernel"},
+		seedRefreshSnap{name: "core18", snapID: "core18-snap-id", snapType: "base"},
+		seedRefreshSnap{name: "content-provider", snapID: "content-provider-id", snapType: "app", base: "core18"},
+		seedRefreshSnap{name: "sibling-provider", snapID: "sibling-provider-id", snapType: "app", base: "core18"},
+		seedRefreshSnap{name: "some-app", snapID: "some-app-id", snapType: "app", base: "core18"},
+	)
+
+	uts, chg := runSeedRefreshUpdate(c, s.state, s.user.ID, []snapstate.StoreUpdate{{InstanceName: "some-app"}})
+	_, seedTS := parseSeedRefreshTaskSets(uts)
+	c.Assert(seedTS, IsNil)
+	c.Assert(countTasksOfKind(chg.Tasks(), "create-recovery-system"), Equals, 0)
+	c.Assert(countTasksOfKind(chg.Tasks(), "finalize-recovery-system"), Equals, 0)
+
+	s.settle(c)
+
+	c.Assert(countTasksOfKind(chg.Tasks(), "create-recovery-system"), Equals, 1)
+	c.Assert(countTasksOfKind(chg.Tasks(), "finalize-recovery-system"), Equals, 1)
+
+	var seedCreate, seedFinalize *state.Task
+	for _, task := range chg.Tasks() {
+		switch task.Kind() {
+		case "create-recovery-system":
+			seedCreate = task
+		case "finalize-recovery-system":
+			seedFinalize = task
+		}
+	}
+	c.Assert(seedCreate, NotNil)
+	c.Assert(seedFinalize, NotNil)
+
+	var providerPrereq, siblingPrereq *state.Task
+	for _, task := range chg.Tasks() {
+		if task.Kind() != "prerequisites" || task.Has("prerequisites-sync") {
+			continue
+		}
+
+		snapsup, err := snapstate.TaskSnapSetup(task)
+		c.Assert(err, IsNil)
+		switch snapsup.InstanceName() {
+		case "content-provider":
+			providerPrereq = task
+		case "sibling-provider":
+			siblingPrereq = task
+		}
+	}
+	c.Assert(providerPrereq, NotNil)
+	c.Assert(siblingPrereq, NotNil)
+
+	// create-recovery-system must not run until all same-pass initial
+	// prerequisites have had a chance to inject their own prerequisites.
+	c.Check(waitsOnTransitively(seedCreate, providerPrereq), Equals, true)
+	c.Check(waitsOnTransitively(seedCreate, siblingPrereq), Equals, true)
+
+	// the dependency from sibling-provider's initial prerequisites to seed creation
+	// must not let a later sibling-provider failure undo the seed refresh, so the
+	// initial prerequisites task joins the seed lane.
+	sharesLane := false
+	for _, lane := range seedCreate.Lanes() {
+		for _, otherLane := range siblingPrereq.Lanes() {
+			if lane == otherLane {
+				sharesLane = true
+			}
+		}
+	}
+	c.Check(sharesLane, Equals, true)
+
+	// sibling-provider is not seed-relevant, so finalization must not wait for
+	// the full sibling-provider refresh to complete.
+	c.Check(waitTasksContainKindForSnap(c, seedFinalize, "content-provider", "run-hook"), Equals, true)
+	c.Check(waitTasksContainKindForSnap(c, seedFinalize, "sibling-provider", "run-hook"), Equals, false)
+
+	s.mockRestartAndSettle(c, chg)
+
+	c.Assert(chg.Err(), IsNil)
+	c.Assert(chg.IsReady(), Equals, true)
+}
+
 func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesDoNotMergeWhenSeedRefreshAlreadyReady(c *C) {
 	observed, restore := s.setupSeedRefreshUpdateTest(c, false, true, map[string]any{
 		"kernel":         "kernel",
