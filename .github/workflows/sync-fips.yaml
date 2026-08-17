@@ -1,0 +1,80 @@
+name: Sync master into fips
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: sync-master-to-fips
+  cancel-in-progress: false
+
+jobs:
+  open-sync-pr:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Open synchronization PR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          open_pr_url() {
+            gh pr list \
+              --repo "$GH_REPO" \
+              --state open \
+              --base fips \
+              --head master \
+              --limit 1 \
+              --json url \
+              --jq '.[0].url // empty'
+          }
+
+          master_ahead_by() {
+            gh api \
+              "repos/${GH_REPO}/compare/fips...master" \
+              --jq '.ahead_by'
+          }
+
+          existing_pr="$(open_pr_url)"
+          if [[ -n "$existing_pr" ]]; then
+            echo "Synchronization PR already open: $existing_pr"
+            exit 0
+          fi
+
+          ahead_by="$(master_ahead_by)"
+          if [[ "$ahead_by" == "0" ]]; then
+            echo "Master is not ahead of fips"
+            exit 0
+          fi
+
+          if create_output="$(gh pr create \
+            --repo "$GH_REPO" \
+            --base fips \
+            --head master \
+            --title "Merge master into fips" \
+            --body 'Synchronize master into fips. Merge using "Create a merge commit"; do not squash or rebase.' 2>&1)"; then
+            echo "Created synchronization PR: $create_output"
+            exit 0
+          fi
+
+          existing_pr="$(open_pr_url)"
+          if [[ -n "$existing_pr" ]]; then
+            echo "Synchronization PR was created concurrently: $existing_pr"
+            exit 0
+          fi
+
+          ahead_by="$(master_ahead_by)"
+          if [[ "$ahead_by" == "0" ]]; then
+            echo "Master was synchronized concurrently"
+            exit 0
+          fi
+
+          echo "$create_output" >&2
+          exit 1
