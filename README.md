@@ -2,6 +2,8 @@
 
 # Welcome to snapd
 
+> This fork is testing automated synchronization from master to the FIPS branch.
+
 This is the code repository for **snapd**, the background service that manages
 and maintains installed snaps.
 
