@@ -365,7 +365,7 @@ func (s *deviceMgrInstallModeSuite) SetUpTest(c *C) {
 
 	s.state.Lock()
 	defer s.state.Unlock()
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 
 	s.SystemctlDaemonReloadCalls = 0
 	restore = systemd.MockSystemctl(func(args ...string) ([]byte, error) {
@@ -475,7 +475,7 @@ components:
 			sequence.NewComponentState(csi, snap.KernelModulesComponent))
 		snaptest.MockComponent(c, compYaml, kernelInfo, *csi)
 		compFn := snaptest.MakeTestComponentWithFiles(c, comp.name, compYaml, nil)
-		cpi := snap.MinimalComponentContainerPlaceInfo(comp.name, comp.rev, kernelInfo.SnapName())
+		cpi := snap.MinimalComponentContainerPlaceInfo(comp.name, comp.rev, kernelInfo.SnapName().String())
 		err := os.Rename(compFn, cpi.MountFile())
 		c.Assert(err, IsNil)
 	}
@@ -1332,7 +1332,7 @@ func (fs *fakeSeed) ModeSnaps(mode string) ([]*seed.Snap, error) {
 
 func (fs *fakeSeed) ModeSnap(snapName, mode string) (*seed.Snap, error) {
 	for _, sn := range fs.essentialSnaps {
-		if sn.SnapName() == snapName {
+		if sn.SnapName().String() == snapName {
 			return sn, nil
 		}
 	}
@@ -3559,7 +3559,7 @@ func (s *installStepSuite) TestDeviceManagerInstallFinishRunthrough(c *C) {
 	st.Lock()
 	defer st.Unlock()
 
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 	chg, err := devicestate.InstallFinish(s.state, "1234", mockOnVolumes, &devicestate.OptionalContainers{})
 	c.Assert(err, IsNil)
 
@@ -3693,7 +3693,7 @@ func (s *installStepSuite) TestDeviceManagerInstallSetupStorageEncryptionRunthro
 	st.Lock()
 	defer st.Unlock()
 
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 	chg, err := devicestate.InstallSetupStorageEncryption(s.state, "1234", mockOnVolumes, nil, nil)
 	c.Assert(err, IsNil)
 

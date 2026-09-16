@@ -142,7 +142,7 @@ func validateInfoAndFlags(info *snap.Info, snapst *SnapState, flags Flags) error
 	}
 
 	// check assumes
-	err := naming.ValidateAssumes(info.Assumes, snapdtool.Version, featureSet, arch.DpkgArchitecture())
+	err := naming.ValidateAssumes(info.Assumes, snapdtool.FullVersion(), featureSet, arch.DpkgArchitecture())
 	if err != nil {
 		askToRefreshSnapd := " (try to refresh snapd)"
 		isaErr := &naming.ISAError{}
@@ -203,7 +203,7 @@ func checkSnap(st *state.State, snapFilePath, instanceName string, si *snap.Side
 		}
 	}
 
-	if snapName != s.SnapName() {
+	if snapName != s.SnapName().String() {
 		return fmt.Errorf("cannot install snap %q using instance name %q", s.SnapName(), instanceName)
 	}
 

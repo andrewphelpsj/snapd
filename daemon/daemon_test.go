@@ -75,6 +75,10 @@ type daemonSuite struct {
 	notified   []string
 }
 
+func addUcrednet(r *http.Request, snapName string, uid uint32, socket string, ifaces ...string) {
+	AddUcrednetToRequest(r, NewUcrednet(snapName, "", uid, socket), ifaces...)
+}
+
 var _ = check.Suite(&daemonSuite{})
 
 func (s *daemonSuite) SetUpTest(c *check.C) {
@@ -167,7 +171,7 @@ func (s *daemonSuite) TestCommandMethodDispatch(c *check.C) {
 		req.Header.Add("User-Agent", fakeUserAgent)
 
 		rec := httptest.NewRecorder()
-		req.RemoteAddr = fmt.Sprintf("pid=100;uid=1001;socket=%s;", dirs.SnapdSocket)
+		addUcrednet(req, "some-snap", 1001, dirs.SnapdSocket)
 		cmd.ServeHTTP(rec, req)
 		c.Check(rec.Code, check.Equals, 401, check.Commentf(method))
 
@@ -180,7 +184,7 @@ func (s *daemonSuite) TestCommandMethodDispatch(c *check.C) {
 	}
 
 	req := httptest.NewRequest("POTATO", "/", nil)
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=1001;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 1001, dirs.SnapdSocket)
 	req.Header.Set("Authorization", fmt.Sprintf(`Macaroon root="%s"`, authUser.Macaroon))
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
@@ -209,12 +213,11 @@ func (s *daemonSuite) TestCommandMethodDispatchRoot(c *check.C) {
 
 		rec := httptest.NewRecorder()
 		// no ucred => forbidden
-		req.RemoteAddr = ""
 		cmd.ServeHTTP(rec, req)
 		c.Check(rec.Code, check.Equals, 403, check.Commentf(method))
 
 		rec = httptest.NewRecorder()
-		req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+		addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 
 		cmd.ServeHTTP(rec, req)
 		c.Check(mck.lastMethod, check.Equals, method)
@@ -222,7 +225,7 @@ func (s *daemonSuite) TestCommandMethodDispatchRoot(c *check.C) {
 	}
 
 	req := httptest.NewRequest("POTATO", "/", nil)
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
@@ -239,7 +242,7 @@ func (s *daemonSuite) TestCommandRestartingState(c *check.C) {
 	cmd.ReadAccess = openAccess{}
 	req, err := http.NewRequest("GET", "", nil)
 	c.Assert(err, check.IsNil)
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=42;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 42, dirs.SnapdSocket)
 
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
@@ -345,7 +348,7 @@ func (s *daemonSuite) TestFillsWarnings(c *check.C) {
 	cmd.ReadAccess = openAccess{}
 	req, err := http.NewRequest("GET", "", nil)
 	c.Assert(err, check.IsNil)
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=42;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 42, dirs.SnapdSocket)
 
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
@@ -391,7 +394,9 @@ func (s *daemonSuite) TestReadAccess(c *check.C) {
 		c.Check(r, check.NotNil)
 		c.Assert(ucred, check.NotNil)
 		c.Check(ucred.Uid, check.Equals, uint32(42))
-		c.Check(ucred.Pid, check.Equals, int32(100))
+		name, err := ucred.InstanceName()
+		c.Check(err, check.IsNil)
+		c.Check(name, check.Equals, "some-snap")
 		c.Check(ucred.Socket, check.Equals, "xyz")
 		c.Check(user, check.IsNil)
 		return nil
@@ -402,7 +407,7 @@ func (s *daemonSuite) TestReadAccess(c *check.C) {
 	})
 
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "pid=100;uid=42;socket=xyz;"
+	addUcrednet(req, "some-snap", 42, "xyz")
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	c.Check(rec.Code, check.Equals, 200)
@@ -428,14 +433,16 @@ func (s *daemonSuite) TestWriteAccess(c *check.C) {
 		c.Check(r, check.NotNil)
 		c.Assert(ucred, check.NotNil)
 		c.Check(ucred.Uid, check.Equals, uint32(42))
-		c.Check(ucred.Pid, check.Equals, int32(100))
+		name, err := ucred.InstanceName()
+		c.Check(err, check.IsNil)
+		c.Check(name, check.Equals, "some-snap")
 		c.Check(ucred.Socket, check.Equals, "xyz")
 		c.Check(user, check.IsNil)
 		return nil
 	})
 
 	req := httptest.NewRequest("PUT", "/", nil)
-	req.RemoteAddr = "pid=100;uid=42;socket=xyz;"
+	addUcrednet(req, "some-snap", 42, "xyz")
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	c.Check(rec.Code, check.Equals, 200)
@@ -443,7 +450,7 @@ func (s *daemonSuite) TestWriteAccess(c *check.C) {
 
 	accessCalled = false
 	req = httptest.NewRequest("POST", "/", nil)
-	req.RemoteAddr = "pid=100;uid=42;socket=xyz;"
+	addUcrednet(req, "some-snap", 42, "xyz")
 	rec = httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	c.Check(rec.Code, check.Equals, 200)
@@ -481,7 +488,9 @@ func (s *daemonSuite) TestWriteAccessWithUser(c *check.C) {
 		c.Check(r, check.NotNil)
 		c.Assert(ucred, check.NotNil)
 		c.Check(ucred.Uid, check.Equals, uint32(1001))
-		c.Check(ucred.Pid, check.Equals, int32(100))
+		name, err := ucred.InstanceName()
+		c.Check(err, check.IsNil)
+		c.Check(name, check.Equals, "some-snap")
 		c.Check(ucred.Socket, check.Equals, "xyz")
 		c.Check(user, check.DeepEquals, authUser)
 		return nil
@@ -489,7 +498,7 @@ func (s *daemonSuite) TestWriteAccessWithUser(c *check.C) {
 
 	req := httptest.NewRequest("PUT", "/", nil)
 	req.Header.Set("Authorization", fmt.Sprintf(`Macaroon root="%s"`, authUser.Macaroon))
-	req.RemoteAddr = "pid=100;uid=1001;socket=xyz;"
+	addUcrednet(req, "some-snap", 1001, "xyz")
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	c.Check(rec.Code, check.Equals, 200)
@@ -498,7 +507,7 @@ func (s *daemonSuite) TestWriteAccessWithUser(c *check.C) {
 	accessCalled = false
 	req = httptest.NewRequest("POST", "/", nil)
 	req.Header.Set("Authorization", fmt.Sprintf(`Macaroon root="%s"`, authUser.Macaroon))
-	req.RemoteAddr = "pid=100;uid=1001;socket=xyz;"
+	addUcrednet(req, "some-snap", 1001, "xyz")
 	rec = httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	c.Check(rec.Code, check.Equals, 200)
@@ -522,7 +531,7 @@ func (s *daemonSuite) TestPolkitAccessPath(c *check.C) {
 	}
 
 	req := httptest.NewRequest("POST", "/", nil)
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=1001;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 1001, dirs.SnapdSocket)
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	c.Check(rec.Code, check.Equals, 403)
@@ -635,6 +644,7 @@ version: 1`, si)
 	d.snapListener = &witnessAcceptListener{Listener: l2, accept: snapAccept}
 
 	c.Assert(d.Start(context.Background()), check.IsNil)
+	c.Assert(d.serve.ConnContext, check.NotNil)
 
 	c.Check(s.notified, check.DeepEquals, []string{extendedTimeoutUSec, "READY=1"})
 
@@ -1443,7 +1453,7 @@ func (s *daemonSuite) TestConnTrackerCanShutdown(c *check.C) {
 
 func doTestReq(c *check.C, cmd *Command, mth string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(mth, "/", nil)
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 	return rec
@@ -2160,7 +2170,7 @@ func (s *daemonSuite) TestTraceSnapdAPI(c *check.C) {
 				return SyncResponse(nil)
 			}
 			cmdHTTP.WriteAccess = openAccess{}
-			req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+			addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 			httprec := httptest.NewRecorder()
 			cmdHTTP.ServeHTTP(httprec, req)
 			c.Check(httprec.Code, check.Equals, tc.wantStatus, cmt)
@@ -2218,7 +2228,7 @@ func (s *daemonSuite) TestServeHTTPTraceExtractsActionPreservesBody(c *check.C) 
 
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 
@@ -2247,7 +2257,7 @@ func (s *daemonSuite) TestServeHTTPOversizeBodyRejected(c *check.C) {
 
 		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+		addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 		rec := httptest.NewRecorder()
 		cmd.ServeHTTP(rec, req)
 
@@ -2275,7 +2285,7 @@ func (s *daemonSuite) TestServeHTTPUnreadableBodyRejected(c *check.C) {
 		iotest.ErrReader(simulatedErr),
 	))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 
@@ -2301,7 +2311,7 @@ func (s *daemonSuite) TestServeHTTPTrailingDataRejected(c *check.C) {
 
 		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+		addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 		rec := httptest.NewRecorder()
 		cmd.ServeHTTP(rec, req)
 
@@ -2336,7 +2346,7 @@ func (s *daemonSuite) TestServeHTTPSkippedOversizeBodyStillServed(c *check.C) {
 		if tc.contentType != "" {
 			req.Header.Set("Content-Type", tc.contentType)
 		}
-		req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+		addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 		rec := httptest.NewRecorder()
 		cmd.ServeHTTP(rec, req)
 
@@ -2364,7 +2374,7 @@ func (s *daemonSuite) TestServeHTTPTraceInvalidJSONStillServed(c *check.C) {
 
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+	addUcrednet(req, "some-snap", 0, dirs.SnapdSocket)
 	rec := httptest.NewRecorder()
 	cmd.ServeHTTP(rec, req)
 

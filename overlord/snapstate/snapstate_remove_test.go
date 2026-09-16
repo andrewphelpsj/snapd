@@ -65,6 +65,8 @@ func (s *snapmgrTestSuite) TestRemoveTasks(c *C) {
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
 	verifyRemoveTasks(c, ts)
+	t := findKindInTaskSet(ts, "auto-disconnect")
+	c.Assert(t.Has("full-remove"), Equals, true)
 }
 
 func (s *snapmgrTestSuite) TestRemoveTasksAutoSnapshotDisabled(c *C) {
@@ -1039,6 +1041,9 @@ func (s *snapmgrTestSuite) TestRemoveLastRevisionRunThrough(c *C) {
 	c.Assert(err, IsNil)
 	chg.AddAll(ts)
 
+	t := findKindInTaskSet(ts, "auto-disconnect")
+	c.Assert(t.Has("full-remove"), Equals, true)
+
 	s.settle(c)
 
 	expected := fakeOps{
@@ -1361,7 +1366,7 @@ func (s *snapmgrTestSuite) TestRemoveConsultsSeedRefreshRemoveHookOnlyWhenEnable
 	})
 
 	called := false
-	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, *snap.Info, snapstate.DeviceContext) error {
+	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, snapstate.SeedRefreshCandidate, snapstate.DeviceContext) error {
 		called = true
 		return errors.New("blocked by test hook")
 	})
@@ -1405,7 +1410,7 @@ func (s *snapmgrTestSuite) TestRemoveSpecificRevisionDoesNotConsultSeedRefreshRe
 	tr.Commit()
 
 	called := false
-	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, *snap.Info, snapstate.DeviceContext) error {
+	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, snapstate.SeedRefreshCandidate, snapstate.DeviceContext) error {
 		called = true
 		return errors.New("blocked by test hook")
 	})
@@ -1789,7 +1794,7 @@ type snapdBackend struct {
 }
 
 func (f *snapdBackend) RemoveSnapData(info *snap.Info, opts *dirs.SnapDirOptions) error {
-	dir := snap.DataDir(info.SnapName(), info.Revision)
+	dir := snap.DataDir(info.SnapName().String(), info.Revision)
 	if err := os.Remove(dir); err != nil {
 		return fmt.Errorf("unexpected error: %v", err)
 	}
@@ -1797,7 +1802,7 @@ func (f *snapdBackend) RemoveSnapData(info *snap.Info, opts *dirs.SnapDirOptions
 }
 
 func (f *snapdBackend) RemoveSnapCommonData(info *snap.Info, opts *dirs.SnapDirOptions) error {
-	dir := snap.CommonDataDir(info.SnapName())
+	dir := snap.CommonDataDir(info.SnapName().String())
 	if err := os.Remove(dir); err != nil {
 		return fmt.Errorf("unexpected error: %v", err)
 	}

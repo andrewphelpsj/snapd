@@ -44,6 +44,7 @@ import (
 	"github.com/snapcore/snapd/gadget/quantity"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/overlord/devicestate"
+	"github.com/snapcore/snapd/overlord/devicestate/devicestatetest"
 	installLogic "github.com/snapcore/snapd/overlord/install"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/release"
@@ -77,7 +78,7 @@ func (s *deviceMgrInstallAPISuite) SetUpTest(c *C) {
 
 	s.state.Lock()
 	defer s.state.Unlock()
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 }
 
 func unpackSnap(snapBlob, targetDir string) error {
@@ -756,6 +757,18 @@ func (s *deviceMgrInstallAPISuite) testInstallFinishStep(c *C, opts finishStepOp
 
 		saveBootstrappedContainer := bootstrappedContainersForRole[gadget.SystemSave].(*secboot.MockBootstrappedContainer)
 		c.Check(saveBootstrappedContainer.Slots["default-recovery"], DeepEquals, []byte{'r', 'e', 'c', 'o', 'v', 'e', 'r', 'y', '-', '7', 0, 0, 0, 0, 0, 0})
+	}
+
+	if opts.encrypted {
+		encSetupData := devicestate.GetEncryptionSetupDataFromCache(s.state, label)
+		bootstrappedContainersForRole := install.BootstrappedContainersForRole(encSetupData)
+		c.Assert(bootstrappedContainersForRole, HasLen, 2)
+
+		dataBootstrappedContainer := bootstrappedContainersForRole[gadget.SystemData].(*secboot.MockBootstrappedContainer)
+		c.Check(dataBootstrappedContainer.KeyCommitted, Equals, true)
+
+		saveBootstrappedContainer := bootstrappedContainersForRole[gadget.SystemSave].(*secboot.MockBootstrappedContainer)
+		c.Check(saveBootstrappedContainer.KeyCommitted, Equals, true)
 	}
 
 	// install-time extra snapd kernel command line fragments are persisted to
