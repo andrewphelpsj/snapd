@@ -280,7 +280,7 @@ func (ig *setupInfoGetter) ComponentInfo(st *state.State, cref naming.ComponentR
 			continue
 		}
 
-		mountFile := compsup.BlobPath(snapsup.InstanceName())
+		mountFile := compsup.BlobPath(snapsup.InstanceName().String())
 
 		f, err := snapfile.Open(mountFile)
 		if err != nil {
@@ -366,7 +366,7 @@ func (ig *setupInfoGetter) SnapInfo(st *state.State, name string) (info *snap.In
 		if err != nil {
 			return nil, "", false, err
 		}
-		if snapsup.SnapName() != name {
+		if snapsup.SnapName().String() != name {
 			continue
 		}
 		// local path tasks carry SnapPath until mount-snap consumes it; otherwise
@@ -602,7 +602,7 @@ func createSystemForModelFromValidatedSnaps(
 		}
 
 		seedComps := make(map[string]*seedwriter.SeedComponent, len(sn.Components))
-		for compPath, comp := range modelComponents[info.SnapName()] {
+		for compPath, comp := range modelComponents[info.SnapName().String()] {
 			if asserted {
 				_, compAssertions, err := seedwriter.DeriveComponentSideInfo(compPath, comp, info, model, sf, db)
 				if err != nil {
@@ -644,7 +644,7 @@ func createSystemForModelFromValidatedSnaps(
 		if len(toDownload) > 0 {
 			which := make([]string, 0, len(toDownload))
 			for _, sn := range toDownload {
-				which = append(which, sn.SnapName())
+				which = append(which, sn.SnapName().String())
 			}
 			return "", fmt.Errorf("internal error: need to download snaps: %v", strings.Join(which, ", "))
 		}
@@ -670,7 +670,7 @@ func createSystemForModelFromValidatedSnaps(
 	if len(unassertedSnaps) > 0 {
 		locals := make([]string, len(unassertedSnaps))
 		for i, sn := range unassertedSnaps {
-			locals[i] = sn.SnapName()
+			locals[i] = sn.SnapName().String()
 		}
 		logger.Noticef("system %q contains unasserted snaps %s", label, strutil.Quoted(locals))
 	}

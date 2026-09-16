@@ -36,7 +36,7 @@ func (s *targetTestSuite) TestInstallWithComponents(c *C) {
 		channel  = "channel-for-components"
 	)
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 
 		return []store.SnapResourceResult{
 			{
@@ -87,7 +87,7 @@ func (s *targetTestSuite) TestInstallWithComponentsMissingResource(c *C) {
 		channel  = "channel-for-components"
 	)
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 
 		return []store.SnapResourceResult{
 			{
@@ -125,7 +125,7 @@ func (s *targetTestSuite) TestInstallWithComponentsWrongType(c *C) {
 		channel  = "channel-for-components"
 	)
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 
 		return []store.SnapResourceResult{
 			{
@@ -165,7 +165,7 @@ func (s *targetTestSuite) TestInstallWithComponentsOtherResource(c *C) {
 		channel  = "channel-for-components"
 	)
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 
 		return []store.SnapResourceResult{
 			{
@@ -204,7 +204,7 @@ func (s *targetTestSuite) TestInstallWithComponentsMissingInInfo(c *C) {
 		channel  = "channel-for-components"
 	)
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 
 		return []store.SnapResourceResult{
 			{
@@ -476,7 +476,7 @@ func (s *targetTestSuite) TestUpdateSnapInstallIfMissingChannelCases(c *C) {
 		var snapsup *snapstate.SnapSetup
 		for _, task := range ts.Tasks() {
 			cand, setupErr := snapstate.TaskSnapSetup(task)
-			if setupErr == nil && cand.InstanceName() == tc.update.InstanceName {
+			if setupErr == nil && cand.InstanceName().String() == tc.update.InstanceName {
 				snapsup = cand
 				break
 			}
@@ -493,7 +493,7 @@ func (s *targetTestSuite) TestUpdateSnapNotInstalledInstallIfMissingWithComponen
 
 	const compName = "standard-component"
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), Equals, "some-snap")
+		c.Assert(info.SnapName().String(), Equals, "some-snap")
 		return []store.SnapResourceResult{{
 			DownloadInfo: snap.DownloadInfo{DownloadURL: "http://example.com/some-snap"},
 			Name:         compName,
@@ -977,7 +977,7 @@ func (s *targetTestSuite) TestUpdateComponents(c *C) {
 		compMntDir string, info *snap.Info, csi *snap.ComponentSideInfo,
 	) (*snap.ComponentInfo, error) {
 		return &snap.ComponentInfo{
-			Component:         naming.NewComponentRef(info.SnapName(), compName),
+			Component:         naming.NewComponentRef(info.SnapName().String(), compName),
 			Type:              snap.StandardComponent,
 			CompVersion:       "1.0",
 			ComponentSideInfo: *csi,
@@ -993,7 +993,7 @@ func (s *targetTestSuite) TestUpdateComponents(c *C) {
 	})
 
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 
 		return []store.SnapResourceResult{
 			{
@@ -1048,7 +1048,7 @@ func (s *targetTestSuite) TestUpdateComponentsSameComponentRevision(c *C) {
 		compMntDir string, info *snap.Info, csi *snap.ComponentSideInfo,
 	) (*snap.ComponentInfo, error) {
 		return &snap.ComponentInfo{
-			Component:         naming.NewComponentRef(info.SnapName(), compName),
+			Component:         naming.NewComponentRef(info.SnapName().String(), compName),
 			Type:              snap.StandardComponent,
 			CompVersion:       "1.0",
 			ComponentSideInfo: *csi,
@@ -1065,7 +1065,7 @@ func (s *targetTestSuite) TestUpdateComponentsSameComponentRevision(c *C) {
 
 	storeAccessed := false
 	s.fakeStore.snapResourcesFn = func(info *snap.Info) []store.SnapResourceResult {
-		c.Assert(info.SnapName(), DeepEquals, snapName)
+		c.Assert(info.SnapName().String(), DeepEquals, snapName)
 		storeAccessed = true
 		return []store.SnapResourceResult{
 			{
@@ -1230,7 +1230,7 @@ epoch: 1
 	c.Assert(err, IsNil)
 	snapsup, err := snapstate.TaskSnapSetup(setupTask)
 	c.Assert(err, IsNil)
-	c.Check(snapsup.InstanceName(), Equals, snapName)
+	c.Check(snapsup.InstanceName().String(), Equals, snapName)
 	c.Check(snapsup.Revision(), Equals, rev)
 	c.Check(snapsup.SnapPath, Equals, snapPath)
 	c.Check(snapsup.Channel, Equals, trackedChannel)

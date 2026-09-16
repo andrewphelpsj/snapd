@@ -82,6 +82,35 @@ func (d *Daemon) RequestedRestart() restart.RestartType {
 
 type Ucrednet = ucrednet
 
+func NewUcrednet(instanceName, processExeName string, uid uint32, socket string) *Ucrednet {
+	return &ucrednet{
+		instanceName:            instanceName,
+		untrustedProcessExeName: processExeName,
+		Uid:                     uid,
+		Socket:                  socket,
+	}
+}
+
+func (un *ucrednet) SetInstanceNameErr(err error) {
+	un.instanceNameErr = err
+}
+
+func (un *ucrednet) SetUntrustedProcessExeNameErr(err error) {
+	un.untrustedProcessExeNameErr = err
+}
+
+func AddUcrednetToRequest(r *http.Request, ucred *Ucrednet, ifaces ...string) {
+	ctx := ucrednetWithCredentials(r.Context(), ucred)
+	for _, iface := range ifaces {
+		ctx = ucrednetAttachInterface(ctx, iface)
+	}
+	*r = *r.WithContext(ctx)
+}
+
+func UcrednetFromRequest(r *http.Request) (*Ucrednet, []string, error) {
+	return ucrednetGetWithInterfaces(r.Context())
+}
+
 func BeforeNewChange(beforeNewChange func(st *state.State, kind, summary string, tsets []*state.TaskSet, snapNames []string)) (restore func()) {
 	oldNewChange := newChange
 	newChange = func(st *state.State, kind, summary string, tsets []*state.TaskSet, snapNames []string) *state.Change {
@@ -90,14 +119,6 @@ func BeforeNewChange(beforeNewChange func(st *state.State, kind, summary string,
 	}
 	return func() {
 		newChange = oldNewChange
-	}
-}
-
-func MockUcrednetGet(mock func(remoteAddr string) (ucred *Ucrednet, err error)) (restore func()) {
-	oldUcrednetGet := ucrednetGet
-	ucrednetGet = mock
-	return func() {
-		ucrednetGet = oldUcrednetGet
 	}
 }
 

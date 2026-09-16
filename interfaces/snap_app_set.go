@@ -34,7 +34,7 @@ var NoComponents []*snap.ComponentInfo
 // NewSnapAppSet returns a new SnapAppSet for the given snap.Info.
 func NewSnapAppSet(info *snap.Info, components []*snap.ComponentInfo) (*SnapAppSet, error) {
 	for _, c := range components {
-		if c.Component.SnapName != info.SnapName() {
+		if c.Component.SnapName != info.SnapName().String() {
 			return nil, fmt.Errorf("internal error: snap %q does not own component %q", info.SnapName(), c.Component)
 		}
 	}
@@ -49,6 +49,17 @@ func (a *SnapAppSet) Info() *snap.Info {
 // Components returns the components that this SnapAppSet was created with.
 func (a *SnapAppSet) Components() []*snap.ComponentInfo {
 	return a.components
+}
+
+// Component looks up a component with a given name and returns its info, or nil
+// if the component was not set when creating the app set.
+func (a *SnapAppSet) Component(name string) *snap.ComponentInfo {
+	for _, comp := range a.Components() {
+		if comp.Component.ComponentName == name {
+			return comp
+		}
+	}
+	return nil
 }
 
 // InstanceName returns the instance name of the snap that this SnapAppSet is
@@ -108,7 +119,7 @@ func (a *SnapAppSet) ExpandSliceSnapVariablesWithOrder(paths []string) []Expande
 				continue
 			}
 			cpi := snap.MinimalComponentContainerPlaceInfo(
-				ci.Component.ComponentName, ci.Revision, a.info.SnapName())
+				ci.Component.ComponentName, ci.Revision, a.info.SnapName().String())
 			expandedDirs = append(expandedDirs, ExpandedDirWithIdx{Path: filepath.Clean(
 				filepath.Join(cpi.MountDir(), compAndPath[1])),
 				Idx: idx,

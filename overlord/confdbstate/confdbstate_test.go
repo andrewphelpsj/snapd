@@ -91,7 +91,7 @@ func (s *confdbTestSuite) SetUpTest(c *C) {
 	confdbstate.AssertstateConfdbSchema = assertstate.ConfdbSchema
 	confdbstate.AssertstateFetchConfdbSchemaAssertion = assertstate.FetchConfdbSchemaAssertion
 
-	mgr := confdbstate.Manager(s.state, hookMgr, runner)
+	mgr := confdbstate.Manager(s.state, hookMgr, runner, nil)
 	s.o.AddManager(mgr)
 
 	storeSigning := assertstest.NewStoreStack("can0nical", nil)
@@ -561,7 +561,7 @@ func mockInstalledSnap(c *C, st *state.State, snapYaml string, hooks []string) *
 		Active: true,
 		Sequence: snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{
 			{
-				RealName: info.SnapName(),
+				RealName: info.SnapName().String(),
 				Revision: info.Revision,
 				SnapID:   info.InstanceName() + "-id",
 			},
