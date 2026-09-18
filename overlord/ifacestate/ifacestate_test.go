@@ -268,7 +268,7 @@ func (s *interfaceManagerSuite) SetUpTest(c *C) {
 	s.BaseTest.AddCleanup(snapstatetest.ReplaceDeviceCtxHook(devicestate.DeviceCtx))
 	s.MockModel(c, nil)
 
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		c.Logf("restart request: %v", t)
 	}))
 	c.Assert(err, IsNil)
@@ -2368,8 +2368,8 @@ func (s *interfaceManagerSuite) mockSnapInstance(c *C, instanceName, yamlText st
 		Revision: snap.R(1),
 	}
 	snapInfo := snaptest.MockSnapInstance(c, instanceName, yamlText, sideInfo)
-	sideInfo.RealName = snapInfo.SnapName()
-	snapInfo.RealName = snapInfo.SnapName()
+	sideInfo.RealName = snapInfo.SnapName().String()
+	snapInfo.RealName = snapInfo.SnapName().String()
 
 	a, err := s.Db.FindMany(asserts.SnapDeclarationType, map[string]string{
 		"snap-name": sideInfo.RealName,
@@ -2400,7 +2400,7 @@ func (s *interfaceManagerSuite) mockSnapInstance(c *C, instanceName, yamlText st
 func (s *interfaceManagerSuite) mockUpdatedSnap(c *C, yamlText string, revision int) *snap.Info {
 	sideInfo := &snap.SideInfo{Revision: snap.R(revision)}
 	snapInfo := snaptest.MockSnap(c, yamlText, sideInfo)
-	sideInfo.RealName = snapInfo.SnapName()
+	sideInfo.RealName = snapInfo.SnapName().String()
 
 	s.state.Lock()
 	defer s.state.Unlock()
@@ -2441,7 +2441,7 @@ func (s *interfaceManagerSuite) mockLinkComponent(c *C) {
 		// snap must be installed at this point, either just installed by a
 		// previous link-snap task, or it was already installed.
 		var snapst snapstate.SnapState
-		err = snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+		err = snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 		if err != nil {
 			return err
 		}
@@ -2457,7 +2457,7 @@ func (s *interfaceManagerSuite) mockLinkComponent(c *C) {
 			return fmt.Errorf("internal error while linking component: %w", err)
 		}
 
-		snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
+		snapstate.Set(s.state, snapsup.InstanceName().String(), &snapst)
 
 		return nil
 	}, func(task *state.Task, tomb *tomb.Tomb) error { // undo handler
@@ -2470,7 +2470,7 @@ func (s *interfaceManagerSuite) mockLinkComponent(c *C) {
 		}
 
 		var snapst snapstate.SnapState
-		err = snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+		err = snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 		if err != nil {
 			return err
 		}
@@ -2486,7 +2486,7 @@ func (s *interfaceManagerSuite) mockLinkComponent(c *C) {
 
 		c.Check(removed, NotNil)
 
-		snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
+		snapstate.Set(s.state, snapsup.InstanceName().String(), &snapst)
 
 		return nil
 	})
@@ -2501,7 +2501,7 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeFromComponent(c *C, sn
 
 	// snap should already be installed if calling this function
 	var snapst snapstate.SnapState
-	err := snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+	err := snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 	c.Assert(err, IsNil)
 
 	change := s.state.NewChange("test", "")
@@ -2537,7 +2537,7 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeWithOptions(c *C, snap
 
 	if !opts.install {
 		var snapst snapstate.SnapState
-		err := snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+		err := snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 		c.Assert(err, IsNil)
 		csis = append(csis, snapst.CurrentComponentSideInfos()...)
 	}
@@ -2551,7 +2551,7 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeWithOptions(c *C, snap
 		s.state.Lock()
 		defer s.state.Unlock()
 		var snapst snapstate.SnapState
-		err := snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+		err := snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 		if err != nil && !errors.Is(err, state.ErrNoState) {
 			return err
 		}
@@ -2565,28 +2565,28 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeWithOptions(c *C, snap
 			c.Check(snapst.PendingSecurity.SideInfo, DeepEquals, snapsup.SideInfo)
 			c.Check(snapst.PendingSecurity.Components, DeepEquals, csis)
 		}
-		snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
+		snapstate.Set(s.state, snapsup.InstanceName().String(), &snapst)
 		c.Check(ifacestate.OnSnapLinkageChanged(s.state, snapsup), IsNil)
 
 		if opts.linkSnapRestarts {
 			c.Log("requesting restart in link-snap")
-			return restart.FinishTaskWithRestart(task, state.DoneStatus, restart.RestartSystem, snapsup.InstanceName(), nil)
+			return restart.FinishTaskWithRestart(task, state.DoneStatus, restart.RestartSystem, snapsup.InstanceName().String(), nil, "")
 		}
 		return nil
 	}, func(task *state.Task, tomb *tomb.Tomb) error { // undo handler
 		s.state.Lock()
 		defer s.state.Unlock()
 		var snapst snapstate.SnapState
-		err := snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+		err := snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 		if err != nil && !errors.Is(err, state.ErrNoState) {
 			return err
 		}
 		if opts.install {
 			// unlink completely
-			snapstate.Set(s.state, snapsup.InstanceName(), nil)
+			snapstate.Set(s.state, snapsup.InstanceName().String(), nil)
 		} else {
 			snapst.Active = false
-			snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
+			snapstate.Set(s.state, snapsup.InstanceName().String(), &snapst)
 		}
 		// this is realistic and will move PendingSecurity.SideInfo
 		// on undo already to the previous revision, this should
@@ -2596,9 +2596,9 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeWithOptions(c *C, snap
 		if !opts.install {
 			// perturb things to make sure undo-setup-profiles
 			// sets the right value
-			c.Assert(snapstate.Get(s.state, snapsup.InstanceName(), &snapst), IsNil)
+			c.Assert(snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst), IsNil)
 			snapst.PendingSecurity.SideInfo = &snap.SideInfo{}
-			snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
+			snapstate.Set(s.state, snapsup.InstanceName().String(), &snapst)
 		}
 		return nil
 	})
@@ -2606,13 +2606,13 @@ func (s *interfaceManagerSuite) addSetupSnapSecurityChangeWithOptions(c *C, snap
 	s.mockLinkComponent(c)
 
 	var snapst snapstate.SnapState
-	err := snapstate.Get(s.state, snapsup.InstanceName(), &snapst)
+	err := snapstate.Get(s.state, snapsup.InstanceName().String(), &snapst)
 	if err != nil && !errors.Is(err, state.ErrNoState) {
 		panic(err)
 	}
 	if snapst.IsInstalled() {
 		snapst.Active = opts.active
-		snapstate.Set(s.state, snapsup.InstanceName(), &snapst)
+		snapstate.Set(s.state, snapsup.InstanceName().String(), &snapst)
 	}
 
 	change := s.state.NewChange("test", "")
@@ -3027,7 +3027,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityHonorsUndesiredFlag(c *C)
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -3074,7 +3074,7 @@ func (s *interfaceManagerSuite) TestBadInterfacesWarning(c *C) {
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -3110,7 +3110,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityAutoConnectsPlugs(c *C) {
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -3169,7 +3169,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityAutoConnectsSlots(c *C) {
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -3246,7 +3246,7 @@ func (s *interfaceManagerSuite) testDoSetupSnapSecurityNoAutoConnectParallelInst
 		// setup-snap-security task as if we're installing the "consumer"
 		change = s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 			SideInfo: &snap.SideInfo{
-				RealName: consSnapInfo.SnapName(),
+				RealName: consSnapInfo.SnapName().String(),
 				Revision: consSnapInfo.Revision,
 			},
 		})
@@ -3254,7 +3254,7 @@ func (s *interfaceManagerSuite) testDoSetupSnapSecurityNoAutoConnectParallelInst
 		// setup-snap-security task as if we're installing the "producer_instance"
 		change = s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 			SideInfo: &snap.SideInfo{
-				RealName: prodSnapInfo.SnapName(),
+				RealName: prodSnapInfo.SnapName().String(),
 				Revision: prodSnapInfo.Revision,
 			},
 			InstanceKey: "instance",
@@ -3332,7 +3332,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityAutoConnectsParallelInsta
 	// Run the setup-snap-security task for the parallel-installed consumer.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 		InstanceKey: "instance",
@@ -3391,7 +3391,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityAutoConnectsSlotsMultiple
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: producer.Info().SnapName(),
+			RealName: producer.Info().SnapName().String(),
 			Revision: producer.Info().Revision,
 		},
 	})
@@ -3462,7 +3462,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityNoAutoConnectSlotsIfAlter
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -3516,7 +3516,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityAutoConnectsSomeConnected
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: producer.Info().SnapName(),
+			RealName: producer.Info().SnapName().String(),
 			Revision: producer.Info().Revision,
 		},
 	})
@@ -3619,7 +3619,7 @@ slots:
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			SnapID:   snapInfo.SnapID,
 			Revision: snapInfo.Revision,
 		},
@@ -3683,8 +3683,8 @@ slots:
 
 	_ = s.manager(c)
 
-	producerSnapSetup := &snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: producerInfo.SnapName(), SnapID: producerInfo.SnapID, Revision: producerInfo.Revision}}
-	consumerSnapSetup := &snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: consumerInfo.SnapName(), SnapID: consumerInfo.SnapID, Revision: consumerInfo.Revision}}
+	producerSnapSetup := &snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: producerInfo.SnapName().String(), SnapID: producerInfo.SnapID, Revision: producerInfo.Revision}}
+	consumerSnapSetup := &snapstate.SnapSetup{SideInfo: &snap.SideInfo{RealName: consumerInfo.SnapName().String(), SnapID: consumerInfo.SnapID, Revision: consumerInfo.Revision}}
 
 	// Consumer change: auto-connect will inject connect tasks and a setup-profiles task.
 	consumerChange := s.addSetupSnapSecurityChange(c, consumerSnapSetup)
@@ -3892,7 +3892,7 @@ slots:
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			SnapID:   snapInfo.SnapID,
 			Revision: snapInfo.Revision,
 		},
@@ -4644,7 +4644,7 @@ func (s *interfaceManagerSuite) TestDoSetupSnapSecurityIgnoresStrayConnection(c 
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -4675,7 +4675,7 @@ func (s *interfaceManagerSuite) TestDoSetupProfilesAddsImplicitSlots(c *C) {
 	// Run the setup-profiles task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -4800,7 +4800,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesHonorsDevMode(c *C) {
 	// Note that the task will see SnapSetup.Flags equal to DeveloperMode.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 		Flags: snapstate.Flags{DevMode: true},
@@ -4835,7 +4835,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesSetupManyError(c *C) {
 	// Run the setup-profiles task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -4896,7 +4896,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesUsesFreshSnapInfo(c *C) {
 	// Run the setup-profiles task for the new revision and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: newSnapInfo.SnapName(),
+			RealName: newSnapInfo.SnapName().String(),
 			Revision: newSnapInfo.Revision,
 		},
 	})
@@ -4936,7 +4936,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesOnInstall(c *C) {
 	// Run the setup-profiles task for the new revision and let it finish.
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: installSnapInfo.SnapName(),
+			RealName: installSnapInfo.SnapName().String(),
 			Revision: installSnapInfo.Revision,
 		},
 	}, setupSnapSecurityChangeOptions{
@@ -4978,7 +4978,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesInstallSnapAndComponents(c *C) 
 
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, setupSnapSecurityChangeOptions{components: compsups})
@@ -5038,7 +5038,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesInstallSnapAndComponentsPreexis
 
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, setupSnapSecurityChangeOptions{components: compsups})
@@ -5093,7 +5093,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesInstallComponent(c *C) {
 
 	change := s.addSetupSnapSecurityChangeFromComponent(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, &snapstate.ComponentSetup{
@@ -5143,7 +5143,7 @@ func (s *interfaceManagerSuite) mockComponentForSnap(c *C, compName string, comp
 
 	snapst.Sequence.AddComponentForRevision(snapInfo.Revision, &sequence.ComponentState{
 		SideInfo: &snap.ComponentSideInfo{
-			Component: naming.NewComponentRef(snapInfo.SnapName(), compName),
+			Component: naming.NewComponentRef(snapInfo.SnapName().String(), compName),
 			Revision:  snap.R(1),
 		},
 		CompType: snap.StandardComponent,
@@ -5169,7 +5169,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesInstallComponentSnapHasPreexist
 
 	change := s.addSetupSnapSecurityChangeFromComponent(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, &snapstate.ComponentSetup{
@@ -5227,7 +5227,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesUpdateSnapWithComponents(c *C) 
 
 	change := s.addSetupSnapSecurityChangeFromComponent(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, &snapstate.ComponentSetup{
@@ -5292,7 +5292,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesOfAffectedSnapWithComponents(c 
 	// includes it
 	snapst.Sequence.AddComponentForRevision(snapInfo.Revision, &sequence.ComponentState{
 		SideInfo: &snap.ComponentSideInfo{
-			Component: naming.NewComponentRef(snapInfo.SnapName(), "comp2"),
+			Component: naming.NewComponentRef(snapInfo.SnapName().String(), "comp2"),
 			Revision:  snap.R(1),
 		},
 		CompType: snap.StandardComponent,
@@ -5304,7 +5304,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesOfAffectedSnapWithComponents(c 
 	c.Assert(snapstate.Get(s.state, coreSnapInfo.InstanceName(), &coreSnapst), IsNil)
 	coreSnapst.Sequence.AddComponentForRevision(snapInfo.Revision, &sequence.ComponentState{
 		SideInfo: &snap.ComponentSideInfo{
-			Component: naming.NewComponentRef(snapInfo.SnapName(), "comp"),
+			Component: naming.NewComponentRef(snapInfo.SnapName().String(), "comp"),
 			Revision:  snap.R(1),
 		},
 		CompType: snap.StandardComponent,
@@ -5324,7 +5324,7 @@ func (s *interfaceManagerSuite) TestSetupProfilesOfAffectedSnapWithComponents(c 
 
 	change := s.addSetupSnapSecurityChangeFromComponent(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, &snapstate.ComponentSetup{
@@ -5421,7 +5421,7 @@ func (s *interfaceManagerSuite) testAutoconnectionsRemovedForMissingPlugs(c *C, 
 	// Run the setup-profiles task for the new revision and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: newSnapInfo.SnapName(),
+			RealName: newSnapInfo.SnapName().String(),
 			Revision: newSnapInfo.Revision,
 		},
 	})
@@ -5467,7 +5467,7 @@ func (s *interfaceManagerSuite) testAutoconnectionsRemovedForMissingSlots(c *C, 
 	// Run the setup-profiles task for the new revision and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: newSnapInfo1.SnapName(),
+			RealName: newSnapInfo1.SnapName().String(),
 			Revision: newSnapInfo1.Revision,
 		},
 	})
@@ -5502,7 +5502,7 @@ func (s *interfaceManagerSuite) TestAutoConnectSetupSecurityForConnectedSlots(c 
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -5544,7 +5544,7 @@ func (s *interfaceManagerSuite) TestAutoConnectSetupSecurityOnceWithMultiplePlug
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -6419,15 +6419,15 @@ func (s *interfaceManagerSuite) TestSetupProfilesDevModeMultiple(c *C) {
 	c.Assert(err, IsNil)
 
 	connRef := &interfaces.ConnRef{
-		PlugRef: interfaces.PlugRef{Snap: siC.InstanceName().TODOInstanceName(), Name: "plug"},
-		SlotRef: interfaces.SlotRef{Snap: siP.InstanceName().TODOInstanceName(), Name: "slot"},
+		PlugRef: interfaces.PlugRef{Snap: siC.InstanceName().String(), Name: "plug"},
+		SlotRef: interfaces.SlotRef{Snap: siP.InstanceName().String(), Name: "slot"},
 	}
 	_, err = repo.Connect(connRef, nil, nil, nil, nil, nil)
 	c.Assert(err, IsNil)
 
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: siC.Info().SnapName(),
+			RealName: siC.Info().SnapName().String(),
 			Revision: siC.Info().Revision,
 		},
 		Flags: snapstate.Flags{DevMode: true},
@@ -6773,7 +6773,7 @@ func (s *interfaceManagerSuite) TestUndoSetupProfilesOnInstall(c *C) {
 	// Add a change that undoes "setup-snap-security"
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, setupSnapSecurityChangeOptions{
@@ -6820,7 +6820,7 @@ func (s *interfaceManagerSuite) TestUndoSetupProfilesOnComponentInstall(c *C) {
 
 	change := s.addSetupSnapSecurityChangeFromComponent(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}, &snapstate.ComponentSetup{
@@ -6884,7 +6884,7 @@ func (s *interfaceManagerSuite) TestUndoSetupProfilesOnRefresh(c *C) {
 	// Add a change that undoes "setup-snap-security"
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snap.R(snapInfo.Revision.N + 1),
 		},
 	}, setupSnapSecurityChangeOptions{
@@ -6958,7 +6958,7 @@ hooks:
 	task := s.state.NewTask("setup-profiles", "")
 	task.Set("prepare-profiles", true)
 	task.Set("snap-setup", &snapstate.SnapSetup{SideInfo: &snap.SideInfo{
-		RealName: updatedInfo.SnapName(),
+		RealName: updatedInfo.SnapName().String(),
 		Revision: updatedInfo.Revision,
 	}})
 	change.AddTask(task)
@@ -7032,7 +7032,7 @@ apps:
 `, 2)
 
 	s.secBackend.SetupCallback = func(appSet *interfaces.SnapAppSet, opts interfaces.ConfinementOptions, sctx interfaces.SetupContext, repo *interfaces.Repository) error {
-		if appSet.InstanceName().TODOInstanceName() == newConsumerInfo.InstanceName() && appSet.Info().Revision == newConsumerInfo.Revision {
+		if appSet.InstanceName().String() == newConsumerInfo.InstanceName() && appSet.Info().Revision == newConsumerInfo.Revision {
 			return fmt.Errorf("fail setup consumer rev 2")
 		}
 		return nil
@@ -7040,7 +7040,7 @@ apps:
 
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: newConsumerInfo.SnapName(),
+			RealName: newConsumerInfo.SnapName().String(),
 			Revision: newConsumerInfo.Revision,
 		},
 	}, setupSnapSecurityChangeOptions{active: false})
@@ -7120,7 +7120,7 @@ apps:
 `, 2)
 
 	s.secBackend.SetupCallback = func(appSet *interfaces.SnapAppSet, opts interfaces.ConfinementOptions, sctx interfaces.SetupContext, repo *interfaces.Repository) error {
-		if appSet.InstanceName().TODOInstanceName() == newConsumerInfo.InstanceName() && appSet.Info().Revision == newConsumerInfo.Revision {
+		if appSet.InstanceName().String() == newConsumerInfo.InstanceName() && appSet.Info().Revision == newConsumerInfo.Revision {
 			return fmt.Errorf("fail setup consumer rev 2")
 		}
 		return nil
@@ -7128,7 +7128,7 @@ apps:
 
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: newConsumerInfo.SnapName(),
+			RealName: newConsumerInfo.SnapName().String(),
 			Revision: newConsumerInfo.Revision,
 		},
 	}, setupSnapSecurityChangeOptions{active: false})
@@ -7190,7 +7190,7 @@ func (s *interfaceManagerSuite) TestUndoSetupProfilesOnRefreshClassicToStrictUse
 	// Attempt a refresh to the new revision, with strict confinement flags.
 	change := s.addSetupSnapSecurityChangeWithOptions(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: oldSnapInfo.SnapName(),
+			RealName: oldSnapInfo.SnapName().String(),
 			Revision: snap.R(newRev),
 		},
 		Flags: snapstate.Flags{Classic: false},
@@ -7385,7 +7385,7 @@ func (s *interfaceManagerSuite) TestAutoConnectDuringCoreTransition(c *C) {
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -7449,7 +7449,7 @@ type: snapd
 	mgr := s.manager(c)
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	})
@@ -10858,7 +10858,7 @@ plugs:
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			SnapID:   snapInfo.SnapID,
 			Revision: snapInfo.Revision,
 		},
@@ -11027,7 +11027,7 @@ plugs:
 	// Run the setup-snap-security task and let it finish.
 	change := s.addSetupSnapSecurityChange(c, &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			SnapID:   snapInfo.SnapID,
 			Revision: snapInfo.Revision,
 		},
@@ -11065,7 +11065,7 @@ func (s *interfaceManagerSuite) autoconnectChangeForPreseeding(c *C, skipMarkPre
 
 	snapsup := &snapstate.SnapSetup{
 		SideInfo: &snap.SideInfo{
-			RealName: snapInfo.SnapName(),
+			RealName: snapInfo.SnapName().String(),
 			Revision: snapInfo.Revision,
 		},
 	}
@@ -11277,14 +11277,14 @@ func (s *interfaceManagerSuite) TestShouldUndoSetupProfiles(c *C) {
 
 	// Legacy/component-only style change has no prepare-profiles task.
 	// In that case, undo should run for setup-profiles tasks.
-	c.Check(ifacestate.ShouldUndoSetupProfiles(setupBeforeLink, snapsup.InstanceName()), Equals, true)
-	c.Check(ifacestate.ShouldUndoSetupProfiles(setupAfterAutoConnect, snapsup.InstanceName()), Equals, true)
+	c.Check(ifacestate.ShouldUndoSetupProfiles(setupBeforeLink, snapsup.InstanceName().String()), Equals, true)
+	c.Check(ifacestate.ShouldUndoSetupProfiles(setupAfterAutoConnect, snapsup.InstanceName().String()), Equals, true)
 
 	// The prepare-profiles task for a different snap must not affect the result
 	// for this snap. For the other snap itself, setup-profiles should not undo
 	// because prepare-profiles exists for that same snap.
-	c.Check(ifacestate.ShouldUndoSetupProfiles(otherPrepareProfiles, otherSnapsup.InstanceName()), Equals, true)
-	c.Check(ifacestate.ShouldUndoSetupProfiles(otherSetupProfiles, otherSnapsup.InstanceName()), Equals, false)
+	c.Check(ifacestate.ShouldUndoSetupProfiles(otherPrepareProfiles, otherSnapsup.InstanceName().String()), Equals, true)
+	c.Check(ifacestate.ShouldUndoSetupProfiles(otherSetupProfiles, otherSnapsup.InstanceName().String()), Equals, false)
 }
 
 // Tests for ResolveDisconnect()
@@ -12480,9 +12480,9 @@ func (s *interfaceManagerSuite) TestDoRegenerateSecurityProfilesHappy(c *C) {
 			// expecting 2 calls, first from manager startup, 2nd from handler
 			c.Check(appSets, HasLen, 2)
 			for _, appSet := range appSets {
-				_, err := repo.SnapSpecification("test", appSet, confinement(appSet.InstanceName().TODOInstanceName()))
+				_, err := repo.SnapSpecification("test", appSet, confinement(appSet.InstanceName().String()))
 				c.Assert(err, IsNil)
-				c.Check(sctx(appSet.InstanceName().TODOInstanceName()), DeepEquals, interfaces.SetupContext{Reason: interfaces.SnapSetupReasonOther})
+				c.Check(sctx(appSet.InstanceName().String()), DeepEquals, interfaces.SetupContext{Reason: interfaces.SnapSetupReasonOther})
 			}
 
 			if setupCalls == 2 {
@@ -13859,20 +13859,20 @@ func (s *interfaceManagerSuite) TestDelayedEffectsSetupProfilesRunThroughProduce
 	chg := s.state.NewChange("test", "")
 
 	tasksForOne := func(snapsup *snapstate.SnapSetup) *state.TaskSet {
-		name := snapsup.InstanceName()
-		setupProfiles := s.state.NewTask("setup-profiles", fmt.Sprintf("prepare profiles for %q", name))
+		instanceName := snapsup.InstanceName()
+		setupProfiles := s.state.NewTask("setup-profiles", fmt.Sprintf("prepare profiles for %q", instanceName))
 		setupProfiles.Set("prepare-profiles", true)
 		setupProfiles.Set("snap-setup", snapsup)
 
-		linkSnap := s.state.NewTask("link-snap", fmt.Sprintf("link for %q", name))
+		linkSnap := s.state.NewTask("link-snap", fmt.Sprintf("link for %q", instanceName))
 		linkSnap.Set("snap-setup-task", setupProfiles.ID())
 		linkSnap.WaitFor(setupProfiles)
 
-		autoconnect := s.state.NewTask("auto-connect", fmt.Sprintf("auto connect for %q", name))
+		autoconnect := s.state.NewTask("auto-connect", fmt.Sprintf("auto connect for %q", instanceName))
 		autoconnect.Set("snap-setup", snapsup)
 		autoconnect.WaitFor(linkSnap)
 
-		inject := s.state.NewTask("inject-err", fmt.Sprintf("maybe inject error for %q", name))
+		inject := s.state.NewTask("inject-err", fmt.Sprintf("maybe inject error for %q", instanceName))
 		inject.Set("snap-setup", snapsup)
 		inject.WaitFor(autoconnect)
 		return state.NewTaskSet(setupProfiles, linkSnap, autoconnect, inject)
@@ -14217,16 +14217,16 @@ func (s *interfaceManagerSuite) TestDelayedEffectsSetupProfilesRunThroughMultipl
 	chg := s.state.NewChange("test", "")
 
 	tasksForOne := func(snapsup *snapstate.SnapSetup) *state.TaskSet {
-		name := snapsup.InstanceName()
-		setupProfiles := s.state.NewTask("setup-profiles", fmt.Sprintf("prepare profiles for %q", name))
+		instanceName := snapsup.InstanceName()
+		setupProfiles := s.state.NewTask("setup-profiles", fmt.Sprintf("prepare profiles for %q", instanceName))
 		setupProfiles.Set("prepare-profiles", true)
 		setupProfiles.Set("snap-setup", snapsup)
 
-		linkSnap := s.state.NewTask("link-snap", fmt.Sprintf("link for %q", name))
+		linkSnap := s.state.NewTask("link-snap", fmt.Sprintf("link for %q", instanceName))
 		linkSnap.Set("snap-setup-task", setupProfiles.ID())
 		linkSnap.WaitFor(setupProfiles)
 
-		autoconnect := s.state.NewTask("auto-connect", fmt.Sprintf("auto connect for %q", name))
+		autoconnect := s.state.NewTask("auto-connect", fmt.Sprintf("auto connect for %q", instanceName))
 		autoconnect.Set("snap-setup", snapsup)
 		autoconnect.WaitFor(linkSnap)
 		return state.NewTaskSet(setupProfiles, linkSnap, autoconnect)
@@ -14944,25 +14944,25 @@ func (s *interfaceManagerSuite) TestDelayedEffectsHandlingOfRestartRequestsNotBr
 
 	chg := s.state.NewChange("test", "")
 
-	name := snapsup.InstanceName()
-	prepare := s.state.NewTask("prepare", fmt.Sprintf("prepare %q", name))
+	instanceName := snapsup.InstanceName()
+	prepare := s.state.NewTask("prepare", fmt.Sprintf("prepare %q", instanceName))
 	prepare.Set("snap-setup", snapsup)
 
-	errInject := s.state.NewTask("error-trigger", fmt.Sprintf("inject error for %q", name))
+	errInject := s.state.NewTask("error-trigger", fmt.Sprintf("inject error for %q", instanceName))
 
-	unlinkSnap := s.state.NewTask("unlink-current-snap", fmt.Sprintf("unlink current for %q", name))
+	unlinkSnap := s.state.NewTask("unlink-current-snap", fmt.Sprintf("unlink current for %q", instanceName))
 	unlinkSnap.Set("snap-setup-task", prepare.ID())
 	unlinkSnap.WaitFor(prepare)
 
-	setupProfiles := s.state.NewTask("setup-profiles", fmt.Sprintf("setup profiles for %q", name))
+	setupProfiles := s.state.NewTask("setup-profiles", fmt.Sprintf("setup profiles for %q", instanceName))
 	setupProfiles.Set("snap-setup-task", prepare.ID())
 	setupProfiles.WaitFor(unlinkSnap)
 
-	linkSnap := s.state.NewTask("link-snap", fmt.Sprintf("link for %q", name))
+	linkSnap := s.state.NewTask("link-snap", fmt.Sprintf("link for %q", instanceName))
 	linkSnap.Set("snap-setup-task", prepare.ID())
 	linkSnap.WaitFor(setupProfiles)
 
-	autoconnect := s.state.NewTask("auto-connect", fmt.Sprintf("auto connect for %q", name))
+	autoconnect := s.state.NewTask("auto-connect", fmt.Sprintf("auto connect for %q", instanceName))
 	autoconnect.Set("snap-setup-task", prepare.ID())
 	autoconnect.WaitFor(linkSnap)
 
@@ -14996,7 +14996,7 @@ func (s *interfaceManagerSuite) TestDelayedEffectsHandlingOfRestartRequestsNotBr
 		defer st.Unlock()
 
 		c.Log("requesting restart in link-snap")
-		return restart.FinishTaskWithRestart(task, state.DoneStatus, restart.RestartSystem, snapsup.InstanceName(), nil)
+		return restart.FinishTaskWithRestart(task, state.DoneStatus, restart.RestartSystem, snapsup.InstanceName().String(), nil, "")
 	}, func(task *state.Task, tomb *tomb.Tomb) error {
 		return nil
 	})
@@ -15013,7 +15013,7 @@ func (s *interfaceManagerSuite) TestDelayedEffectsHandlingOfRestartRequestsNotBr
 
 		c.Log("requesting restart in undo unlink-current-snap")
 		// undo handler requests a restart in order to reach undo
-		return restart.FinishTaskWithRestart(task, state.UndoneStatus, restart.RestartSystem, snapsup.InstanceName(), nil)
+		return restart.FinishTaskWithRestart(task, state.UndoneStatus, restart.RestartSystem, snapsup.InstanceName().String(), nil, "")
 	})
 	s.o.TaskRunner().AddHandler("error-trigger", func(task *state.Task, tomb *tomb.Tomb) error {
 		return errors.New("mock error")

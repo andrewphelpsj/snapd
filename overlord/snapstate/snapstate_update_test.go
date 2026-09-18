@@ -35,7 +35,6 @@ import (
 	. "gopkg.in/check.v1"
 	"gopkg.in/tomb.v2"
 
-	"github.com/snapcore/snapd/advisor"
 	"github.com/snapcore/snapd/asserts"
 	"github.com/snapcore/snapd/asserts/assertstest"
 	"github.com/snapcore/snapd/asserts/snapasserts"
@@ -65,6 +64,7 @@ import (
 	"github.com/snapcore/snapd/overlord/snapstate/backend"
 	"github.com/snapcore/snapd/overlord/snapstate/sequence"
 	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
+	"github.com/snapcore/snapd/overlord/snapstate/tasktest"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
@@ -301,7 +301,7 @@ func parseSeedRefreshTaskSets(uts *snapstate.UpdateTaskSets) (map[string]*state.
 				continue
 			}
 
-			taskSetsBySnap[snapsup.InstanceName()] = ts
+			taskSetsBySnap[snapsup.InstanceName().String()] = ts
 			break
 		}
 	}
@@ -317,7 +317,7 @@ func seedRefreshCandidateFromTaskSet(c *C, ts *state.TaskSet) snapstate.SeedRefr
 	c.Assert(err, IsNil)
 
 	candidate := snapstate.SeedRefreshCandidate{
-		InstanceName: snapsup.InstanceName(),
+		InstanceName: snapsup.InstanceName().String(),
 	}
 	if !snapsup.ComponentExclusiveOperation {
 		candidate.SnapSetupTaskIDs = append(candidate.SnapSetupTaskIDs, t.ID())
@@ -360,7 +360,7 @@ func waitTasksContainKindForSnap(c *C, waiter *state.Task, instanceName, kind st
 
 		snapsup, err := snapstate.TaskSnapSetup(task)
 		c.Assert(err, IsNil)
-		if snapsup.InstanceName() == instanceName {
+		if snapsup.InstanceName().String() == instanceName {
 			return true
 		}
 	}
@@ -387,7 +387,7 @@ func mockSeedRefreshRebootHandlers(s *snapmgrTestSuite, c *C, finalizeErr error)
 	s.o.TaskRunner().AddHandler("create-recovery-system", func(task *state.Task, _ *tomb.Tomb) error {
 		task.State().Lock()
 		defer task.State().Unlock()
-		return restart.FinishTaskWithRestart(task, state.DoneStatus, restart.RestartSystem, "", nil)
+		return restart.FinishTaskWithRestart(task, state.DoneStatus, restart.RestartSystem, "", nil, "")
 	}, func(task *state.Task, tomb *tomb.Tomb) error { return nil })
 
 	s.o.TaskRunner().AddHandler("finalize-recovery-system", func(*state.Task, *tomb.Tomb) error {
@@ -395,7 +395,7 @@ func mockSeedRefreshRebootHandlers(s *snapmgrTestSuite, c *C, finalizeErr error)
 	}, func(task *state.Task, tomb *tomb.Tomb) error { return nil })
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -609,7 +609,6 @@ func (s *snapmgrTestSuite) testUpdateScenario(c *C, desc string, t switchScenari
 		"current",
 		"open-snap-file",
 		"setup-snap",
-		"remove-snap-aliases",
 		"run-inhibit-snap-for-unlink",
 		"discard-namespace-locked",
 		"unlink-snap",
@@ -686,15 +685,7 @@ func (s *snapmgrTestSuite) TestUpdateTasksWithOldCurrent(c *C) {
 	c.Check(snapsup.Revision(), Equals, si4.Revision)
 }
 
-func (s *snapmgrTestSuite) enableRefreshAppAwarenessUX() {
-	s.state.Lock()
-	tr := config.NewTransaction(s.state)
-	tr.Set("core", "experimental.refresh-app-awareness-ux", true)
-	tr.Commit()
-	s.state.Unlock()
-}
-
-func (s *snapmgrTestSuite) testUpdateCanDoBackwards(c *C, refreshAppAwarenessUX bool) {
+func (s *snapmgrTestSuite) TestUpdateCanDoBackwards(c *C) {
 	si7 := snap.SideInfo{
 		RealName: "some-snap",
 		SnapID:   "some-snap-id",
@@ -725,10 +716,6 @@ func (s *snapmgrTestSuite) testUpdateCanDoBackwards(c *C, refreshAppAwarenessUX 
 
 	expected := fakeOps{
 		{
-			op:   "remove-snap-aliases",
-			name: "some-snap",
-		},
-		{
 			op:          "run-inhibit-snap-for-unlink",
 			name:        "some-snap",
 			inhibitHint: "refresh",
@@ -740,7 +727,7 @@ func (s *snapmgrTestSuite) testUpdateCanDoBackwards(c *C, refreshAppAwarenessUX 
 		{
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "some-snap/11"),
-			unlinkSkipBinaries: refreshAppAwarenessUX,
+			unlinkSkipBinaries: true,
 			inhibitHint:        "refresh",
 		},
 		{
@@ -787,23 +774,9 @@ func (s *snapmgrTestSuite) testUpdateCanDoBackwards(c *C, refreshAppAwarenessUX 
 			revno: snap.R(7),
 		},
 	}
-	// aliases removal is skipped when refresh-app-awareness-ux is enabled
-	if refreshAppAwarenessUX {
-		// remove "remove-snap-aliases" operation
-		expected = expected[1:]
-	}
 	// start with an easier-to-read error if this fails:
 	c.Assert(s.fakeBackend.ops.Ops(), DeepEquals, expected.Ops())
 	c.Assert(s.fakeBackend.ops, DeepEquals, expected)
-}
-
-func (s *snapmgrTestSuite) TestUpdateCanDoBackwards(c *C) {
-	s.testUpdateCanDoBackwards(c, false)
-}
-
-func (s *snapmgrTestSuite) TestUpdateCanDoBackwardsSkipBinaries(c *C) {
-	s.enableRefreshAppAwarenessUX()
-	s.testUpdateCanDoBackwards(c, true)
 }
 
 func revs(seq []*sequence.RevisionSideState) []int {
@@ -1223,7 +1196,6 @@ func (s *snapmgrTestSuite) testUpdateAmendRunThrough(c *C, tryMode bool, compone
 		ops = append(ops, "setup-component")
 	}
 	ops = append(ops, []string{
-		"remove-snap-aliases",
 		"run-inhibit-snap-for-unlink",
 		"discard-namespace-locked",
 		"unlink-snap",
@@ -1459,7 +1431,6 @@ func (s *snapmgrTestSuite) testUpdateRunThrough(c *C, refreshAppAwarenessUX bool
 			services: []string{"svc1", "svc2", "svc3"},
 		},
 	}
-	// aliases removal is skipped when refresh-app-awareness-ux is enabled
 	if !refreshAppAwarenessUX {
 		expected = append(expected, fakeOp{
 			op:   "remove-snap-aliases",
@@ -1622,12 +1593,17 @@ func (s *snapmgrTestSuite) testUpdateRunThrough(c *C, refreshAppAwarenessUX bool
 }
 
 func (s *snapmgrTestSuite) TestUpdateRunThrough(c *C) {
-	s.testUpdateRunThrough(c, false)
+	s.testUpdateRunThrough(c, true)
 }
 
-func (s *snapmgrTestSuite) TestUpdateRunThroughSkipBinaries(c *C) {
-	s.enableRefreshAppAwarenessUX()
-	s.testUpdateRunThrough(c, true)
+func (s *snapmgrTestSuite) TestUpdateRunThroughNoRAAUX(c *C) {
+	s.state.Lock()
+	tr := config.NewTransaction(s.state)
+	tr.Set("core", "experimental.refresh-app-awareness-ux", false)
+	tr.Commit()
+	s.state.Unlock()
+
+	s.testUpdateRunThrough(c, false)
 }
 
 func (s *snapmgrTestSuite) TestUpdateDropsRevertStatus(c *C) {
@@ -1749,7 +1725,7 @@ func (s *snapmgrTestSuite) TestUpdateResetsHoldState(c *C) {
 	})
 }
 
-func (s *snapmgrTestSuite) testParallelInstanceUpdateRunThrough(c *C, refreshAppAwarenessUX bool) {
+func (s *snapmgrTestSuite) TestParallelInstanceUpdateRunThrough(c *C) {
 	// use services-snap here to make sure services would be stopped/started appropriately
 	si := snap.SideInfo{
 		RealName: "services-snap",
@@ -1851,13 +1827,6 @@ func (s *snapmgrTestSuite) testParallelInstanceUpdateRunThrough(c *C, refreshApp
 			services: []string{"svc1", "svc2", "svc3"},
 		},
 	}
-	// aliases removal is skipped when refresh-app-awareness-ux is enabled
-	if !refreshAppAwarenessUX {
-		expected = append(expected, fakeOp{
-			op:   "remove-snap-aliases",
-			name: "services-snap_instance",
-		})
-	}
 	expected = append(expected, fakeOps{
 		{
 			op:          "run-inhibit-snap-for-unlink",
@@ -1871,7 +1840,7 @@ func (s *snapmgrTestSuite) testParallelInstanceUpdateRunThrough(c *C, refreshApp
 		{
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "services-snap_instance/7"),
-			unlinkSkipBinaries: refreshAppAwarenessUX,
+			unlinkSkipBinaries: true,
 			inhibitHint:        "refresh",
 		},
 		{
@@ -2004,15 +1973,6 @@ func (s *snapmgrTestSuite) testParallelInstanceUpdateRunThrough(c *C, refreshApp
 		SnapID:   "services-snap-id",
 		Revision: snap.R(11),
 	}, nil))
-}
-
-func (s *snapmgrTestSuite) TestParallelInstanceUpdateRunThrough(c *C) {
-	s.testParallelInstanceUpdateRunThrough(c, false)
-}
-
-func (s *snapmgrTestSuite) TestParallelInstanceUpdateRunThroughSkipBinaries(c *C) {
-	s.enableRefreshAppAwarenessUX()
-	s.testParallelInstanceUpdateRunThrough(c, true)
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithNewBase(c *C) {
@@ -2696,7 +2656,7 @@ func (s *snapmgrTestSuite) TestUpdateManyMultipleCredsUserWithNoStoreAuthRunThro
 	c.Check(seen["core-snap-id"], Equals, 1)
 }
 
-func (s *snapmgrTestSuite) testUpdateUndoRunThrough(c *C, refreshAppAwarenessUX bool) {
+func (s *snapmgrTestSuite) TestUpdateUndoRunThrough(c *C) {
 	si := snap.SideInfo{
 		RealName: "some-snap",
 		SnapID:   "some-snap-id",
@@ -2777,13 +2737,6 @@ func (s *snapmgrTestSuite) testUpdateUndoRunThrough(c *C, refreshAppAwarenessUX 
 			revno: snap.R(11),
 		},
 	}
-	// aliases removal is skipped when refresh-app-awareness-ux is enabled
-	if !refreshAppAwarenessUX {
-		expected = append(expected, fakeOp{
-			op:   "remove-snap-aliases",
-			name: "some-snap",
-		})
-	}
 	expected = append(expected, fakeOps{
 		{
 			op:          "run-inhibit-snap-for-unlink",
@@ -2797,7 +2750,7 @@ func (s *snapmgrTestSuite) testUpdateUndoRunThrough(c *C, refreshAppAwarenessUX 
 		{
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, "some-snap/7"),
-			unlinkSkipBinaries: refreshAppAwarenessUX,
+			unlinkSkipBinaries: true,
 			inhibitHint:        "refresh",
 		},
 		{
@@ -2856,12 +2809,6 @@ func (s *snapmgrTestSuite) testUpdateUndoRunThrough(c *C, refreshAppAwarenessUX 
 			isUndo: true,
 		},
 	}...)
-	// aliases removal undo is skipped when refresh-app-awareness-ux is enabled
-	if !refreshAppAwarenessUX {
-		expected = append(expected, fakeOp{
-			op: "update-aliases",
-		})
-	}
 	expected = append(expected, fakeOps{
 		{
 			op:    "undo-setup-snap",
@@ -2905,15 +2852,6 @@ func (s *snapmgrTestSuite) testUpdateUndoRunThrough(c *C, refreshAppAwarenessUX 
 		Channel:  "",
 		Revision: snap.R(7),
 	}, nil))
-}
-
-func (s *snapmgrTestSuite) TestUpdateUndoRunThrough(c *C) {
-	s.testUpdateUndoRunThrough(c, false)
-}
-
-func (s *snapmgrTestSuite) TestUpdateUndoRunThroughSkipBinaries(c *C) {
-	s.enableRefreshAppAwarenessUX()
-	s.testUpdateUndoRunThrough(c, true)
 }
 
 func lastWithLane(tasks []*state.Task) *state.Task {
@@ -3131,7 +3069,6 @@ func (s *snapmgrTestSuite) testUpdateTotalUndoRunThrough(c *C, refreshAppAwarene
 			revno: snap.R(11),
 		},
 	}
-	// aliases removal is skipped when refresh-app-awareness-ux is enabled
 	if !refreshAppAwarenessUX {
 		expected = append(expected, fakeOp{
 			op:   "remove-snap-aliases",
@@ -3195,7 +3132,6 @@ func (s *snapmgrTestSuite) testUpdateTotalUndoRunThrough(c *C, refreshAppAwarene
 	}...)
 	// undoing everything from here down...
 	if refreshAppAwarenessUX {
-		// refresh-app-awareness-ux changes setup-aliases undo behavior
 		expected = append(expected, fakeOp{
 			op: "update-aliases",
 		})
@@ -3239,7 +3175,6 @@ func (s *snapmgrTestSuite) testUpdateTotalUndoRunThrough(c *C, refreshAppAwarene
 			isUndo: true,
 		},
 	}...)
-	// aliases removal undo is skipped when refresh-app-awareness-ux is enabled
 	if !refreshAppAwarenessUX {
 		expected = append(expected, fakeOp{
 			op: "update-aliases",
@@ -3291,12 +3226,17 @@ func (s *snapmgrTestSuite) testUpdateTotalUndoRunThrough(c *C, refreshAppAwarene
 }
 
 func (s *snapmgrTestSuite) TestUpdateTotalUndoRunThrough(c *C) {
-	s.testUpdateTotalUndoRunThrough(c, false)
+	s.testUpdateTotalUndoRunThrough(c, true)
 }
 
-func (s *snapmgrTestSuite) TestUpdateTotalUndoRunThroughSkipBinaries(c *C) {
-	s.enableRefreshAppAwarenessUX()
-	s.testUpdateTotalUndoRunThrough(c, true)
+func (s *snapmgrTestSuite) TestUpdateTotalUndoRunThroughNoRAAUX(c *C) {
+	s.state.Lock()
+	tr := config.NewTransaction(s.state)
+	tr.Set("core", "experimental.refresh-app-awareness-ux", false)
+	tr.Commit()
+	s.state.Unlock()
+
+	s.testUpdateTotalUndoRunThrough(c, false)
 }
 
 func (s *snapmgrTestSuite) TestUpdateSameRevision(c *C) {
@@ -4633,7 +4573,7 @@ func (s *snapmgrTestSuite) TestUpdateManyAutoAliasesScenarios(c *C) {
 				c.Assert(err, IsNil)
 				snapsup, err := snapstate.TaskSnapSetup(aliasTask)
 				c.Assert(err, IsNil)
-				taskAliases[snapsup.InstanceName()] = expectedSet(aliases)
+				taskAliases[snapsup.InstanceName().String()] = expectedSet(aliases)
 			}
 			expectedPruned = make(map[string]map[string]bool)
 			for _, instanceName := range scenario.prune {
@@ -4806,7 +4746,7 @@ func (s *snapmgrTestSuite) TestUpdateOneAutoAliasesScenarios(c *C) {
 				c.Assert(err, IsNil)
 				snapsup, err := snapstate.TaskSnapSetup(aliasTask)
 				c.Assert(err, IsNil)
-				taskAliases[snapsup.InstanceName()] = expectedSet(aliases)
+				taskAliases[snapsup.InstanceName().String()] = expectedSet(aliases)
 			}
 			expectedPruned = make(map[string]map[string]bool)
 			for _, instanceName := range scenario.prune {
@@ -4994,7 +4934,7 @@ func (s *snapmgrTestSuite) TestUpdateWithDeviceContextSameRevisionSwitchesChanne
 	c.Check(ts.Tasks()[0].Kind(), Equals, "switch-snap-channel")
 
 	c.Assert(prqt.infos, HasLen, 1)
-	c.Check(prqt.infos[0].SnapName(), Equals, "some-snap")
+	c.Check(prqt.infos[0].SnapName().String(), Equals, "some-snap")
 	c.Check(prqt.missingProviderContentTagsCalls, Equals, 1)
 }
 
@@ -5037,7 +4977,7 @@ func (s *snapmgrTestSuite) TestUpdateWithDeviceContext(c *C) {
 	c.Check(validateCalled, Equals, true)
 
 	c.Assert(prqt.infos, HasLen, 1)
-	c.Check(prqt.infos[0].SnapName(), Equals, "some-snap")
+	c.Check(prqt.infos[0].SnapName().String(), Equals, "some-snap")
 	c.Check(prqt.missingProviderContentTagsCalls, Equals, 1)
 }
 
@@ -5087,7 +5027,7 @@ epoch: 1*
 	verifyUpdateTasks(c, snap.TypeApp, doesReRefresh|localSnap|mockDelayedEffects, 0, ts)
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
 	c.Assert(prqt.infos, HasLen, 1)
-	c.Check(prqt.infos[0].SnapName(), Equals, "some-snap")
+	c.Check(prqt.infos[0].SnapName().String(), Equals, "some-snap")
 	c.Check(prqt.missingProviderContentTagsCalls, Equals, 1)
 }
 
@@ -6542,8 +6482,8 @@ func (s *snapmgrTestSuite) TestParallelInstanceUpdateMany(c *C) {
 	snapsupInstance, err = snapstate.TaskSnapSetup(tts[1].Tasks()[0])
 	c.Assert(err, IsNil)
 
-	c.Assert(snapsup.InstanceName(), Equals, "some-snap")
-	c.Assert(snapsupInstance.InstanceName(), Equals, "some-snap_instance")
+	c.Assert(snapsup.InstanceName().String(), Equals, "some-snap")
+	c.Assert(snapsupInstance.InstanceName().String(), Equals, "some-snap_instance")
 
 	verifyUpdateTasks(c, snap.TypeApp, 0, 3, tts[0])
 	verifyUpdateTasks(c, snap.TypeApp, 0, 1, tts[1])
@@ -6647,27 +6587,46 @@ func (s *snapmgrTestSuite) TestUpdateManyValidateRefreshesUnhappy(c *C) {
 
 }
 
-func (s *snapmgrTestSuite) testUpdateManyDiskSpaceCheck(c *C, featureFlag, failDiskCheck, failInstallSize bool) error {
-	var diskCheckCalled, installSizeCalled bool
+type updateManyDiskSpaceCheckTest struct {
+	FeatureEnabled    bool
+	InitialCheckError error
+	RetryCheckError   error
+	FailInstallSize   bool
+	Flags             *snapstate.Flags
+}
+
+func (s *snapmgrTestSuite) testUpdateManyDiskSpaceCheck(c *C, tc updateManyDiskSpaceCheckTest) ([]string, []*state.TaskSet, error) {
+	var diskCheckCalls, installSizeCalls int
 	restore := snapstate.MockOsutilCheckFreeSpace(func(path string, sz uint64) error {
-		diskCheckCalled = true
+		diskCheckCalls++
 		c.Check(path, Equals, filepath.Join(dirs.GlobalRootDir, "/var/lib/snapd"))
 		c.Check(sz, Equals, uint64(123)+snapstate.DefaultDiskSpaceReservation)
-		if failDiskCheck {
-			return &osutil.NotEnoughDiskSpaceError{}
+		switch diskCheckCalls {
+		case 1:
+			return tc.InitialCheckError
+		case 2:
+			return tc.RetryCheckError
 		}
 		return nil
 	})
 	defer restore()
 
 	restoreInstallSize := snapstate.MockInstallSize(func(st *state.State, snaps []snapstate.MinimalInstallInfo, userID int, prqt snapstate.PrereqTracker) (uint64, error) {
-		installSizeCalled = true
-		if failInstallSize {
+		installSizeCalls++
+		if tc.FailInstallSize {
 			return 0, fmt.Errorf("boom")
 		}
-		c.Assert(snaps, HasLen, 2)
-		c.Check(snaps[0].InstanceName(), Equals, "snapd")
-		c.Check(snaps[1].InstanceName(), Equals, "some-snap")
+
+		if installSizeCalls == 1 {
+			// initial request should contain essential and non-essential snaps
+			c.Assert(snaps, HasLen, 2)
+			c.Check(snaps[0].InstanceName(), Equals, "snapd")
+			c.Check(snaps[1].InstanceName(), Equals, "some-snap")
+		} else {
+			// retried request should only contain essential snaps
+			c.Assert(snaps, HasLen, 1)
+			c.Check(snaps[0].InstanceName(), Equals, "snapd")
+		}
 		return 123, nil
 	})
 	defer restoreInstallSize()
@@ -6676,7 +6635,7 @@ func (s *snapmgrTestSuite) testUpdateManyDiskSpaceCheck(c *C, featureFlag, failD
 	defer s.state.Unlock()
 
 	tr := config.NewTransaction(s.state)
-	tr.Set("core", "experimental.check-disk-space-refresh", featureFlag)
+	tr.Set("core", "experimental.check-disk-space-refresh", tc.FeatureEnabled)
 	tr.Commit()
 
 	snapstate.Set(s.state, "some-snap", &snapstate.SnapState{
@@ -6697,51 +6656,97 @@ func (s *snapmgrTestSuite) testUpdateManyDiskSpaceCheck(c *C, featureFlag, failD
 		SnapType: "app",
 	})
 
-	updates, _, err := snapstate.UpdateMany(context.Background(), s.state, nil, nil, 0, nil)
-	if featureFlag {
-		c.Check(installSizeCalled, Equals, true)
-		if failInstallSize {
-			c.Check(diskCheckCalled, Equals, false)
+	updates, tss, err := snapstate.UpdateMany(context.Background(), s.state, nil, nil, 0, tc.Flags)
+	if tc.FeatureEnabled {
+		c.Check(installSizeCalls > 0, Equals, true)
+		if tc.FailInstallSize {
+			c.Check(diskCheckCalls, Equals, 0)
 		} else {
-			c.Check(diskCheckCalled, Equals, true)
-			if failDiskCheck {
-				c.Check(updates, HasLen, 0)
+			c.Check(diskCheckCalls > 0, Equals, true)
+			var noSpaceErr *osutil.NotEnoughDiskSpaceError
+			if errors.As(tc.InitialCheckError, &noSpaceErr) && (tc.Flags == nil || tc.Flags.Transaction == client.TransactionPerSnap) {
+				c.Check(installSizeCalls, Equals, 2)
+				c.Check(diskCheckCalls, Equals, 2)
 			} else {
-				c.Check(updates, HasLen, 2)
+				c.Check(installSizeCalls, Equals, 1)
+				c.Check(diskCheckCalls, Equals, 1)
 			}
 		}
 	} else {
-		c.Check(installSizeCalled, Equals, false)
-		c.Check(diskCheckCalled, Equals, false)
+		c.Check(installSizeCalls, Equals, 0)
+		c.Check(diskCheckCalls, Equals, 0)
 	}
 
-	return err
+	return updates, tss, err
 }
 
 func (s *snapmgrTestSuite) TestUpdateManyDiskSpaceCheckError(c *C) {
-	featureFlag := true
-	failDiskCheck := true
-	failInstallSize := false
-	err := s.testUpdateManyDiskSpaceCheck(c, featureFlag, failDiskCheck, failInstallSize)
+	_, _, err := s.testUpdateManyDiskSpaceCheck(c, updateManyDiskSpaceCheckTest{
+		FeatureEnabled:    true,
+		InitialCheckError: &osutil.NotEnoughDiskSpaceError{},
+		RetryCheckError:   &osutil.NotEnoughDiskSpaceError{},
+	})
 	diskSpaceErr := err.(*snapstate.InsufficientSpaceError)
 	c.Assert(diskSpaceErr, ErrorMatches, `insufficient space in .* to perform "refresh" change for the following snaps: snapd, some-snap`)
 	c.Check(diskSpaceErr.Path, Equals, filepath.Join(dirs.GlobalRootDir, "/var/lib/snapd"))
 	c.Check(diskSpaceErr.Snaps, DeepEquals, []string{"snapd", "some-snap"})
 }
 
+func (s *snapmgrTestSuite) TestUpdateManyDiskSpaceDoesNotSplitAllSnapsTransaction(c *C) {
+	_, _, err := s.testUpdateManyDiskSpaceCheck(c, updateManyDiskSpaceCheckTest{
+		FeatureEnabled:    true,
+		InitialCheckError: &osutil.NotEnoughDiskSpaceError{},
+		// if all snaps are in the same transaction, we should not proceed with
+		// just the essential snaps
+		Flags: &snapstate.Flags{Transaction: client.TransactionAllSnaps},
+	})
+	diskSpaceErr := err.(*snapstate.InsufficientSpaceError)
+	c.Check(diskSpaceErr.Snaps, DeepEquals, []string{"snapd", "some-snap"})
+}
+
+func (s *snapmgrTestSuite) TestUpdateManyDiskSpaceRefreshesEssentialSnaps(c *C) {
+	updates, tss, err := s.testUpdateManyDiskSpaceCheck(c, updateManyDiskSpaceCheckTest{
+		FeatureEnabled:    true,
+		InitialCheckError: &osutil.NotEnoughDiskSpaceError{},
+	})
+	c.Assert(err, IsNil)
+	c.Check(updates, DeepEquals, []string{"snapd"})
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	// essential snap got refreshed
+	snapdTS, err := snapstate.MaybeFindTasksetForSnap(tss, "snapd")
+	c.Assert(err, IsNil)
+	c.Assert(snapdTS, NotNil)
+
+	// non-essential snap did not get refreshed
+	someSnapTS, err := snapstate.MaybeFindTasksetForSnap(tss, "some-snap")
+	c.Assert(err, IsNil)
+	c.Check(someSnapTS, IsNil)
+}
+
+func (s *snapmgrTestSuite) TestUpdateManyDiskSpaceRetryError(c *C) {
+	_, _, err := s.testUpdateManyDiskSpaceCheck(c, updateManyDiskSpaceCheckTest{
+		FeatureEnabled:    true,
+		InitialCheckError: &osutil.NotEnoughDiskSpaceError{},
+		RetryCheckError:   errors.New("boom"),
+	})
+	c.Assert(err, ErrorMatches, "boom")
+}
+
 func (s *snapmgrTestSuite) TestUpdateManyDiskSpaceSkippedIfFeatureDisabled(c *C) {
-	featureFlag := false
-	failDiskCheck := true
-	failInstallSize := false
-	err := s.testUpdateManyDiskSpaceCheck(c, featureFlag, failDiskCheck, failInstallSize)
+	_, _, err := s.testUpdateManyDiskSpaceCheck(c, updateManyDiskSpaceCheckTest{
+		InitialCheckError: &osutil.NotEnoughDiskSpaceError{},
+	})
 	c.Assert(err, IsNil)
 }
 
 func (s *snapmgrTestSuite) TestUpdateManyDiskSpaceFailInstallSize(c *C) {
-	featureFlag := true
-	failDiskCheck := false
-	failInstallSize := true
-	err := s.testUpdateManyDiskSpaceCheck(c, featureFlag, failDiskCheck, failInstallSize)
+	_, _, err := s.testUpdateManyDiskSpaceCheck(c, updateManyDiskSpaceCheckTest{
+		FeatureEnabled:  true,
+		FailInstallSize: true,
+	})
 	c.Assert(err, ErrorMatches, "boom")
 }
 
@@ -7857,7 +7862,7 @@ func findPrereqTasksForSnap(c *C, chg *state.Change, snapName string) (earlyPrer
 
 		snapsup, err := snapstate.TaskSnapSetup(task)
 		c.Assert(err, IsNil)
-		if snapsup.InstanceName() != snapName {
+		if snapsup.InstanceName().String() != snapName {
 			continue
 		}
 
@@ -8964,7 +8969,7 @@ func (s *snapmgrTestSuite) TestUpdatePrerequisiteBackwardsCompat(c *C) {
 	var snapsup snapstate.SnapSetup
 	err = earlyPrereq.Get("snap-setup", &snapsup)
 	c.Assert(err, IsNil)
-	c.Assert(snapsup.InstanceName(), Equals, "outdated-consumer")
+	c.Assert(snapsup.InstanceName().String(), Equals, "outdated-consumer")
 	snapsup.PrereqContentAttrs = nil
 	earlyPrereq.Set("snap-setup", &snapsup)
 
@@ -9706,7 +9711,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseKernelSingleRebootHappy(c *C) {
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -9905,7 +9910,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseKernelAndSnapdSingleRebootHappy(c *C) {
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -10082,7 +10087,7 @@ func (s *snapmgrTestSuite) TestUpdateGadgetKernelSingleRebootHappy(c *C) {
 		func(task *state.Task, tomb *tomb.Tomb) error { return nil })
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -10289,7 +10294,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseGadgetSingleRebootHappy(c *C) {
 		func(task *state.Task, tomb *tomb.Tomb) error { return nil })
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -10482,7 +10487,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseKernelSingleRebootWithCannotRebootSetHa
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -10582,7 +10587,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseKernelSingleRebootUnsupportedWithCoreHa
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -10710,7 +10715,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseGadgetKernelSingleReboot(c *C) {
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -10856,7 +10861,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseKernelSingleRebootUndone(c *C) {
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -11036,7 +11041,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseGadgetKernelSingleRebootUndone(c *C) {
 		func(task *state.Task, tomb *tomb.Tomb) error { return nil })
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -11211,7 +11216,7 @@ func (s *snapmgrTestSuite) testUpdateEssentialSnapsOrder(c *C, order []string) {
 		func(task *state.Task, tomb *tomb.Tomb) error { return nil })
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -11267,7 +11272,7 @@ func (s *snapmgrTestSuite) testUpdateEssentialSnapsOrder(c *C, order []string) {
 				if tsk.Kind() == "prerequisites" {
 					snapsup, err := snapstate.TaskSnapSetup(tsk)
 					c.Assert(err, IsNil)
-					if snapsup.InstanceName() == sn {
+					if snapsup.InstanceName().String() == sn {
 						return ts
 					}
 					break
@@ -11492,7 +11497,7 @@ func (s *snapmgrTestSuite) TestUpdateBaseAndSnapdOrder(c *C) {
 	defer s.state.Unlock()
 
 	var restartRequested []restart.RestartType
-	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType) {
+	_, err := restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(t restart.RestartType, _ restart.RestartReason) {
 		restartRequested = append(restartRequested, t)
 	}))
 	c.Assert(err, IsNil)
@@ -12024,9 +12029,6 @@ func (s *snapmgrTestSuite) testAutoRefreshRecordsFailures(c *C, afterReboot bool
 		time.Sleep(10 * time.Millisecond)
 		// Trigger autorefresh.Ensure().
 		err := s.snapmgr.Ensure()
-		if errors.Is(err, advisor.ErrNotSupported) {
-			c.Skip("bolt is not supported")
-		}
 		c.Assert(err, IsNil)
 		s.state.Lock()
 		s.settle(c)
@@ -12216,9 +12218,6 @@ func (s *snapmgrTestSuite) testAutoRefreshRefreshInhibitNoticeRecorded(c *C, mar
 	snapstate.CanAutoRefresh = func(*state.State) (bool, error) { return true, nil }
 	// Trigger autorefresh.Ensure().
 	err := s.snapmgr.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Assert(err, IsNil)
 
 	s.state.Lock()
@@ -12268,20 +12267,24 @@ func (s *snapmgrTestSuite) testAutoRefreshRefreshInhibitNoticeRecorded(c *C, mar
 }
 
 func (s *snapmgrTestSuite) TestAutoRefreshRefreshInhibitNoticeRecorded(c *C) {
-	s.enableRefreshAppAwarenessUX()
 	const markerInterfaceConnected = true
 	const warningFallback = false
 	s.testAutoRefreshRefreshInhibitNoticeRecorded(c, markerInterfaceConnected, warningFallback)
 }
 
 func (s *snapmgrTestSuite) TestAutoRefreshRefreshInhibitNoticeRecordedWarningFallback(c *C) {
-	s.enableRefreshAppAwarenessUX()
 	const markerInterfaceConnected = false
 	const warningFallback = true
 	s.testAutoRefreshRefreshInhibitNoticeRecorded(c, markerInterfaceConnected, warningFallback)
 }
 
 func (s *snapmgrTestSuite) TestAutoRefreshRefreshInhibitNoticeRecordedWarningFallbackNoRAAUX(c *C) {
+	s.state.Lock()
+	tr := config.NewTransaction(s.state)
+	tr.Set("core", "experimental.refresh-app-awareness-ux", false)
+	tr.Commit()
+	s.state.Unlock()
+
 	const markerInterfaceConnected = false
 	const warningFallback = false
 	s.testAutoRefreshRefreshInhibitNoticeRecorded(c, markerInterfaceConnected, warningFallback)
@@ -12346,9 +12349,6 @@ func (s *snapmgrTestSuite) TestAutoRefreshRefreshInhibitNoticeRecordedOnPreDownl
 	snapstate.CanAutoRefresh = func(*state.State) (bool, error) { return true, nil }
 	// Trigger autorefresh.Ensure().
 	err := s.snapmgr.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Assert(err, IsNil)
 
 	s.state.Lock()
@@ -12420,9 +12420,6 @@ func (s *snapmgrTestSuite) TestAutoRefreshRefreshInhibitNoticeNotRecorded(c *C) 
 	snapstate.CanAutoRefresh = func(*state.State) (bool, error) { return true, nil }
 	// Trigger autorefresh.Ensure().
 	err := s.snapmgr.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Assert(err, IsNil)
 
 	s.state.Lock()
@@ -12478,9 +12475,6 @@ func (s *snapmgrTestSuite) TestAutoRefreshRefreshInhibitNoticeRecordedOnce(c *C)
 	snapstate.CanAutoRefresh = func(*state.State) (bool, error) { return true, nil }
 	// Trigger autorefresh.Ensure().
 	err := s.snapmgr.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Assert(err, IsNil)
 
 	s.state.Lock()
@@ -12703,12 +12697,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskWaitsForPreDownload(c *C) {
 	restore := state.MockTime(now)
 	defer restore()
 
-	var notified bool
-	restore = snapstate.MockAsyncPendingRefreshNotification(func(context.Context, *userclient.PendingSnapRefreshInfo) {
-		notified = true
-	})
-	defer restore()
-
 	var monitored bool
 	restore = snapstate.MockCgroupMonitorSnapEnded(func(string, chan<- string) error {
 		monitored = true
@@ -12784,7 +12772,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskWaitsForPreDownload(c *C) {
 	c.Assert(downloadCalls, Equals, 2)
 	c.Assert(preDlTask.Status(), Equals, state.DoneStatus)
 	c.Assert(dlTask.Status(), Equals, state.DoneStatus)
-	c.Check(notified, Equals, false)
 	c.Check(monitored, Equals, false)
 }
 
@@ -12794,12 +12781,6 @@ func (s *snapmgrTestSuite) TestPreDownloadTaskContinuesAutoRefreshIfSoftCheckOk(
 		c.Assert(info.InstanceName(), Equals, "foo")
 		softChecked = true
 		return nil
-	})
-	defer restore()
-
-	var notified bool
-	restore = snapstate.MockAsyncPendingRefreshNotification(func(context.Context, *userclient.PendingSnapRefreshInfo) {
-		notified = true
 	})
 	defer restore()
 
@@ -12851,7 +12832,6 @@ func (s *snapmgrTestSuite) TestPreDownloadTaskContinuesAutoRefreshIfSoftCheckOk(
 	c.Assert(preDlTask.Status(), Equals, state.DoneStatus)
 
 	c.Check(softChecked, Equals, true)
-	c.Check(notified, Equals, false)
 	c.Check(monitored, Equals, false)
 
 	autoRefreshChg := findChange(s.state, "auto-refresh")
@@ -12891,7 +12871,7 @@ func findChange(st *state.State, kind string) *state.Change {
 	return nil
 }
 
-func (s *snapmgrTestSuite) TestDownloadTaskMonitorsSnapStoppedAndNotifiesOnSoftCheckFail(c *C) {
+func (s *snapmgrTestSuite) TestDownloadTaskMonitorsSnapStoppedOnSoftCheckFail(c *C) {
 	s.state.Lock()
 	si := &snap.SideInfo{
 		RealName: "foo",
@@ -12930,12 +12910,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskMonitorsSnapStoppedAndNotifiesOnSoftC
 	})
 	defer restore()
 
-	var notified bool
-	restore = snapstate.MockAsyncPendingRefreshNotification(func(context.Context, *userclient.PendingSnapRefreshInfo) {
-		notified = true
-	})
-	defer restore()
-
 	var monitorSignal chan<- string
 	restore = snapstate.MockCgroupMonitorSnapEnded(func(name string, done chan<- string) error {
 		c.Assert(name, Equals, "foo")
@@ -12957,9 +12931,8 @@ func (s *snapmgrTestSuite) TestDownloadTaskMonitorsSnapStoppedAndNotifiesOnSoftC
 	c.Assert(s.fakeStore.downloads, HasLen, 1)
 	c.Check(s.fakeStore.downloads[0].name, Equals, "foo")
 
-	// the soft check failed so we notified and started monitoring
+	// the soft check failed, so monitoring started
 	c.Check(softChecked, Equals, true)
-	c.Check(notified, Equals, true)
 	c.Assert(monitorSignal, NotNil)
 
 	var hints map[string]*snapstate.RefreshCandidate
@@ -13034,12 +13007,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskMonitorsRepeated(c *C) {
 	})
 	defer restore()
 
-	var notified bool
-	restore = snapstate.MockAsyncPendingRefreshNotification(func(context.Context, *userclient.PendingSnapRefreshInfo) {
-		notified = true
-	})
-	defer restore()
-
 	var monitorSignal chan<- string
 	restore = snapstate.MockCgroupMonitorSnapEnded(func(name string, done chan<- string) error {
 		c.Assert(name, Equals, "foo")
@@ -13062,7 +13029,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskMonitorsRepeated(c *C) {
 	monitored := s.state.Cached("monitored-snaps")
 	c.Assert(monitored, FitsTypeOf, map[string]context.CancelFunc{})
 	c.Assert(monitored.(map[string]context.CancelFunc)["foo"], NotNil)
-	c.Assert(notified, Equals, true)
 
 	// waiting for the monitoring to end
 	c.Check(s.state.Cached("monitored-snaps"), NotNil)
@@ -13076,7 +13042,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskMonitorsRepeated(c *C) {
 	preDlChg.AddTask(preDlTask)
 
 	// reset the watcher variables
-	notified = false
 	softChecked = false
 	firstMonitorSignal := monitorSignal
 	monitorSignal = nil
@@ -13084,7 +13049,6 @@ func (s *snapmgrTestSuite) TestDownloadTaskMonitorsRepeated(c *C) {
 	s.settle(c)
 
 	c.Check(softChecked, Equals, true)
-	c.Check(notified, Equals, true)
 	// didn't wait for snap to stop because there's already a goroutine doing it
 	c.Check(monitorSignal, IsNil)
 
@@ -13119,16 +13083,8 @@ func (s *snapmgrTestSuite) TestUnlinkMonitorSnapOnHardCheckFailure(c *C) {
 		target:   filepath.Join(dirs.SnapBlobDir, "some-snap_instance_11.snap"),
 	}}
 
-	var notified bool
-	restore := snapstate.MockAsyncPendingRefreshNotification(func(_ context.Context, pendingInfo *userclient.PendingSnapRefreshInfo) {
-		c.Check(pendingInfo.InstanceName, Equals, "some-snap")
-		c.Check(pendingInfo.TimeRemaining, Equals, snapstate.MaxInhibitionDuration(s.state))
-		notified = true
-	})
-	defer restore()
-
 	var monitorSignal chan<- string
-	restore = snapstate.MockCgroupMonitorSnapEnded(func(name string, done chan<- string) error {
+	restore := snapstate.MockCgroupMonitorSnapEnded(func(name string, done chan<- string) error {
 		c.Check(name, Equals, "some-snap")
 		monitorSignal = done
 		return nil
@@ -13166,7 +13122,6 @@ func (s *snapmgrTestSuite) TestUnlinkMonitorSnapOnHardCheckFailure(c *C) {
 	s.settle(c)
 	c.Assert(chg.Status(), Equals, state.ErrorStatus)
 
-	c.Check(notified, Equals, true)
 	c.Check(check, Equals, 2)
 	c.Check(monitorSignal, NotNil)
 
@@ -13231,15 +13186,8 @@ func (s *snapmgrTestSuite) TestRefreshForcedOnRefreshInhibitionTimeout(c *C) {
 		},
 	}
 
-	var notified int
-	restore := snapstate.MockAsyncPendingRefreshNotification(func(_ context.Context, pendingInfo *userclient.PendingSnapRefreshInfo) {
-		c.Check(pendingInfo.TimeRemaining, Equals, time.Duration(0))
-		notified++
-	})
-	defer restore()
-
 	check := make(map[string]int, 2)
-	restore = snapstate.MockRefreshAppsCheck(func(info *snap.Info) error {
+	restore := snapstate.MockRefreshAppsCheck(func(info *snap.Info) error {
 		check[info.InstanceName()]++
 
 		switch check[info.InstanceName()] {
@@ -13287,7 +13235,6 @@ func (s *snapmgrTestSuite) TestRefreshForcedOnRefreshInhibitionTimeout(c *C) {
 	// 3 status changes (Default -> Doing -> Done) + 2 forced refreshes
 	c.Check(n["occurrences"], Equals, 5.0)
 
-	c.Check(notified, Equals, 2)
 	c.Check(check["some-snap"], Equals, 2)
 	c.Check(check["some-other-snap"], Equals, 2)
 }
@@ -13748,11 +13695,7 @@ func (s *snapmgrTestSuite) TestMonitoringIsPersistedAndRestored(c *C) {
 		"some-snap": {SnapSetup: *snapsup, Monitored: true},
 	})
 
-	var notified bool
-	restore := snapstate.MockAsyncPendingRefreshNotification(func(ctx context.Context, refreshInfo *userclient.PendingSnapRefreshInfo) {})
-	defer restore()
-
-	restore = snapstate.MockRefreshAppsCheck(func(info *snap.Info) error {
+	restore := snapstate.MockRefreshAppsCheck(func(info *snap.Info) error {
 		return nil
 	})
 	defer restore()
@@ -13771,9 +13714,8 @@ func (s *snapmgrTestSuite) TestMonitoringIsPersistedAndRestored(c *C) {
 	err := af.Ensure()
 	c.Check(err, IsNil)
 
-	// restores monitoring but doesn't notify again
+	// restores monitoring
 	c.Assert(stopMonitor, NotNil)
-	c.Assert(notified, Equals, false)
 
 	s.state.Lock()
 	aborts := s.state.Cached("monitored-snaps").(map[string]context.CancelFunc)
@@ -13836,14 +13778,8 @@ func (s *snapmgrTestSuite) testNoMonitoringWithCands(c *C, cands map[string]*sna
 	// that the candidate was reverted before the pre-download task runs
 	s.state.Set("refresh-candidates", cands)
 
-	var notified bool
-	restore := snapstate.MockAsyncPendingRefreshNotification(func(ctx context.Context, refreshInfo *userclient.PendingSnapRefreshInfo) {
-		notified = true
-	})
-	defer restore()
-
 	var inhibited bool
-	restore = snapstate.MockRefreshAppsCheck(func(info *snap.Info) error {
+	restore := snapstate.MockRefreshAppsCheck(func(info *snap.Info) error {
 		inhibited = true
 		return snapstate.NewBusySnapError(info, []int{123}, nil, nil)
 	})
@@ -13871,8 +13807,6 @@ func (s *snapmgrTestSuite) testNoMonitoringWithCands(c *C, cands map[string]*sna
 	c.Assert(s.state.Cached("monitored-snap"), IsNil)
 	c.Assert(buf.String(), testutil.Contains, `cannot get refresh candidate for "some-snap" (possibly reverted): nothing to refresh`)
 
-	// we didn't notify since there's no candidate to refresh to
-	c.Assert(notified, Equals, false)
 	c.Assert(inhibited, Equals, true)
 }
 
@@ -15186,7 +15120,7 @@ func (s *snapmgrTestSuite) TestSplitEssentialSnapUpdates(c *C) {
 	updatesToNames := func(updates []snapstate.SnapUpdate) []string {
 		names := make([]string, 0, len(updates))
 		for _, up := range updates {
-			names = append(names, up.Setup.InstanceName())
+			names = append(names, up.Setup.InstanceName().String())
 		}
 		return names
 	}
@@ -15592,7 +15526,7 @@ func findTaskForSnap(c *C, chg *state.Change, kind, snap string) *state.Task {
 
 		snapsup, err := snapstate.TaskSnapSetup(t)
 		c.Assert(err, IsNil)
-		if snapsup.SnapName() == snap {
+		if snapsup.SnapName().String() == snap {
 			return t
 		}
 	}
@@ -15731,10 +15665,6 @@ func (s *snapmgrTestSuite) TestUpdateBackToPrevRevision(c *C) {
 
 	expected := fakeOps{
 		{
-			op:   "remove-snap-aliases",
-			name: instanceName,
-		},
-		{
 			op:          "run-inhibit-snap-for-unlink",
 			name:        instanceName,
 			inhibitHint: "refresh",
@@ -15744,9 +15674,10 @@ func (s *snapmgrTestSuite) TestUpdateBackToPrevRevision(c *C) {
 			name: instanceName,
 		},
 		{
-			op:          "unlink-snap",
-			path:        filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
-			inhibitHint: "refresh",
+			op:                 "unlink-snap",
+			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
+			unlinkSkipBinaries: true,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:   "copy-data",
@@ -15982,10 +15913,6 @@ func (s *snapmgrTestSuite) testRevertWithComponents(c *C, undo bool) {
 	// as they were part of a the previous revision
 	expected = append(expected, fakeOps{
 		{
-			op:   "remove-snap-aliases",
-			name: instanceName,
-		},
-		{
 			op:          "run-inhibit-snap-for-unlink",
 			name:        instanceName,
 			inhibitHint: "refresh",
@@ -15995,9 +15922,10 @@ func (s *snapmgrTestSuite) testRevertWithComponents(c *C, undo bool) {
 			name: instanceName,
 		},
 		{
-			op:          "unlink-snap",
-			path:        filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
-			inhibitHint: "refresh",
+			op:                 "unlink-snap",
+			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
+			unlinkSkipBinaries: true,
+			inhibitHint:        "refresh",
 		},
 		{
 			op:    "setup-profiles:Doing",
@@ -16033,8 +15961,7 @@ func (s *snapmgrTestSuite) testRevertWithComponents(c *C, undo bool) {
 	if undo {
 		expected = append(expected, []fakeOp{
 			{
-				op:   "remove-snap-aliases",
-				name: instanceName,
+				op: "update-aliases",
 			},
 			{
 				op:    "auto-connect:Undoing",
@@ -16057,9 +15984,6 @@ func (s *snapmgrTestSuite) testRevertWithComponents(c *C, undo bool) {
 			{
 				op:     "maybe-set-next-boot",
 				isUndo: true,
-			},
-			{
-				op: "update-aliases",
 			},
 		}...)
 	}
@@ -16371,11 +16295,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 		})
 	}
 
-	expected = append(expected, fakeOp{
-		op:   "remove-snap-aliases",
-		name: snapName,
-	})
-
 	expected = append(expected, fakeOps{
 		{
 			op:          "run-inhibit-snap-for-unlink",
@@ -16387,9 +16306,10 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevision(c *C) {
 			name: snapName,
 		},
 		{
-			op:          "unlink-snap",
-			path:        filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
-			inhibitHint: "refresh",
+			op:                 "unlink-snap",
+			path:               filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			unlinkSkipBinaries: true,
+			inhibitHint:        "refresh",
 		},
 		{
 			op: "prepare-kernel-snap",
@@ -16936,11 +16856,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevisionAddComponen
 		}}...)
 	}
 
-	expected = append(expected, fakeOp{
-		op:   "remove-snap-aliases",
-		name: snapName,
-	})
-
 	expected = append(expected, fakeOps{
 		{
 			op:          "run-inhibit-snap-for-unlink",
@@ -16952,9 +16867,10 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsBackToPrevRevisionAddComponen
 			name: snapName,
 		},
 		{
-			op:          "unlink-snap",
-			path:        filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
-			inhibitHint: "refresh",
+			op:                 "unlink-snap",
+			path:               filepath.Join(dirs.SnapMountDir, snapName, currentSnapRev.String()),
+			unlinkSkipBinaries: true,
+			inhibitHint:        "refresh",
 		},
 		{
 			op: "prepare-kernel-snap",
@@ -17105,47 +17021,42 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughNoComponents(c *C) 
 
 func (s *snapmgrTestSuite) TestUpdateExplicitlyToSameRevisionRunThrough(c *C) {
 	s.testUpdateWithComponentsRunThrough(c, updateWithComponentsOpts{
-		snapType:              snap.TypeKernel,
-		useSameSnapRev:        true,
-		refreshAppAwarenessUX: true,
+		snapType:       snap.TypeKernel,
+		useSameSnapRev: true,
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateExplicitlyToSameRevisionRunThroughUndo(c *C) {
 	s.testUpdateWithComponentsRunThrough(c, updateWithComponentsOpts{
-		snapType:              snap.TypeKernel,
-		useSameSnapRev:        true,
-		undo:                  true,
-		refreshAppAwarenessUX: true,
+		snapType:       snap.TypeKernel,
+		useSameSnapRev: true,
+		undo:           true,
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughUndo(c *C) {
 	s.testUpdateWithComponentsRunThrough(c, updateWithComponentsOpts{
-		snapType:              snap.TypeKernel,
-		components:            []string{"standard-component", "kernel-modules-component"},
-		refreshAppAwarenessUX: true,
-		undo:                  true,
+		snapType:   snap.TypeKernel,
+		components: []string{"standard-component", "kernel-modules-component"},
+		undo:       true,
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughInstanceKey(c *C) {
 	s.testUpdateWithComponentsRunThrough(c, updateWithComponentsOpts{
-		snapType:              snap.TypeApp,
-		instanceKey:           "key",
-		components:            []string{"standard-component", "standard-component-extra"},
-		refreshAppAwarenessUX: true,
-		undo:                  false,
+		snapType:    snap.TypeApp,
+		instanceKey: "key",
+		components:  []string{"standard-component", "standard-component-extra"},
+		undo:        false,
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughInstanceKeyUndo(c *C) {
 	s.testUpdateWithComponentsRunThrough(c, updateWithComponentsOpts{
-		snapType:              snap.TypeApp,
-		instanceKey:           "key",
-		components:            []string{"standard-component", "standard-component-extra"},
-		refreshAppAwarenessUX: true,
-		undo:                  true,
+		snapType:    snap.TypeApp,
+		instanceKey: "key",
+		components:  []string{"standard-component", "standard-component-extra"},
+		undo:        true,
 	})
 }
 
@@ -17154,7 +17065,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughLoseComponents(c *C
 		snapType:              snap.TypeKernel,
 		components:            []string{"standard-component", "kernel-modules-component"},
 		postRefreshComponents: []string{"standard-component"},
-		refreshAppAwarenessUX: true,
 	})
 }
 
@@ -17163,7 +17073,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughLoseComponentsUndo(
 		snapType:              snap.TypeKernel,
 		components:            []string{"standard-component", "kernel-modules-component"},
 		postRefreshComponents: []string{"standard-component"},
-		refreshAppAwarenessUX: true,
 		undo:                  true,
 	})
 }
@@ -17174,7 +17083,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughAdditionalComponent
 		components:            []string{"standard-component"},
 		postRefreshComponents: []string{"standard-component", "kernel-modules-component"},
 		additionalComponents:  []string{"kernel-modules-component"},
-		refreshAppAwarenessUX: true,
 	})
 }
 
@@ -17184,7 +17092,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughAdditionalComponent
 		components:            []string{"standard-component"},
 		postRefreshComponents: []string{"standard-component"},
 		additionalComponents:  []string{"standard-component"},
-		refreshAppAwarenessUX: true,
 	})
 }
 
@@ -17194,7 +17101,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughAdditionalComponent
 		components:            []string{"standard-component"},
 		postRefreshComponents: []string{"standard-component", "kernel-modules-component"},
 		additionalComponents:  []string{"kernel-modules-component"},
-		refreshAppAwarenessUX: true,
 		undo:                  true,
 	})
 }
@@ -17205,7 +17111,6 @@ type updateWithComponentsOpts struct {
 	components            []string
 	postRefreshComponents []string
 	additionalComponents  []string
-	refreshAppAwarenessUX bool
 	undo                  bool
 	useSameSnapRev        bool
 }
@@ -17228,10 +17133,6 @@ func componentNameToType(c *C, name string) snap.ComponentType {
 }
 
 func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateWithComponentsOpts) {
-	if opts.refreshAppAwarenessUX {
-		s.enableRefreshAppAwarenessUX()
-	}
-
 	var snapName, snapID string
 	switch opts.snapType {
 	case snap.TypeKernel:
@@ -17640,13 +17541,6 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		})
 	}
 
-	if !opts.refreshAppAwarenessUX {
-		expected = append(expected, fakeOp{
-			op:   "remove-snap-aliases",
-			name: instanceName,
-		})
-	}
-
 	expected = append(expected, fakeOps{
 		{
 			op:          "run-inhibit-snap-for-unlink",
@@ -17660,7 +17554,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThrough(c *C, opts updateW
 		{
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
-			unlinkSkipBinaries: opts.refreshAppAwarenessUX,
+			unlinkSkipBinaries: true,
 			inhibitHint:        "refresh",
 		}}...)
 	if opts.snapType == snap.TypeKernel {
@@ -17937,8 +17831,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughShareComponentsUndo
 }
 
 func (s *snapmgrTestSuite) testUpdateWithComponentsRunThroughShareComponents(c *C, undo bool) {
-	s.enableRefreshAppAwarenessUX()
-
 	const (
 		snapName = "kernel"
 		snapID   = "kernel-id"
@@ -18585,49 +18477,45 @@ func (s *snapmgrTestSuite) TestUpdateTasksWithComponentsRemoved(c *C) {
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsFromPathRunThrough(c *C) {
 	const (
-		instanceKey           = ""
-		snapType              = snap.TypeKernel
-		refreshAppAwarenessUX = true
-		undo                  = false
+		instanceKey = ""
+		snapType    = snap.TypeKernel
+		undo        = false
 	)
 	s.testUpdateWithComponentsFromPathRunThrough(c, instanceKey, snapType,
-		[]string{"standard-component", "kernel-modules-component"}, refreshAppAwarenessUX, undo)
+		[]string{"standard-component", "kernel-modules-component"}, undo)
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsFromPathRunThroughUndo(c *C) {
 	const (
-		instanceKey           = ""
-		snapType              = snap.TypeKernel
-		refreshAppAwarenessUX = true
-		undo                  = true
+		instanceKey = ""
+		snapType    = snap.TypeKernel
+		undo        = true
 	)
 	s.testUpdateWithComponentsFromPathRunThrough(c, instanceKey, snapType,
-		[]string{"standard-component", "kernel-modules-component"}, refreshAppAwarenessUX, undo)
+		[]string{"standard-component", "kernel-modules-component"}, undo)
 }
 
 func (s *snapmgrTestSuite) TestUpdateInstanceWithComponentsFromPathRunThrough(c *C) {
 	const (
-		instanceKey           = "key"
-		snapType              = snap.TypeApp
-		refreshAppAwarenessUX = true
-		undo                  = false
+		instanceKey = "key"
+		snapType    = snap.TypeApp
+		undo        = false
 	)
 	s.testUpdateWithComponentsFromPathRunThrough(c, instanceKey, snapType,
-		[]string{"standard-component", "standard-component-extra"}, refreshAppAwarenessUX, undo)
+		[]string{"standard-component", "standard-component-extra"}, undo)
 }
 
 func (s *snapmgrTestSuite) TestUpdateInstanceWithComponentsFromPathRunThroughUndo(c *C) {
 	const (
-		instanceKey           = "key"
-		snapType              = snap.TypeApp
-		refreshAppAwarenessUX = true
-		undo                  = true
+		instanceKey = "key"
+		snapType    = snap.TypeApp
+		undo        = true
 	)
 	s.testUpdateWithComponentsFromPathRunThrough(c, instanceKey, snapType,
-		[]string{"standard-component", "standard-component-extra"}, refreshAppAwarenessUX, undo)
+		[]string{"standard-component", "standard-component-extra"}, undo)
 }
 
-func (s *snapmgrTestSuite) testUpdateWithComponentsFromPathRunThrough(c *C, instanceKey string, snapType snap.Type, compNames []string, refreshAppAwarenessUX, undo bool) {
+func (s *snapmgrTestSuite) testUpdateWithComponentsFromPathRunThrough(c *C, instanceKey string, snapType snap.Type, compNames []string, undo bool) {
 	// use the real thing for this one
 	snapstate.MockOpenSnapFile(backend.OpenSnapFile)
 
@@ -18646,10 +18534,6 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsFromPathRunThrough(c *C, inst
 
 	r := snapstatetest.MockDeviceModel(MakeModel20("pc", map[string]any{"base": "core24"}))
 	defer r()
-
-	if refreshAppAwarenessUX {
-		s.enableRefreshAppAwarenessUX()
-	}
 
 	currentSnapRev := snap.R(7)
 	newSnapRev := snap.R(11)
@@ -18890,13 +18774,6 @@ components:
 		},
 	}...)
 
-	if !refreshAppAwarenessUX {
-		expected = append(expected, fakeOp{
-			op:   "remove-snap-aliases",
-			name: instanceName,
-		})
-	}
-
 	for _, cs := range expectedComponentStates {
 		compName := cs.SideInfo.Component.ComponentName
 		compRev := cs.SideInfo.Revision
@@ -18923,7 +18800,7 @@ components:
 		{
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
-			unlinkSkipBinaries: refreshAppAwarenessUX,
+			unlinkSkipBinaries: true,
 			inhibitHint:        "refresh",
 		}}...)
 	if snapType == snap.TypeKernel {
@@ -19147,8 +19024,6 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsFromPathBackToInstalledRevisi
 
 	r := snapstatetest.MockDeviceModel(MakeModel20("pc", map[string]any{"base": "core24"}))
 	defer r()
-
-	s.enableRefreshAppAwarenessUX()
 
 	oldSnapRev := snap.R(7)
 	currentSnapRev := snap.R(11)
@@ -19480,37 +19355,33 @@ func (s *snapmgrTestSuite) TestUpdateWithComponentsFromPathBackToInstalledRevisi
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughOnlyComponentUpdate(c *C) {
 	s.testUpdateWithComponentsRunThroughOnlyComponentUpdate(c, updateWithComponentsOpts{
-		snapType:              snap.TypeKernel,
-		components:            []string{"standard-component", "kernel-modules-component"},
-		refreshAppAwarenessUX: true,
+		snapType:   snap.TypeKernel,
+		components: []string{"standard-component", "kernel-modules-component"},
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithComponentsRunThroughOnlyComponentUpdateUndo(c *C) {
 	s.testUpdateWithComponentsRunThroughOnlyComponentUpdate(c, updateWithComponentsOpts{
-		snapType:              snap.TypeKernel,
-		components:            []string{"standard-component", "kernel-modules-component"},
-		refreshAppAwarenessUX: true,
-		undo:                  true,
+		snapType:   snap.TypeKernel,
+		components: []string{"standard-component", "kernel-modules-component"},
+		undo:       true,
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateInstanceWithComponentsRunThroughOnlyComponentUpdate(c *C) {
 	s.testUpdateWithComponentsRunThroughOnlyComponentUpdate(c, updateWithComponentsOpts{
-		snapType:              snap.TypeApp,
-		instanceKey:           "key",
-		components:            []string{"standard-component", "standard-component-extra"},
-		refreshAppAwarenessUX: true,
+		snapType:    snap.TypeApp,
+		instanceKey: "key",
+		components:  []string{"standard-component", "standard-component-extra"},
 	})
 }
 
 func (s *snapmgrTestSuite) TestUpdateInstanceWithComponentsRunThroughOnlyComponentUpdateUndo(c *C) {
 	s.testUpdateWithComponentsRunThroughOnlyComponentUpdate(c, updateWithComponentsOpts{
-		snapType:              snap.TypeApp,
-		instanceKey:           "key",
-		components:            []string{"standard-component", "standard-component-extra"},
-		refreshAppAwarenessUX: true,
-		undo:                  true,
+		snapType:    snap.TypeApp,
+		instanceKey: "key",
+		components:  []string{"standard-component", "standard-component-extra"},
+		undo:        true,
 	})
 }
 
@@ -19522,11 +19393,6 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThroughOnlyComponentUpdate
 	if opts.postRefreshComponents != nil {
 		c.Fatalf("when refreshing a snap that results in only component revision changes, you cannot lose or gain components")
 	}
-
-	if opts.refreshAppAwarenessUX {
-		s.enableRefreshAppAwarenessUX()
-	}
-
 	var snapName, snapID string
 	switch opts.snapType {
 	case snap.TypeKernel:
@@ -19742,13 +19608,6 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThroughOnlyComponentUpdate
 		},
 	}
 
-	if !opts.refreshAppAwarenessUX {
-		expected = append(expected, fakeOp{
-			op:   "remove-snap-aliases",
-			name: instanceName,
-		})
-	}
-
 	for _, cs := range expectedComponentStates {
 		compName := cs.SideInfo.Component.ComponentName
 		compRev := cs.SideInfo.Revision
@@ -19798,7 +19657,7 @@ func (s *snapmgrTestSuite) testUpdateWithComponentsRunThroughOnlyComponentUpdate
 		fakeOp{
 			op:                 "unlink-snap",
 			path:               filepath.Join(dirs.SnapMountDir, instanceName, currentSnapRev.String()),
-			unlinkSkipBinaries: opts.refreshAppAwarenessUX,
+			unlinkSkipBinaries: true,
 			inhibitHint:        "refresh",
 		})
 	if opts.snapType == snap.TypeKernel {
@@ -20484,9 +20343,9 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshPrerequisitesUpdatesMode
 
 	providerSnapSetup, err := snapstate.TaskSnapSetup(providerSnapSetupTask)
 	c.Assert(err, IsNil)
-	c.Check(providerSnapSetup.InstanceName(), Equals, "content-provider")
+	c.Check(providerSnapSetup.InstanceName().String(), Equals, "content-provider")
 	c.Check(observed.prerequisites, testutil.DeepUnsortedMatches, []snapstate.SeedRefreshCandidate{{
-		InstanceName:     providerSnapSetup.InstanceName(),
+		InstanceName:     providerSnapSetup.InstanceName().String(),
 		SnapSetupTaskIDs: []string{providerSnapSetupTask.ID()},
 	}})
 
@@ -20664,23 +20523,23 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshRecursivePrerequisitesBe
 	c.Assert(providerSnapSetupTask, NotNil)
 	providerSnapsup, err := snapstate.TaskSnapSetup(providerSnapSetupTask)
 	c.Assert(err, IsNil)
-	c.Check(providerSnapsup.InstanceName(), Equals, "content-provider")
+	c.Check(providerSnapsup.InstanceName().String(), Equals, "content-provider")
 
 	nestedSnapSetupTask := s.state.Task(observed.prerequisites[1].SnapSetupTaskIDs[0])
 	c.Assert(nestedSnapSetupTask, NotNil)
 	nestedSnapsup, err := snapstate.TaskSnapSetup(nestedSnapSetupTask)
 	c.Assert(err, IsNil)
-	c.Check(nestedSnapsup.InstanceName(), Equals, "nested-provider")
+	c.Check(nestedSnapsup.InstanceName().String(), Equals, "nested-provider")
 
 	// both prerequisite task sets are observed, but only content-provider is
 	// seed-relevant. nested-provider is intentionally outside the seed refresh.
 	c.Check(observed.prerequisites, testutil.DeepUnsortedMatches, []snapstate.SeedRefreshCandidate{
 		{
-			InstanceName:     providerSnapsup.InstanceName(),
+			InstanceName:     providerSnapsup.InstanceName().String(),
 			SnapSetupTaskIDs: []string{providerSnapSetupTask.ID()},
 		},
 		{
-			InstanceName:     nestedSnapsup.InstanceName(),
+			InstanceName:     nestedSnapsup.InstanceName().String(),
 			SnapSetupTaskIDs: []string{nestedSnapSetupTask.ID()},
 		},
 	})
@@ -21215,76 +21074,96 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshBeforeLocalModifications
 	})
 
 	c.Assert(seedTS, NotNil)
-	c.Check(taskSetsShareLane(snapdTS, baseTS, kernelTS, appTS), Equals, true)
-	c.Check(taskSetsShareLane(baseTS, nonSeedAppTS), Equals, false)
-	c.Check(taskSetLanes(seedTS), testutil.DeepUnsortedMatches, taskSetLanes(snapdTS))
+	tasks := tasktest.NewSelection(chg.Tasks())
 
-	seedCreate, seedEnd, _ := splitSeedRefreshTasks(c, seedTS)
+	snapd := tasktest.Snap("snapd")
+	base := tasktest.Snap("core18")
+	kernel := tasktest.Snap("kernel")
+	app := tasktest.Snap("some-app")
+	otherApp := tasktest.Snap("some-other-snap")
 
-	kernelLinkTask, err := kernelTS.Edge(snapstate.MaybeRebootEdge)
-	c.Assert(err, IsNil)
-	c.Check(kernelLinkTask.HaltTasks(), testutil.Contains, seedCreate)
+	snapdTasks := tasks.Select(snapd.All())
+	baseTasks := tasks.Select(base.All())
+	baseMount := tasks.Select(base.WithKind("mount-snap"))
+	baseLink := tasks.Select(base.WithKind("link-snap"))
+	baseEnd := baseTasks.Tails()
+	kernelTasks := tasks.Select(kernel.All())
+	kernelMount := tasks.Select(kernel.WithKind("mount-snap"))
+	kernelLink := tasks.Select(kernel.WithKind("link-snap"))
+	kernelEnd := kernelTasks.Tails()
 
-	for _, ts := range []*state.TaskSet{snapdTS, baseTS, kernelTS, appTS} {
-		end, err := ts.Edge(snapstate.EndEdge)
-		c.Assert(err, IsNil)
-		c.Check(waitsOnTransitively(seedEnd, end), Equals, true)
-	}
+	appTasks := tasks.Select(app.All())
+	appSyncPrerequisites := tasks.Select(app.WithKind("prerequisites").WithField("prerequisites-sync", true))
+	appBeforeSync := appTasks.Predecessors(appSyncPrerequisites)
 
-	c.Check(hasDoRestartBoundary(seedCreate), Equals, true)
-	c.Check(hasDoRestartBoundary(kernelLinkTask), Equals, false)
+	otherAppTasks := tasks.Select(otherApp.All())
+	otherAppEarlyPrerequisites := tasks.Select(otherApp.WithKind("prerequisites").WithField("prerequisites-sync", nil))
+	otherAppSyncPrerequisites := tasks.Select(otherApp.WithKind("prerequisites").WithField("prerequisites-sync", true))
+	otherAppEnd := otherAppTasks.Tails()
+	otherAppLaterTasks := otherAppTasks.Successors(otherAppEarlyPrerequisites)
 
-	snapdEnd, err := snapdTS.Edge(snapstate.EndEdge)
-	c.Assert(err, IsNil)
-	baseBegin, err := baseTS.Edge(snapstate.BeginEdge)
-	c.Assert(err, IsNil)
+	seedCreate := tasks.Select(tasktest.Kind("create-recovery-system"))
+	seedFinalize := tasks.Select(tasktest.Kind("finalize-recovery-system"))
 
-	c.Check(baseBegin.WaitTasks(), testutil.Contains, snapdEnd)
+	// snapd must finish first so later tasks run under the refreshed daemon.
+	c.Assert(tasktest.AssertOrdered(snapdTasks, baseTasks), IsNil)
 
-	snapdLastBefore, err := snapdTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
-	c.Assert(err, IsNil)
-	baseLastBefore, err := baseTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
-	c.Assert(err, IsNil)
+	// preserve the essential-snap order across the single seed-refresh reboot.
+	c.Assert(tasktest.AssertOrdered(
+		baseMount,
+		kernelMount,
+		baseLink,
+		kernelLink,
+		seedCreate,
+		baseEnd,
+		kernelEnd,
+	), IsNil)
 
-	// assert seed creation waits on before-local-modification tasks of seed snaps.
-	for _, lastBeforeLocal := range []*state.Task{snapdLastBefore, baseLastBefore} {
-		c.Check(waitsOnTransitively(seedCreate, lastBeforeLocal), Equals, true)
-	}
+	// seed apps finish all preparation before creation and resume only afterward.
+	c.Assert(tasktest.AssertOrdered(
+		appBeforeSync,
+		seedCreate,
+		appSyncPrerequisites,
+	), IsNil)
 
-	nonSeedAppFirstPrereq, _ := findPrereqTasksForSnap(c, chg, "some-other-snap")
-	nonSeedAppLastBefore, err := nonSeedAppTS.Edge(snapstate.LastBeforeLocalModificationsEdge)
-	c.Assert(err, IsNil)
+	// non-seed initial prerequisites can schedule additional seed snaps.
+	c.Assert(tasktest.AssertOrdered(
+		otherAppEarlyPrerequisites,
+		seedCreate,
+	), IsNil)
 
-	// assert seed creation waits only on initial prerequisites tasks of non-seed snaps.
-	c.Check(waitsOnTransitively(seedCreate, nonSeedAppFirstPrereq), Equals, true)
-	c.Check(waitsOnTransitively(seedCreate, nonSeedAppLastBefore), Equals, false)
-	for _, lane := range seedCreate.Lanes() {
-		c.Check(nonSeedAppFirstPrereq.Lanes(), testutil.Contains, lane)
-		c.Check(nonSeedAppLastBefore.Lanes(), Not(testutil.Contains), lane)
-	}
+	// post-prerequisite app work waits until all essential snaps are complete.
+	c.Assert(tasktest.AssertOrdered(kernelTasks, appSyncPrerequisites), IsNil)
+	c.Assert(tasktest.AssertOrdered(kernelTasks, otherAppSyncPrerequisites), IsNil)
 
-	baseMount := findKindInTaskSet(baseTS, "mount-snap")
-	c.Assert(baseMount, NotNil)
-	c.Check(waitsOnTransitively(baseMount, snapdEnd), Equals, true)
-	c.Check(waitsOnTransitively(baseMount, snapdLastBefore), Equals, true)
+	// finalization records the seed only after every included snap is complete.
+	c.Assert(tasktest.AssertOrdered(baseTasks, seedFinalize), IsNil)
+	c.Assert(tasktest.AssertOrdered(kernelTasks, seedFinalize), IsNil)
+	c.Assert(tasktest.AssertOrdered(appTasks, seedFinalize), IsNil)
 
-	lastEssentialSnapTask, err := kernelTS.Edge(snapstate.EndEdge)
-	c.Assert(err, IsNil)
+	// snaps outside the seed must not delay finalization.
+	c.Assert(tasktest.AssertDoesNotPrecede(otherAppEnd, seedFinalize), IsNil)
 
-	// model app performs before-local-modification tasks before seed creation, but
-	// doesn't perform any local modifications until all essential snaps are complete.
-	firstLocalModApp := firstTaskAfterLocalModifications(c, appTS)
-	c.Check(firstLocalModApp.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
+	// one transaction ensures a seed-cohort failure rolls the whole cohort back.
+	c.Assert(tasktest.AssertSameLanes(
+		snapdTasks,
+		baseTasks,
+		kernelTasks,
+		appTasks,
+		seedCreate,
+		seedFinalize,
+	), IsNil)
 
-	// non-seed app performs its initial prerequisite check before seed creation,
-	// but defers post-prerequisite work until all essential snaps are complete.
-	firstPostPrereqsNonSeedApp := firstTaskAfterPrerequisites(c, nonSeedAppTS)
-	c.Check(firstPostPrereqsNonSeedApp.WaitTasks(), testutil.Contains, lastEssentialSnapTask)
+	// early non-seed prerequisites join the seed transaction because they can
+	// add seed refresh candidates.
+	c.Assert(tasktest.AssertLaneSuperset(otherAppEarlyPrerequisites, seedCreate), IsNil)
 
-	// ensure that seed finalize task doesn't wait on non-seed snap
-	nonSeedAppEndTask, err := nonSeedAppTS.Edge(snapstate.EndEdge)
-	c.Assert(err, IsNil)
-	c.Check(waitsOnTransitively(seedEnd, nonSeedAppEndTask), Equals, false)
+	// later non-seed work stays independent so its failures cannot undo the seed.
+	c.Assert(tasktest.AssertDoesNotShareLane(seedCreate, otherAppLaterTasks), IsNil)
+
+	// seed creation owns the reboot boundary, avoiding an extra kernel-triggered reboot.
+	c.Check(hasDoRestartBoundary(seedCreate.Tasks()[0]), Equals, true)
+	c.Check(hasDoRestartBoundary(kernelLink.Tasks()[0]), Equals, false)
 }
 
 func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshUndo(c *C) {
@@ -22023,7 +21902,7 @@ func (s *snapmgrTestSuite) TestInstallPathSeedRefreshRunThrough(c *C) {
 	c.Assert(err, IsNil)
 	snapsup, err := snapstate.TaskSnapSetup(setupTask)
 	c.Assert(err, IsNil)
-	c.Check(snapsup.InstanceName(), Equals, "kernel")
+	c.Check(snapsup.InstanceName().String(), Equals, "kernel")
 	c.Check(snapsup.Revision(), Equals, newSideInfo.Revision)
 	c.Check(snapsup.SnapPath, Equals, path)
 
@@ -22439,4 +22318,82 @@ func (s *snapmgrTestSuite) TestUpdateWithGoalSeedRefreshNoSeedRefreshOption(c *C
 	c.Check(seedTS, IsNil)
 	c.Check(observed.initial, HasLen, 0)
 	c.Check(observed.prerequisites, HasLen, 0)
+}
+
+func (s *snapmgrTestSuite) TestBaseRemovalDoesNotPreventSchedulingRefreshUsingBase(c *C) {
+	appSI := &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(7)}
+	snaptest.MockSnap(c, "name: some-snap\nbase: core", appSI)
+	baseSI := &snap.SideInfo{RealName: "some-base", SnapID: "some-base-id", Revision: snap.R(1)}
+	snaptest.MockSnapCurrent(c, "name: some-base\nversion: 1.0\ntype: base\n", baseSI)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	snapstate.Set(s.state, "some-snap", &snapstate.SnapState{
+		Active:          true,
+		TrackingChannel: "latest/edge",
+		Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{appSI}),
+		Current:         appSI.Revision,
+		SnapType:        string(snap.TypeApp),
+	})
+	snapstate.Set(s.state, "some-base", &snapstate.SnapState{
+		Active:   true,
+		Sequence: snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{baseSI}),
+		Current:  baseSI.Revision,
+		SnapType: string(snap.TypeBase),
+	})
+
+	removeTS, err := snapstate.Remove(s.state, "some-base", snap.R(0), nil)
+	c.Assert(err, IsNil)
+	removeChg := s.state.NewChange("remove-snap", "...")
+	removeChg.AddAll(removeTS)
+
+	ts, err := snapstate.Update(s.state, "some-snap", &snapstate.RevisionOptions{Channel: "channel-for-base/stable"}, s.user.ID, snapstate.Flags{})
+	c.Assert(err, IsNil)
+	c.Check(ts.Tasks(), Not(HasLen), 0)
+}
+
+func (s *snapmgrTestSuite) TestBaseRemovalDoesNotPreventPreDownloadUsingBase(c *C) {
+	restore := snapstate.MockRefreshAppsCheck(func(si *snap.Info) error {
+		return snapstate.NewBusySnapError(si, []int{123}, nil, nil)
+	})
+	defer restore()
+
+	appSI := &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(7)}
+	snaptest.MockSnap(c, "name: some-snap\nbase: core", appSI)
+	baseSI := &snap.SideInfo{RealName: "some-base", SnapID: "some-base-id", Revision: snap.R(1)}
+	snaptest.MockSnapCurrent(c, "name: some-base\nversion: 1.0\ntype: base\n", baseSI)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	appState := &snapstate.SnapState{
+		Active:          true,
+		TrackingChannel: "latest/edge",
+		Sequence:        snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{appSI}),
+		Current:         appSI.Revision,
+		SnapType:        string(snap.TypeApp),
+	}
+	snapstate.Set(s.state, "some-snap", appState)
+	snapstate.Set(s.state, "some-base", &snapstate.SnapState{
+		Active:   true,
+		Sequence: snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{baseSI}),
+		Current:  baseSI.Revision,
+		SnapType: string(snap.TypeBase),
+	})
+
+	removeTS, err := snapstate.Remove(s.state, "some-base", snap.R(0), nil)
+	c.Assert(err, IsNil)
+	removeChg := s.state.NewChange("remove-snap", "...")
+	removeChg.AddAll(removeTS)
+
+	sts, err := snapstate.DoInstallOrPreDownload(s.state, appState, &snapstate.SnapSetup{
+		Base:     "some-base",
+		SideInfo: &snap.SideInfo{RealName: "some-snap", SnapID: "some-snap-id", Revision: snap.R(11)},
+		Type:     snap.TypeApp,
+		Flags:    snapstate.Flags{IsAutoRefresh: true},
+	}, nil, snapstate.InstallContext{})
+	c.Assert(err, FitsTypeOf, &snapstate.TimedBusySnapError{})
+	c.Assert(sts.TaskSet().Tasks(), HasLen, 1)
+	c.Check(sts.TaskSet().Tasks()[0].Kind(), Equals, "pre-download-snap")
 }

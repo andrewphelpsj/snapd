@@ -19,6 +19,25 @@ grade: stable
 license: GPL-3.0
 confinement: strict
 
+# Nested objects such as ubuntu-core-tracks must not be validated by Snapcraft
+# or review-tools; snapd validates them via snap pack. Passthrough
+# only skips Snapcraft validation.
+# TODO: allow snapd-info in the store/review-tools snap.yaml schema for
+# the snapd snap.
+# TODO: allow snapd-info in Snapcraft so passthrough is not needed.
+passthrough:
+  snapd-info:
+    # Example:
+    #   ubuntu-core-tracks:
+    #     "18":
+    #       latest: "18"
+    #       fips-updates: "18-fips"
+    #     "20":
+    #       latest: "20"
+    #       fips-updates: "20-fips"
+    # Empty until the first Ubuntu Core version is onboarded.
+    ubuntu-core-tracks: {}
+
 # Note that this snap is unusual in that it has no "apps" section.
 #
 # It is started via re-exec on classic systems and via special
@@ -338,7 +357,6 @@ parts:
             # and fixes that were not yet backported
             lib/snapd/snap-bootstrap
             lib/snapd/snap-failure
-            lib/snapd/snap-fde-keymgr
             lib/snapd/snap-repair
             lib/snapd/snap-seccomp
             lib/snapd/snap-update-ns
@@ -468,6 +486,9 @@ parts:
       # link snap-recovery-chooser -> snapd-tool-wrap (C tool wrapper multi-call)
       ln -v -s -r "${CRAFT_PART_INSTALL}/usr/lib/snapd/snapd-tool-wrap" \
          "${CRAFT_PART_INSTALL}/usr/lib/snapd/snap-recovery-chooser"
+      # link snap-fde-keymgr -> snapd-tool-wrap (C tool wrapper multi-call)
+      ln -v -s -r "${CRAFT_PART_INSTALL}/usr/lib/snapd/snapd-tool-wrap" \
+         "${CRAFT_PART_INSTALL}/usr/lib/snapd/snap-fde-keymgr"
 
       if [ -f fips-build ]; then
         # Set up FIPS dispatch: replace each original binary with a symlink

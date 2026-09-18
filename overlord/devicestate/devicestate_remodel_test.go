@@ -5985,7 +5985,7 @@ func (s *deviceMgrRemodelSuite) TestUC20RemodelSetModelWithReboot(c *C) {
 			defer st.Unlock()
 			// not strictly needed, but underlines there's a reboot
 			// happening
-			restart.Request(st, restart.RestartSystemNow, nil)
+			restart.Request(st, restart.RestartSystemNow, nil, "")
 		}
 		if fakeRebootCallsReady {
 			return nil
@@ -6897,7 +6897,7 @@ func mockSnapstateInstallComponents(c *C, snaps map[string]expectedSnap) (restor
 			expected, ok := sn.components[name]
 			c.Assert(ok, Equals, true, Commentf("unexpected component installation for snap %q: %q", info.InstanceName(), name))
 
-			cref := naming.NewComponentRef(info.SnapName(), name)
+			cref := naming.NewComponentRef(info.SnapName().String(), name)
 
 			download := st.NewTask("mock-download-component", "download component")
 			download.Set("component-setup", &snapstate.ComponentSetup{
