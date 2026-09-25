@@ -49,13 +49,11 @@ prepare: |
   # Retrieve the gadget
   snap download --basename=pc --channel="$version/edge" pc
 
-  # Retrieve kernel
-  snap download --basename=pc-kernel-from-store --channel="$version/${KERNEL_CHANNEL}" pc-kernel
-  # the fakestore needs this assertion
-  snap ack pc-kernel-from-store.assert
+  # Retrieve and repack kernel
   # Build kernel with initramfs with the compiled snap-bootstrap
-  uc24_build_initramfs_kernel_snap "$PWD/pc-kernel-from-store.snap" "$NESTED_ASSETS_DIR"
-  mv "${NESTED_ASSETS_DIR}"/pc-kernel_*.snap pc-kernel-repacked.snap
+  "$TESTSTOOLS"/repack-kernel --mode initramfs --core-version "$version" --kernel-branch "$version" --kernel-channel "$KERNEL_CHANNEL" --output-snap "$PWD/pc-kernel-repacked.snap"
+  # the fakestore needs this assertion
+  snap ack pc-kernel.assert
 
   gendeveloper1 sign-model < "$TESTSLIB"/assertions/developer1-"$version"-classic-dangerous.json > classic.model
 
@@ -68,7 +66,7 @@ prepare: |
      --gadget pc.snap \
      --gadget-assertion pc.assert \
      --kernel pc-kernel-repacked.snap \
-     --kernel-assertion pc-kernel-from-store.assert \
+    --kernel-assertion pc-kernel.assert \
      --recovery-key-out "$(pwd)"/rkey-pre-install.out
 
   echo "Check recovery key is generated and stored"
@@ -352,12 +350,28 @@ execute: |
   test "${run_pkey}" = 0
   test "${runrecover_pkey}" = 0
 
+  # We also test we can set a passphrase
+  echo '{"action": "replace-platform-key", "auth-mode": "passphrase", "passphrase": "passphrase-1"}' |
+    remote.exec "sudo snap debug api -H 'Content-Type: application/json' -X POST /v2/system-volumes" >set-passphrase.resp
+
+  set_passphrase_change="$(gojq -r '.change' <set-passphrase.resp)"
+  retry -n 100 --wait 5 sh -c "remote.exec sudo snap changes | MATCH '^${set_passphrase_change}\s+(Done|Undone|Error)'"
+  remote.exec sudo snap changes | MATCH "^${set_passphrase_change}\s+Done"
+
+  tests.nested vm set-passphrase "passphrase-1"
+
   tests.nested vm stop
   tests.nested vm start
+
+  # Double check that passphrase is used.
+  remote.exec sudo snap debug api /v2/system-volumes >volumes
+  gojq '.result."by-container-role"."system-data"' <volumes >data-volume
+  gojq -r '.keyslots.default."auth-mode"' <data-volume | MATCH "^passphrase$"
 
   api_get_v2_system_info_storage_encrypted | gojq '.result.status' | MATCH "active"
 
   # Let's test the recovery key from reprovision
+  tests.nested vm set-passphrase ""
   tests.nested vm set-recovery-key "$(cat rkey-reprovision-2.out)"
   clear_tpm_and_reboot
 

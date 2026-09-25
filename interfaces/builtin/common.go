@@ -20,6 +20,7 @@
 package builtin
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -40,6 +41,19 @@ var evalSymlinks = filepath.EvalSymlinks
 // readDir is either os.ReadDir or a mocked function applicable for
 // testing.
 var readDir = os.ReadDir
+
+var (
+	errParallelInstancesSystemPlug      = errors.New("system plug cannot have parallel instances")
+	errParallelInstancesSystemSlot      = errors.New("system slot cannot have parallel instances")
+	errParallelInstancesSharedResources = errors.New("conflicting operations on shared system resources")
+	// system*.library-source files under SnapExportDir use "_" to encode the
+	// instance name, slot name and interface name in their names. Since parallel
+	// instance names also use "_" to append the instance key, some functionality
+	// may not correctly distinguish parallel instances.
+	// TODO: add tests for *-driver-libs interfaces to check if parallel instances on
+	// slot side work and remove this error if they do.
+	errParallelInstancesLibrarySource = errors.New("library-source filenames cannot distinguish parallel instances")
+)
 
 type commonInterface struct {
 	name    string
@@ -94,8 +108,8 @@ type commonInterface struct {
 
 	conflictingConnectedInterfaces []string
 
-	unsupportedParallelInstancesPlug bool
-	unsupportedParallelInstancesSlot bool
+	parallelInstancesPlugErr error
+	parallelInstancesSlotErr error
 }
 
 var _ = interfaces.ConflictingConnectedInterfacesDefiner(&commonInterface{})
@@ -233,14 +247,14 @@ func (iface *commonInterface) ConflictsWithOtherConnectedInterfaces() []string {
 	return iface.conflictingConnectedInterfaces
 }
 
-// ParallelInstancesSupportedForPlug returns false if unsupportedParallelInstancesPlug
-// is set, ignoring plug attributes.
-func (iface *commonInterface) ParallelInstancesSupportedForPlug(_ *snap.PlugInfo) bool {
-	return !iface.unsupportedParallelInstancesPlug
+// ParallelInstancesSupportedForPlug returns parallelInstancesPlugErr, ignoring
+// plug attributes.
+func (iface *commonInterface) ParallelInstancesSupportedForPlug(_ *snap.PlugInfo) error {
+	return iface.parallelInstancesPlugErr
 }
 
-// ParallelInstancesSupportedForSlot returns false if unsupportedParallelInstancesSlot
-// is set, ignoring slot attributes.
-func (iface *commonInterface) ParallelInstancesSupportedForSlot(_ *snap.SlotInfo) bool {
-	return !iface.unsupportedParallelInstancesSlot
+// ParallelInstancesSupportedForSlot returns parallelInstancesSlotErr, ignoring
+// slot attributes.
+func (iface *commonInterface) ParallelInstancesSupportedForSlot(_ *snap.SlotInfo) error {
+	return iface.parallelInstancesSlotErr
 }

@@ -42,8 +42,6 @@ import (
 
 var RunMain = run
 
-var ExitCodeFromError = exitCodeFromError
-
 var (
 	Client = mkClient
 
@@ -388,14 +386,6 @@ func MockCgroupSnapNameFromPid(f func(pid int) (string, error)) (restore func())
 	}
 }
 
-func MockLogindSessionClass(f func(ctx context.Context) (string, error)) (restore func()) {
-	old := logindSessionClass
-	logindSessionClass = f
-	return func() {
-		logindSessionClass = old
-	}
-}
-
 func MockSyscallUmount(f func(string, int) error) (restore func()) {
 	old := syscallUnmount
 	syscallUnmount = f
@@ -474,6 +464,10 @@ func MockAutostartSessionApps(f func(string) error) func() {
 	return func() {
 		autostartSessionApps = old
 	}
+}
+
+func MockSystemdInitSdNotifySocket(f func()) (restore func()) {
+	return testutil.Mock(&systemdInitSdNotifySocket, f)
 }
 
 func ParseQuotaValues(maxMemory, cpuMax, cpuSet, threadsMax, journalSizeMax, journalRateLimit string) (*client.QuotaValues, error) {

@@ -193,15 +193,15 @@ type SnapSetup struct {
 	IntegrityDataInfo *snap.IntegrityDataInfo `json:"integrity-data-info,omitempty"`
 }
 
-func (snapsup *SnapSetup) InstanceName() string {
-	return snap.InstanceName(snapsup.SnapName(), snapsup.InstanceKey)
+func (snapsup *SnapSetup) InstanceName() naming.InstanceName {
+	return snap.InstanceName(snapsup.SnapName().String(), snapsup.InstanceKey)
 }
 
-func (snapsup *SnapSetup) SnapName() string {
+func (snapsup *SnapSetup) SnapName() naming.SnapName {
 	if snapsup.SideInfo.RealName == "" {
 		panic("SnapSetup.SideInfo.RealName not set")
 	}
-	return snapsup.SideInfo.RealName
+	return naming.SnapName(snapsup.SideInfo.RealName)
 }
 
 func (snapsup *SnapSetup) Revision() snap.Revision {
@@ -209,16 +209,16 @@ func (snapsup *SnapSetup) Revision() snap.Revision {
 }
 
 func (snapsup *SnapSetup) containerInfo() snap.ContainerPlaceInfo {
-	return snap.MinimalSnapContainerPlaceInfo(snapsup.InstanceName(), snapsup.Revision())
+	return snap.MinimalSnapContainerPlaceInfo(snapsup.InstanceName().String(), snapsup.Revision())
 }
 
 func (snapsup *SnapSetup) placeInfo() snap.PlaceInfo {
-	return snap.MinimalPlaceInfo(snapsup.InstanceName(), snapsup.Revision())
+	return snap.MinimalPlaceInfo(snapsup.InstanceName().String(), snapsup.Revision())
 }
 
 // MountDir returns the path to the directory where this snap would be mounted.
 func (snapsup *SnapSetup) MountDir() string {
-	return snap.MountDir(snapsup.InstanceName(), snapsup.Revision())
+	return snap.MountDir(snapsup.InstanceName().String(), snapsup.Revision())
 }
 
 // BlobPath returns the path to the snap/squashfs file that backs the snap that
@@ -229,7 +229,7 @@ func (snapsup *SnapSetup) BlobPath() string {
 	if blobDir == "" {
 		blobDir = dirs.SnapBlobDir
 	}
-	return snap.MountFileInDir(blobDir, snapsup.InstanceName(), snapsup.Revision())
+	return snap.MountFileInDir(blobDir, snapsup.InstanceName().String(), snapsup.Revision())
 }
 
 // ComponentSetup holds the necessary component details to perform
@@ -290,7 +290,7 @@ func (compsu *ComponentSetup) BlobPath(instanceName string) string {
 	cpi := snap.MinimalComponentContainerPlaceInfo(
 		compsu.CompSideInfo.Component.ComponentName,
 		compsu.CompSideInfo.Revision,
-		instanceName,
+		naming.InstanceName(instanceName),
 	)
 
 	return filepath.Join(blobDir,
@@ -672,7 +672,7 @@ func (snapst *SnapState) CurrentInfo() (*snap.Info, error) {
 		return nil, ErrNoCurrent
 	}
 
-	name := snap.InstanceName(cur.RealName, snapst.InstanceKey)
+	name := snap.InstanceName(cur.RealName, snapst.InstanceKey).String()
 	return readInfo(name, cur, withAuxStoreInfo)
 }
 
@@ -710,7 +710,7 @@ func (snapst *SnapState) ComponentInfosForRevision(rev snap.Revision) ([]*snap.C
 
 	revState := snapst.Sequence.Revisions[index]
 
-	instanceName := snap.InstanceName(revState.Snap.RealName, snapst.InstanceKey)
+	instanceName := snap.InstanceName(revState.Snap.RealName, snapst.InstanceKey).String()
 	si, err := readInfo(instanceName, revState.Snap, withAuxStoreInfo)
 	if err != nil {
 		return nil, err
@@ -746,7 +746,7 @@ func (snapst *SnapState) CurrentComponentInfo(cref naming.ComponentRef) (*snap.C
 	return ReadComponentInfo(si, csi)
 }
 
-func (snapst *SnapState) InstanceName() string {
+func (snapst *SnapState) InstanceName() naming.InstanceName {
 	cur := snapst.CurrentSideInfo()
 	if cur == nil {
 		return ""
@@ -957,6 +957,17 @@ func (m *SnapManager) Stop() {
 	st.RemoveChangeStatusChangedHandler(m.changeCallbackID)
 }
 
+// ShutDown implements StateShutDowner. It cancels in-progress store requests
+// that should not block daemon shutdown.
+//
+// TODO: remove this when Ensure gets the appropriate context from Overlord.
+//
+// Note: ShutDown needs to be a proper subset of Stop but currently it isn't.
+// This is acceptable for now as resolving the above TODO will remove ShutDown.
+func (m *SnapManager) ShutDown() {
+	m.catalogRefresh.ShutDown()
+}
+
 func (m *SnapManager) CanStandby() bool {
 	if n, err := NumSnaps(m.state); err == nil && n == 0 {
 		return true
@@ -1051,7 +1062,7 @@ func affectsRunningHooks(cand *state.Task, running []*state.Task) (block bool) {
 		}
 
 		// this snap has a hook running, retry later
-		if candSnap == hooksup.Snap {
+		if candSnap.String() == hooksup.Snap {
 			return true
 		}
 
@@ -1062,7 +1073,7 @@ func affectsRunningHooks(cand *state.Task, running []*state.Task) (block bool) {
 		}
 
 		// this is a base for a snap with a hook running, retry later
-		if candSnap == hookSnapst.Base {
+		if candSnap.String() == hookSnapst.Base {
 			return true
 		}
 	}
@@ -1703,18 +1714,29 @@ func (m *SnapManager) Ensure() error {
 		m.atSeed(),
 		m.ensureAliasesV2(),
 		m.ensureForceDevmodeDropsDevmodeFromState(),
-		m.ensureUbuntuCoreTransition(),
-		// we should check for full regular refreshes before
-		// considering issuing a hint only refresh request
-		m.autoRefresh.Ensure(),
-		m.refreshHints.Ensure(),
-		m.catalogRefresh.Ensure(),
 		m.localInstallCleanup(),
 		m.ensureVulnerableSnapConfineVersionsRemovedOnClassic(),
-		m.ensureMountsUpdated(),
-		m.ensureDesktopFilesUpdated(),
-		m.ensureDownloadsCleaned(),
-		m.ensureStoreDownloadsCacheCleaned(),
+	}
+
+	m.state.Lock()
+	seeded, err := SystemSeeded(m.state)
+	m.state.Unlock()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if seeded {
+		errs = append(errs,
+			m.ensureUbuntuCoreTransition(),
+			// We should check for full regular refreshes before
+			// considering issuing a hint-only refresh request.
+			m.autoRefresh.Ensure(),
+			m.refreshHints.Ensure(),
+			m.catalogRefresh.Ensure(),
+			m.ensureMountsUpdated(),
+			m.ensureDesktopFilesUpdated(),
+			m.ensureDownloadsCleaned(),
+			m.ensureStoreDownloadsCacheCleaned(),
+		)
 	}
 
 	//FIXME: use firstErr helper

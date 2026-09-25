@@ -28,7 +28,6 @@ import (
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/sandbox/apparmor"
-	"github.com/snapcore/snapd/systemd"
 )
 
 // SnapdFeature is a named feature that may be on or off.
@@ -53,24 +52,16 @@ const (
 	CheckDiskSpaceRefresh
 	// GateAutoRefreshHook enables refresh control from snaps via gate-auto-refresh hook.
 	GateAutoRefreshHook
-	// QuotaGroups enables any current experimental features related to the Quota Groups API, on top of the features
-	// already graduated past experimental:
-	//  * journal quotas are still experimental
-	// while guota groups creation and management and memory, cpu, quotas are no longer experimental.
-	QuotaGroups
-	// RefreshAppAwarenessUX enables experimental UX improvements for refresh-app-awareness.
-	RefreshAppAwarenessUX
 	// Confdb enables experimental configuration based on confdb and views.
 	Confdb
-	// ConfdbControl enables experimental remote management of confdb.
-	ConfdbControl
 	// AppArmorPrompting enables AppArmor to prompt the user for permission when apps perform certain operations.
 	AppArmorPrompting
 	// ContentCompatLabel enables compatibility labels for the content interface.
 	ContentCompatLabel
 	// Clustering enables experimental clustering support.
 	Clustering
-	// RemoteDeviceManagement enables experimental remote management of the device through the Store.
+	// RemoteDeviceManagement enables experimental remote management of the device
+	// through the Store, including remote management of confdb.
 	RemoteDeviceManagement
 	// SeedRefresh enables experimental seed creation during model snap refresh.
 	SeedRefresh
@@ -110,12 +101,7 @@ var featureNames = map[SnapdFeature]string{
 
 	GateAutoRefreshHook: "gate-auto-refresh-hook",
 
-	QuotaGroups: "quota-groups",
-
-	RefreshAppAwarenessUX: "refresh-app-awareness-ux",
-
-	Confdb:        "confdb",
-	ConfdbControl: "confdb-control",
+	Confdb: "confdb",
 
 	AppArmorPrompting:  "apparmor-prompting",
 	ContentCompatLabel: "content-compatibility-label",
@@ -129,9 +115,7 @@ var featureNames = map[SnapdFeature]string{
 }
 
 // featuresEnabledWhenUnset contains a set of features that are enabled when not explicitly configured.
-var featuresEnabledWhenUnset = map[SnapdFeature]bool{
-	QuotaGroups: true,
-}
+var featuresEnabledWhenUnset = map[SnapdFeature]bool{}
 
 // featuresExported contains a set of features that are exported outside of snapd.
 var featuresExported = map[SnapdFeature]bool{
@@ -140,9 +124,8 @@ var featuresExported = map[SnapdFeature]bool{
 	HiddenSnapDataHomeDir: true,
 	MoveSnapHomeDir:       true,
 
-	RefreshAppAwarenessUX: true,
-	Confdb:                true,
-	AppArmorPrompting:     true,
+	Confdb:            true,
+	AppArmorPrompting: true,
 }
 
 // featuresGraduated contains features that used to be guarded by an
@@ -152,7 +135,9 @@ var featuresGraduated = map[string]bool{
 	"robust-mount-namespace-updates":    true,
 	"classic-preserves-xdg-runtime-dir": true,
 	"refresh-app-awareness":             true,
+	"refresh-app-awareness-ux":          true,
 	"dbus-activation":                   true,
+	"quota-groups":                      true,
 }
 
 var (
@@ -164,13 +149,6 @@ var (
 // with a reason why the feature is unsupported. If a function has no callback
 // defined, it should be assumed to be supported.
 var featuresSupportedCallbacks = map[SnapdFeature]func() (bool, string){
-	// QuotaGroups requires systemd version 230 or higher
-	QuotaGroups: func() (bool, string) {
-		if err := systemd.EnsureAtLeast(230); err != nil {
-			return false, err.Error()
-		}
-		return true, ""
-	},
 	// UserDaemons requires user units
 	UserDaemons: func() (bool, string) {
 		if !releaseSystemctlSupportsUserUnits() {
@@ -198,6 +176,16 @@ func (f SnapdFeature) String() string {
 // computed by this function.
 func (f SnapdFeature) IsEnabledWhenUnset() bool {
 	return featuresEnabledWhenUnset[f]
+}
+
+// MockFeaturesEnabledWhenUnset replaces the default-enabled features for tests.
+func MockFeaturesEnabledWhenUnset(enabled map[SnapdFeature]bool) (restore func()) {
+	osutil.MustBeTestBinary("MockFeaturesEnabledWhenUnset can only be used in tests")
+	old := featuresEnabledWhenUnset
+	featuresEnabledWhenUnset = enabled
+	return func() {
+		featuresEnabledWhenUnset = old
+	}
 }
 
 // IsExported returns true if a feature is copied from snapd state to a feature file.

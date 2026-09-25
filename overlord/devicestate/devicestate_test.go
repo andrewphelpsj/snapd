@@ -20,6 +20,7 @@
 package devicestate_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,6 +68,8 @@ import (
 	"github.com/snapcore/snapd/sandbox/cgroup"
 	"github.com/snapcore/snapd/secboot"
 	"github.com/snapcore/snapd/secboot/keys"
+	"github.com/snapcore/snapd/seclog"
+	"github.com/snapcore/snapd/seclog/seclogtest"
 	"github.com/snapcore/snapd/seed"
 	"github.com/snapcore/snapd/seed/seedtest"
 	"github.com/snapcore/snapd/seed/seedwriter"
@@ -215,7 +218,7 @@ func (s *deviceMgrBaseSuite) setupBaseTest(c *C, classic bool) {
 	s.o = overlord.Mock()
 	s.state = s.o.State()
 	s.state.Lock()
-	_, err = restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(req restart.RestartType) {
+	_, err = restart.Manager(s.state, "boot-id-0", snapstatetest.MockRestartHandler(func(req restart.RestartType, _ restart.RestartReason) {
 		s.restartRequests = append(s.restartRequests, req)
 		if s.restartObserve != nil {
 			s.restartObserve()
@@ -464,7 +467,7 @@ func (s *deviceMgrBaseSuite) setupSnapResourceRevision(c *C, file string, comp, 
 }
 
 func (s *deviceMgrBaseSuite) setupSnapDecl(c *C, info *snap.Info, publisherID string) {
-	s.setupSnapDeclForNameAndID(c, info.SnapName(), info.SnapID, publisherID)
+	s.setupSnapDeclForNameAndID(c, info.SnapName().String(), info.SnapID, publisherID)
 }
 
 func (s *deviceMgrBaseSuite) setupSnapRevisionForFileAndID(c *C, file, snapID, publisherID string, revision snap.Revision) {
@@ -605,6 +608,94 @@ func (s *deviceMgrSuite) TestDeviceManagerEnsureSeededAlsoOnClassic(c *C) {
 	c.Assert(called, Equals, true)
 }
 
+func (s *deviceMgrSuite) TestEnsureClassicModelAfterSeed(c *C) {
+	devicestate.SetSystemMode(s.mgr, "run")
+
+	err := devicestate.EnsureClassicModelAfterSeed(s.mgr)
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	device, err := devicestatetest.Device(s.state)
+	c.Assert(err, IsNil)
+	c.Check(device.Brand, Equals, "generic")
+	c.Check(device.Model, Equals, "generic-classic")
+
+	_, err = s.db.Find(asserts.ModelType, map[string]string{
+		"series":   "16",
+		"brand-id": "generic",
+		"model":    "generic-classic",
+	})
+	c.Check(err, IsNil)
+}
+
+func (s *deviceMgrSuite) TestEnsureClassicModelAfterSeedPreservesGuards(c *C) {
+	devicestate.SetSystemMode(s.mgr, "install")
+	err := devicestate.EnsureClassicModelAfterSeed(s.mgr)
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	device, err := devicestatetest.Device(s.state)
+	c.Assert(err, IsNil)
+	c.Check(device.Brand, Equals, "")
+	c.Check(device.Model, Equals, "")
+
+	devicestatetest.SetDevice(s.state, &auth.DeviceState{Serial: "serial"})
+	s.state.Unlock()
+	devicestate.SetSystemMode(s.mgr, "run")
+
+	err = devicestate.EnsureClassicModelAfterSeed(s.mgr)
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+	device, err = devicestatetest.Device(s.state)
+	c.Assert(err, IsNil)
+	c.Check(device.Brand, Equals, "")
+	c.Check(device.Model, Equals, "")
+}
+
+func (s *deviceMgrSuite) TestEnsureClassicModelAfterSeedKeepsExistingIdentity(c *C) {
+	s.state.Lock()
+	devicestatetest.SetDevice(s.state, &auth.DeviceState{
+		Brand: "my-brand",
+		Model: "my-model",
+	})
+	s.state.Unlock()
+	devicestate.SetSystemMode(s.mgr, "run")
+
+	err := devicestate.EnsureClassicModelAfterSeed(s.mgr)
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+	device, err := devicestatetest.Device(s.state)
+	c.Assert(err, IsNil)
+	c.Check(device.Brand, Equals, "my-brand")
+	c.Check(device.Model, Equals, "my-model")
+}
+
+func (s *deviceMgrSuite) TestEnsureClassicModelAfterSeedErrorNotDuplicated(c *C) {
+	release.OnClassic = true
+	devicestate.SetSystemMode(s.mgr, "run")
+
+	untrustedDB, err := asserts.OpenDatabase(&asserts.DatabaseConfig{
+		Backstore: asserts.NewMemoryBackstore(),
+	})
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	assertstate.ReplaceDB(s.state, untrustedDB)
+	s.state.Set("seeded", true)
+	s.state.Unlock()
+
+	err = s.mgr.Ensure()
+	c.Assert(err, NotNil)
+	c.Check(err, ErrorMatches, `(?s)devicemgr:.*cannot install "generic-classic" fallback model assertion: .*`)
+	c.Check(strings.Contains(err.Error(), state.ErrNoState.Error()), Equals, false)
+}
+
 func (s *deviceMgrSuite) TestDeviceManagerEnsureSeededHappy(c *C) {
 	restore := devicestate.MockPopulateStateFromSeed(s.mgr, func(sLabel, sMode string, tm timings.Measurer) (ts []*state.TaskSet, err error) {
 		c.Assert(sLabel, Equals, "")
@@ -628,12 +719,36 @@ func (s *deviceMgrSuite) TestDeviceManagerEnsureSeededHappy(c *C) {
 	c.Check(seedStartTime.Equal(devicestate.StartTime()), Equals, true)
 }
 
-func (s *deviceMgrSuite) TestDeviceManagerEnsureBootOkSkippedOnClassic(c *C) {
+func (s *deviceMgrSuite) TestDeviceManagerEnsureBootOkWithoutDeviceContext(c *C) {
 	s.bootloader.GetErr = fmt.Errorf("should not be called")
 	release.OnClassic = true
+	defer devicestate.MockOsutilBootID("boot-id")()
 
 	err := devicestate.EnsureBootOk(s.mgr)
 	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+	var bootID string
+	c.Assert(s.state.Get("ensure-boot-ok-boot-id", &bootID), IsNil)
+	c.Check(bootID, Equals, "boot-id")
+}
+
+func (s *deviceMgrSuite) TestEnsureRunsBootOkWithoutDeviceContext(c *C) {
+	s.bootloader.GetErr = fmt.Errorf("should not be called")
+	defer devicestate.MockOsutilBootID("boot-id")()
+	defer devicestate.MockPopulateStateFromSeed(s.mgr, func(string, string, timings.Measurer) ([]*state.TaskSet, error) {
+		return nil, nil
+	})()
+
+	err := s.mgr.Ensure()
+	c.Assert(err, IsNil)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+	var bootID string
+	c.Assert(s.state.Get("ensure-boot-ok-boot-id", &bootID), IsNil)
+	c.Check(bootID, Equals, "boot-id")
 }
 
 func (s *deviceMgrSuite) TestDeviceManagerEnsureBootOkSkippedOnNonRunModes(c *C) {
@@ -1270,8 +1385,8 @@ func makeMockRepoWithConnectedSnaps(c *C, st *state.State, info11, core11 *snap.
 	c.Assert(err, IsNil)
 
 	_, err = repo.Connect(&interfaces.ConnRef{
-		PlugRef: interfaces.PlugRef{Snap: info11.InstanceName(), Name: ifname},
-		SlotRef: interfaces.SlotRef{Snap: core11.InstanceName(), Name: ifname},
+		PlugRef: interfaces.PlugRef{Snap: info11.InstanceName().String(), Name: ifname},
+		SlotRef: interfaces.SlotRef{Snap: core11.InstanceName().String(), Name: ifname},
 	}, nil, nil, nil, nil, nil)
 	c.Assert(err, IsNil)
 	conns, err := repo.Connected("snap-with-snapd-control", "snapd-control")
@@ -1985,7 +2100,7 @@ func (s *deviceMgrSuite) TestRunFDESetupHookHappy(c *C) {
 			KeyName: "some-key-name",
 		})
 		ctx.Set("fde-setup-result", []byte("result"))
-		hookCalled = append(hookCalled, ctx.InstanceName())
+		hookCalled = append(hookCalled, ctx.InstanceName().String())
 		return nil, nil
 	}
 
@@ -3076,10 +3191,11 @@ func (s *deviceMgrSuite) TestCheckSeedRefreshRemoveBlocksOptionalSnapInCurrentSe
 		{"name": "pc", "type": "gadget", "default-channel": "24"},
 		{"name": "snap-2", "presence": "optional"},
 	}, nil, "snap-2")
-	info := snaptest.MockInfo(c, "name: snap-2\nversion: 1", nil)
-
-	err := devicestate.CheckSeedRefreshRemove(s.state, info, dctx)
-	c.Assert(err, ErrorMatches, `cannot remove snap present in the current seed while seed-refresh is enabled`)
+	candidate := snapstate.SeedRefreshCandidate{
+		InstanceName: "snap-2",
+	}
+	err := devicestate.CheckSeedRefreshRemove(s.state, candidate, dctx)
+	c.Assert(err, ErrorMatches, `cannot remove snaps or components present in the current seed while seed-refresh is enabled`)
 }
 
 func (s *deviceMgrSuite) TestCheckSeedRefreshRemoveAllowsOptionalSnapNotInCurrentSeed(c *C) {
@@ -3093,9 +3209,80 @@ func (s *deviceMgrSuite) TestCheckSeedRefreshRemoveAllowsOptionalSnapNotInCurren
 		{"name": "pc", "type": "gadget", "default-channel": "24"},
 		{"name": "snap-2", "presence": "optional"},
 	}, nil)
-	info := snaptest.MockInfo(c, "name: snap-2\nversion: 1", nil)
+	candidate := snapstate.SeedRefreshCandidate{
+		InstanceName: "snap-2",
+	}
+	err := devicestate.CheckSeedRefreshRemove(s.state, candidate, dctx)
+	c.Assert(err, IsNil)
+}
 
-	err := devicestate.CheckSeedRefreshRemove(s.state, info, dctx)
+func (s *deviceMgrSuite) TestCheckSeedRefreshRemoveBlocksRequiredAndOptionalCompInCurrentSeed(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	dctx := s.setupSeedRefreshSeedAndContext(c, []map[string]string{
+		{"name": "snapd", "type": "snapd"},
+		{"name": "core24", "type": "base", "default-channel": "24"},
+		{"name": "pc-kernel", "type": "kernel", "default-channel": "24"},
+		{"name": "pc", "type": "gadget", "default-channel": "24"},
+		{"name": "snap-1", "presence": "required"},
+		{"name": "snap-2", "presence": "optional"},
+	}, map[string][]modelComponent{
+		"snap-1": {
+			modelComponent{Name: "comp1", Presence: "required"},
+			modelComponent{Name: "comp2", Presence: "optional"},
+		},
+		"snap-2": {
+			modelComponent{Name: "comp1", Presence: "required"},
+			modelComponent{Name: "comp2", Presence: "optional"},
+		},
+	}, "snap-2")
+
+	err := devicestate.CheckSeedRefreshRemove(s.state, snapstate.SeedRefreshCandidate{
+		InstanceName:          "snap-1",
+		ComponentSetupTaskIDs: map[string]string{"comp1": ""},
+	}, dctx)
+	c.Assert(err, ErrorMatches, `cannot remove snaps or components present in the current seed while seed-refresh is enabled`)
+
+	err2 := devicestate.CheckSeedRefreshRemove(s.state, snapstate.SeedRefreshCandidate{
+		InstanceName:          "snap-1",
+		ComponentSetupTaskIDs: map[string]string{"comp2": ""},
+	}, dctx)
+	c.Assert(err2, ErrorMatches, `cannot remove snaps or components present in the current seed while seed-refresh is enabled`)
+
+	err3 := devicestate.CheckSeedRefreshRemove(s.state, snapstate.SeedRefreshCandidate{
+		InstanceName:          "snap-2",
+		ComponentSetupTaskIDs: map[string]string{"comp1": ""},
+	}, dctx)
+	c.Assert(err3, ErrorMatches, `cannot remove snaps or components present in the current seed while seed-refresh is enabled`)
+
+	err4 := devicestate.CheckSeedRefreshRemove(s.state, snapstate.SeedRefreshCandidate{
+		InstanceName:          "snap-2",
+		ComponentSetupTaskIDs: map[string]string{"comp1": ""},
+	}, dctx)
+	c.Assert(err4, ErrorMatches, `cannot remove snaps or components present in the current seed while seed-refresh is enabled`)
+}
+
+func (s *deviceMgrSuite) TestCheckSeedRefreshRemoveAllowsOptionalCompNotInCurrentSeed(c *C) {
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	dctx := s.setupSeedRefreshSeedAndContext(c, []map[string]string{
+		{"name": "snapd", "type": "snapd"},
+		{"name": "core24", "type": "base", "default-channel": "24"},
+		{"name": "pc-kernel", "type": "kernel", "default-channel": "24"},
+		{"name": "pc", "type": "gadget", "default-channel": "24"},
+		{"name": "snap-2", "presence": "optional"},
+	}, map[string][]modelComponent{
+		"snap-2": {
+			modelComponent{Name: "comp1", Presence: "optional", NotInSeed: true},
+		},
+	})
+	candidate := snapstate.SeedRefreshCandidate{
+		InstanceName:          "snap-2",
+		ComponentSetupTaskIDs: map[string]string{"comp1": ""},
+	}
+	err := devicestate.CheckSeedRefreshRemove(s.state, candidate, dctx)
 	c.Assert(err, IsNil)
 }
 
@@ -3453,7 +3640,7 @@ func (s *deviceMgrSuite) TestDeviceManagerEnsurePostFactoryResetEncrypted(c *C) 
 	defer release.MockOnClassic(false)
 
 	s.state.Lock()
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 	s.state.Unlock()
 	restore := devicestate.SetBootOkRanForCurrentBootID(s.mgr, false)
 	defer restore()
@@ -3575,7 +3762,7 @@ func (s *deviceMgrSuite) TestDeviceManagerEnsurePostFactoryResetEncryptedError(c
 	defer release.MockOnClassic(false)
 
 	s.state.Lock()
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 	s.state.Unlock()
 	restore := devicestate.SetBootOkRanForCurrentBootID(s.mgr, false)
 	defer restore()
@@ -3617,7 +3804,7 @@ func (s *deviceMgrSuite) TestDeviceManagerEnsurePostFactoryResetUnencrypted(c *C
 	defer release.MockOnClassic(false)
 
 	s.state.Lock()
-	s.state.Set("seeded", true)
+	devicestatetest.MarkInitialized(s.state)
 	s.state.Unlock()
 	restore := devicestate.SetBootOkRanForCurrentBootID(s.mgr, false)
 	defer restore()
@@ -3659,6 +3846,10 @@ func (s *deviceMgrSuite) mockSystemMode(c *C, mode string) {
 }
 
 func (s *deviceMgrSuite) testExpiredUserRemoved(c *C, userToRemove string, extraUsers bool) {
+	seclogBuf := &bytes.Buffer{}
+	seclog.Setup(seclogtest.MockSecurityLogger(seclogBuf))
+	defer seclog.Setup(seclog.NewNopLogger())
+
 	// Mock the delete user callback to verify it's correctly called. On ubuntu core
 	// systems ExtraUsers should be set, where on classic systems ExtraUsers should not
 	// be set
@@ -3676,6 +3867,7 @@ func (s *deviceMgrSuite) testExpiredUserRemoved(c *C, userToRemove string, extra
 	err := devicestate.EnsureExpiredUsersRemoved(s.mgr)
 	c.Assert(err, IsNil)
 	c.Assert(delUserCalled, Equals, true)
+	c.Check(seclogBuf.String(), testutil.Contains, `remove_reason="ensure-remove-expired-user"`)
 }
 
 func (s *deviceMgrSuite) testExpiredUserNotRemoved(c *C) {
@@ -4039,7 +4231,7 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionClassic(c *C) {
 	s.state.Lock()
 	defer s.state.Unlock()
 
-	err := devicestate.EnsureAutoImportAssertions(s.mgr)
+	err := devicestate.EnsureAutoImportAssertions(s.mgr, nil)
 	c.Check(err, IsNil)
 
 	// ensure state has not been changed
@@ -4047,6 +4239,30 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionClassic(c *C) {
 	err = s.state.Get("asserts-early-auto-imported", &autoImported)
 	c.Assert(err, testutil.ErrorIs, state.ErrNoState)
 	c.Assert(autoImported, Equals, false)
+}
+
+func (s *deviceMgrSuite) TestEnsureSkipsEarlyAutoImportWhenSeededStateInvalid(c *C) {
+	called := false
+	restore := devicestate.MockProcessAutoImportAssertion(func(*state.State, seed.Seed, asserts.RODatabase, func(batch *asserts.Batch) error) error {
+		called = true
+		return nil
+	})
+	defer restore()
+
+	s.mockSystemMode(c, "run")
+
+	s.state.Lock()
+	s.cacheDeviceCore20Seed(c)
+	s.state.Set("seeded", "invalid")
+	s.state.Unlock()
+
+	devicestate.SetEnsureBootOkRan(s.mgr, true)
+	devicestate.SetBootRevisionsUpdated(s.mgr, true)
+	err := s.mgr.Ensure()
+	c.Assert(err, NotNil)
+	c.Check(err, ErrorMatches, `(?s).*could not unmarshal state entry "seeded".*`)
+	c.Check(strings.Count(err.Error(), `could not unmarshal state entry "seeded"`), Equals, 1)
+	c.Check(called, Equals, false)
 }
 
 func (s *deviceMgrSuite) testHandleAutoImportAssertionInstallModes(c *C, mode string) {
@@ -4059,9 +4275,11 @@ func (s *deviceMgrSuite) testHandleAutoImportAssertionInstallModes(c *C, mode st
 	s.state.Lock()
 	s.cacheDeviceCore20Seed(c)
 	s.state.Set("seeded", nil)
+	deviceSeed := devicestate.EarlyDeviceSeed(s.mgr)
 	s.state.Unlock()
 
-	err := devicestate.EnsureAutoImportAssertions(s.mgr)
+	c.Assert(deviceSeed, NotNil)
+	err := devicestate.EnsureAutoImportAssertions(s.mgr, deviceSeed)
 	c.Check(err, IsNil)
 
 	s.state.Lock()
@@ -4095,9 +4313,11 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionWhenDone(c *C) {
 	s.state.Set("asserts-early-auto-imported", true)
 	s.cacheDeviceCore20Seed(c)
 	s.seeding()
+	deviceSeed := devicestate.EarlyDeviceSeed(s.mgr)
 	s.state.Unlock()
 
-	err := devicestate.EnsureAutoImportAssertions(s.mgr)
+	c.Assert(deviceSeed, NotNil)
+	err := devicestate.EnsureAutoImportAssertions(s.mgr, deviceSeed)
 	c.Check(err, IsNil)
 
 	// check state has not changed
@@ -4117,7 +4337,7 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionNoSeedCache(c *C) {
 
 	s.mockSystemMode(c, "run")
 
-	err := devicestate.EnsureAutoImportAssertions(s.mgr)
+	err := devicestate.EnsureAutoImportAssertions(s.mgr, nil)
 	c.Check(err, IsNil)
 
 	// ensure state has not been changed
@@ -4145,6 +4365,8 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionFailed(c *C) {
 	logbuf, restore := logger.MockLogger()
 	defer restore()
 
+	devicestate.SetEnsureBootOkRan(s.mgr, true)
+	devicestate.SetBootRevisionsUpdated(s.mgr, true)
 	err := s.mgr.Ensure()
 	c.Check(err, IsNil)
 
@@ -4168,9 +4390,12 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionAlreadySeeded(c *C) {
 
 	s.state.Lock()
 	s.cacheDeviceCore20Seed(c)
+	devicestatetest.SetDevice(s.state, &auth.DeviceState{Brand: "my-brand", Model: "my-model", Serial: "serialserialserial"})
 	s.state.Set("seeded", true)
 	s.state.Unlock()
 
+	devicestate.SetEnsureBootOkRan(s.mgr, true)
+	devicestate.SetBootRevisionsUpdated(s.mgr, true)
 	devicestate.SetEarlyBootLocaleConfigUpdatedRan(s.mgr, true)
 
 	err := s.mgr.Ensure()
@@ -4194,6 +4419,8 @@ func (s *deviceMgrSuite) TestHandleAutoImportAssertionHappy(c *C) {
 	s.seeding()
 	s.state.Unlock()
 
+	devicestate.SetEnsureBootOkRan(s.mgr, true)
+	devicestate.SetBootRevisionsUpdated(s.mgr, true)
 	err := s.mgr.Ensure()
 	c.Check(err, IsNil)
 

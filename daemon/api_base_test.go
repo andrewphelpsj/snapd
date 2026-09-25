@@ -112,6 +112,16 @@ type apiBaseSuite struct {
 	missingChangeRegistrations sync.Map
 }
 
+func addUcrednet(r *http.Request, securityTag string, uid uint32, socket string, ifaces ...string) {
+	daemon.AddUcrednetToRequest(r, daemon.NewUcrednet(securityTag, "", uid, socket), ifaces...)
+}
+
+func requestWithUcrednet(ucred *daemon.Ucrednet, ifaces ...string) *http.Request {
+	r := &http.Request{}
+	daemon.AddUcrednetToRequest(r, ucred, ifaces...)
+	return r
+}
+
 var (
 	actionsMap   *concurrentActionsMap
 	callCount    int64
@@ -538,7 +548,7 @@ func (s *apiBaseSuite) daemonWithOverlordMockAndStore() *daemon.Daemon {
 
 // asUserAuth fakes authorization into the request as for root
 func (s *apiBaseSuite) asRootAuth(req *http.Request) {
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=0;socket=%s;", dirs.SnapdSocket)
+	daemon.AddUcrednetToRequest(req, daemon.NewUcrednet("snap.some-snap.app", "", 0, dirs.SnapdSocket))
 }
 
 // asUserAuth adds authorization to the request as for a logged in user
@@ -560,7 +570,7 @@ func (s *apiBaseSuite) asUserAuth(c *check.C, req *http.Request) {
 		s.authUser = u
 	}
 	req.Header.Set("Authorization", fmt.Sprintf(`Macaroon root="%s"`, s.authUser.Macaroon))
-	req.RemoteAddr = fmt.Sprintf("pid=100;uid=1000;socket=%s;", dirs.SnapdSocket)
+	daemon.AddUcrednetToRequest(req, daemon.NewUcrednet("snap.some-snap.app", "", 1000, dirs.SnapdSocket))
 }
 
 type fakeSnapManager struct{}
@@ -628,11 +638,11 @@ func (s *apiBaseSuite) mockSnap(c *check.C, yamlText string) *snap.Info {
 	defer st.Unlock()
 
 	// Put a side info into the state
-	snapstate.Set(st, snapInfo.InstanceName(), &snapstate.SnapState{
+	snapstate.Set(st, snapInfo.InstanceName().String(), &snapstate.SnapState{
 		Active: true,
 		Sequence: snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{
 			{
-				RealName: snapInfo.SnapName(),
+				RealName: snapInfo.SnapName().String(),
 				Revision: snapInfo.Revision,
 				SnapID:   "ididid",
 			},
@@ -679,7 +689,7 @@ version: %s
 		dir, rev := filepath.Split(snapInfo.MountDir())
 		c.Assert(os.Symlink(rev, dir+"current"), check.IsNil)
 	}
-	c.Assert(snapInfo.InstanceName(), check.Equals, instanceName)
+	c.Assert(snapInfo.InstanceName().String(), check.Equals, instanceName)
 
 	c.Assert(os.MkdirAll(snapInfo.DataDir(), 0755), check.IsNil)
 	metadir := filepath.Join(snapInfo.MountDir(), "meta")

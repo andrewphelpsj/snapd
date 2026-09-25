@@ -43,6 +43,7 @@ import (
 	"github.com/snapcore/snapd/gadget"
 	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/osutil"
+	"github.com/snapcore/snapd/osutil/keyboard"
 	"github.com/snapcore/snapd/overlord/assertstate"
 	"github.com/snapcore/snapd/overlord/assertstate/assertstatetest"
 	"github.com/snapcore/snapd/overlord/auth"
@@ -1393,6 +1394,13 @@ func (s *deviceMgrSystemsCreateSuite) SetUpTest(c *C) {
 	s.bootloader = s.deviceMgrSystemsBaseSuite.bootloader.WithRecoveryAwareTrustedAssets()
 	bootloader.Force(s.bootloader)
 	s.AddCleanup(func() { bootloader.Force(nil) })
+
+	s.AddCleanup(devicestate.MockKeyboardCurrentXKBConfig(func() (*keyboard.XKBConfig, error) {
+		return &keyboard.XKBConfig{}, nil
+	}))
+	s.AddCleanup(devicestate.MockKeyboardNewXKBConfigListener(func(ctx context.Context, cb func(config *keyboard.XKBConfig)) (*keyboard.XKBConfigListener, error) {
+		return nil, nil
+	}))
 }
 
 func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemConflict(c *C) {
@@ -1576,7 +1584,7 @@ func (s *deviceMgrSystemsCreateSuite) makeSnapInState(c *C, name string, rev sna
 		cpi := snap.MinimalComponentContainerPlaceInfo(
 			comp,
 			compRev,
-			name,
+			naming.InstanceName(name),
 		)
 		err := os.Rename(compPath, cpi.MountFile())
 		c.Assert(err, IsNil)
@@ -1603,7 +1611,7 @@ func (s *deviceMgrSystemsCreateSuite) makeSnapInState(c *C, name string, rev sna
 		c.Assert(err, IsNil)
 	}
 
-	snapstate.Set(s.state, info.InstanceName(), &snapstate.SnapState{
+	snapstate.Set(s.state, info.InstanceName().String(), &snapstate.SnapState{
 		SnapType: string(info.Type()),
 		Active:   true,
 		Sequence: seq,
@@ -5057,7 +5065,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 						snapsup.SideInfo.RealName,
 						snapsup.Type,
 					),
-					compsToTypes(snapsup.InstanceName()),
+					compsToTypes(snapsup.InstanceName().String()),
 				),
 				nil,
 			)
@@ -5075,7 +5083,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 						snapsup.Base,
 						snapsup.Type,
 					),
-					compsToTypes(snapsup.InstanceName()),
+					compsToTypes(snapsup.InstanceName().String()),
 				),
 				files,
 			)
@@ -5096,7 +5104,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 
 		s.setupSnapResourceRevision(
 			c,
-			compsup.BlobPath(snapsup.InstanceName()),
+			compsup.BlobPath(snapsup.InstanceName().String()),
 			compsup.ComponentName(),
 			snapsup.SideInfo.SnapID,
 			"canonical",
@@ -5132,7 +5140,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 			compsup.CompType,
 		))
 
-		err = os.Rename(path, compsup.BlobPath(snapsup.InstanceName()))
+		err = os.Rename(path, compsup.BlobPath(snapsup.InstanceName().String()))
 		c.Assert(err, IsNil)
 
 		return nil

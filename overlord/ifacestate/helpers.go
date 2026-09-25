@@ -250,13 +250,13 @@ func (m *InterfaceManager) regenerateAllSecurityProfiles(tm timings.Measurer, un
 		}
 
 		instanceName := set.InstanceName()
-		optsForAppSet, err := computeConfinementOpts(instanceName.TODOInstanceName())
+		optsForAppSet, err := computeConfinementOpts(instanceName.String())
 		if err != nil {
 			logger.Noticef("cannot get confinement options for snap %q: %v", instanceName, err)
 			continue
 		}
 
-		precompOpts[instanceName.TODOInstanceName()] = optsForAppSet
+		precompOpts[instanceName.String()] = optsForAppSet
 	}
 
 	// The reason the system key is unlinked is to prevent snapd from believing
@@ -706,7 +706,7 @@ func (m *InterfaceManager) setupSecurityByBackend(task *state.Task, appSets []*i
 	}
 	confOpts := make(map[string]interfaces.ConfinementOptions, len(appSets))
 	for i, set := range appSets {
-		confOpts[set.InstanceName().TODOInstanceName()] = opts[i]
+		confOpts[set.InstanceName().String()] = opts[i]
 	}
 
 	st := task.State()
@@ -735,7 +735,7 @@ func (m *InterfaceManager) setupSecurityByBackend(task *state.Task, appSets []*i
 
 func (m *InterfaceManager) setupSnapSecurity(task *state.Task, appSet *interfaces.SnapAppSet, opts interfaces.ConfinementOptions, tm timings.Measurer) error {
 	sctxs := map[string]interfaces.SetupContext{
-		appSet.InstanceName().TODOInstanceName(): {
+		appSet.InstanceName().String(): {
 			Reason: interfaces.SnapSetupReasonOther,
 			// this is called only in the contexts where all backend effects
 			// are expected to be immediate
@@ -910,7 +910,7 @@ func addNewConnection(st *state.State, task *state.Task, newconns map[string]*in
 	}
 
 	if task.Kind() == "auto-connect" {
-		ignore, err := findSymmetricAutoconnectTask(st, plug.Snap.InstanceName(), slot.Snap.InstanceName(), task)
+		ignore, err := findSymmetricAutoconnectTask(st, plug.Snap.InstanceName().String(), slot.Snap.InstanceName().String(), task)
 		if err != nil {
 			return err
 		}
@@ -920,7 +920,7 @@ func addNewConnection(st *state.State, task *state.Task, newconns map[string]*in
 		}
 	}
 
-	if err := checkAutoconnectConflicts(st, task, plug.Snap.InstanceName(), slot.Snap.InstanceName()); err != nil {
+	if err := checkAutoconnectConflicts(st, task, plug.Snap.InstanceName().String(), slot.Snap.InstanceName().String()); err != nil {
 		retry, _ := err.(*state.Retry)
 		return conflictError(retry, err)
 	}
@@ -1102,7 +1102,7 @@ func (c *autoConnectChecker) addAutoConnections(task *state.Task, newconns map[s
 	conflictError func(*state.Retry, error) error,
 ) error {
 	for _, plug := range plugs {
-		candSlots, arities := c.repo.AutoConnectCandidateSlots(plug.Snap.InstanceName(), plug.Name, c.check)
+		candSlots, arities := c.repo.AutoConnectCandidateSlots(plug.Snap.InstanceName().String(), plug.Name, c.check)
 
 		if len(candSlots) == 0 {
 			continue
@@ -1371,7 +1371,7 @@ func snapsWithSecurityProfiles(st *state.State) ([]*interfaces.SnapAppSet, error
 			return nil, err
 		}
 		instanceName := snapsup.InstanceName()
-		if seen[instanceName] {
+		if seen[instanceName.String()] {
 			continue
 		}
 
@@ -1392,8 +1392,8 @@ func snapsWithSecurityProfiles(st *state.State) ([]*interfaces.SnapAppSet, error
 			continue
 		}
 
-		seen[instanceName] = true
-		snapInfo, err := snap.ReadInfo(instanceName, snapsup.SideInfo)
+		seen[instanceName.String()] = true
+		snapInfo, err := snap.ReadInfo(instanceName.String(), snapsup.SideInfo)
 		if err != nil {
 			logger.Noticef("cannot retrieve info for snap %q: %s", instanceName, err)
 			continue
@@ -1736,7 +1736,7 @@ func appSetForTask(t *state.Task, info *snap.Info) (*interfaces.SnapAppSet, erro
 	st := t.State()
 
 	var snapst snapstate.SnapState
-	if err := snapstate.Get(st, info.InstanceName(), &snapst); err != nil {
+	if err := snapstate.Get(st, info.InstanceName().String(), &snapst); err != nil {
 		// if the snap isn't in the state, then we know that there aren't any
 		// pre-existing components to consider
 		if errors.Is(err, state.ErrNoState) {
@@ -1760,7 +1760,7 @@ func appSetForTask(t *state.Task, info *snap.Info) (*interfaces.SnapAppSet, erro
 
 func appSetForSnapRevision(st *state.State, info *snap.Info) (*interfaces.SnapAppSet, error) {
 	var snapst snapstate.SnapState
-	if err := snapstate.Get(st, info.InstanceName(), &snapst); err != nil {
+	if err := snapstate.Get(st, info.InstanceName().String(), &snapst); err != nil {
 		return nil, err
 	}
 
