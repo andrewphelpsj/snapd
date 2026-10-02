@@ -30,7 +30,6 @@ import (
 	"github.com/snapcore/snapd/snap"
 	"github.com/snapcore/snapd/store"
 	"github.com/snapcore/snapd/testutil"
-	userclient "github.com/snapcore/snapd/usersession/client"
 )
 
 type (
@@ -201,6 +200,31 @@ var (
 	HardEnsureNothingRunningDuringRefresh = hardEnsureNothingRunningDuringRefresh
 )
 
+func (r *refreshHints) Ensure() error {
+	r.state.Lock()
+	deviceCtx, err := DeviceCtx(r.state, nil, nil)
+	r.state.Unlock()
+	if err != nil {
+		return err
+	}
+	return r.EnsureAfterSeed(deviceCtx)
+}
+
+func (r *catalogRefresh) Ensure() error {
+	r.state.Lock()
+	seeded, err := SystemSeeded(r.state)
+	if err != nil || !seeded {
+		r.state.Unlock()
+		return err
+	}
+	deviceCtx, err := DeviceCtx(r.state, nil, nil)
+	r.state.Unlock()
+	if err != nil {
+		return err
+	}
+	return r.EnsureAfterSeed(deviceCtx)
+}
+
 // cleanup
 var (
 	CleanSnapDownloads = cleanSnapDownloads
@@ -283,14 +307,6 @@ func MockLocalInstallLastCleanup(t time.Time) (restore func()) {
 	localInstallLastCleanup = t
 	return func() {
 		localInstallLastCleanup = old
-	}
-}
-
-func MockAsyncPendingRefreshNotification(fn func(context.Context, *userclient.PendingSnapRefreshInfo)) (restore func()) {
-	old := asyncPendingRefreshNotification
-	asyncPendingRefreshNotification = fn
-	return func() {
-		asyncPendingRefreshNotification = old
 	}
 }
 
@@ -406,11 +422,10 @@ var (
 
 // autorefresh
 var (
-	InhibitRefresh                       = inhibitRefresh
-	MaxDuration                          = maxDuration
-	MaxInhibitionDuration                = maxInhibitionDuration
-	MaybeAddRefreshInhibitNotice         = maybeAddRefreshInhibitNotice
-	MaybeAsyncPendingRefreshNotification = maybeAsyncPendingRefreshNotification
+	InhibitRefresh               = inhibitRefresh
+	MaxDuration                  = maxDuration
+	MaxInhibitionDuration        = maxInhibitionDuration
+	MaybeAddRefreshInhibitNotice = maybeAddRefreshInhibitNotice
 )
 
 type RefreshCandidate = refreshCandidate
@@ -431,7 +446,7 @@ func MockRefreshAppsCheck(fn func(info *snap.Info) error) (restore func()) {
 	return func() { refreshAppsCheck = old }
 }
 
-func MockCheckSeedRefreshRemove(fn func(st *state.State, si *snap.Info, dctx DeviceContext) error) (restore func()) {
+func MockCheckSeedRefreshRemove(fn func(st *state.State, candidate SeedRefreshCandidate, dctx DeviceContext) error) (restore func()) {
 	r := testutil.Backup(&CheckSeedRefreshRemove)
 	CheckSeedRefreshRemove = fn
 	return r
