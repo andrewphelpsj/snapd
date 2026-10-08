@@ -65,6 +65,8 @@ func (s *snapmgrTestSuite) TestRemoveTasks(c *C) {
 
 	c.Assert(s.state.TaskCount(), Equals, len(ts.Tasks()))
 	verifyRemoveTasks(c, ts)
+	t := findKindInTaskSet(ts, "auto-disconnect")
+	c.Assert(t.Has("full-remove"), Equals, true)
 }
 
 func (s *snapmgrTestSuite) TestRemoveTasksAutoSnapshotDisabled(c *C) {
@@ -1039,6 +1041,9 @@ func (s *snapmgrTestSuite) TestRemoveLastRevisionRunThrough(c *C) {
 	c.Assert(err, IsNil)
 	chg.AddAll(ts)
 
+	t := findKindInTaskSet(ts, "auto-disconnect")
+	c.Assert(t.Has("full-remove"), Equals, true)
+
 	s.settle(c)
 
 	expected := fakeOps{
@@ -1361,7 +1366,7 @@ func (s *snapmgrTestSuite) TestRemoveConsultsSeedRefreshRemoveHookOnlyWhenEnable
 	})
 
 	called := false
-	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, *snap.Info, snapstate.DeviceContext) error {
+	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, snapstate.SeedRefreshCandidate, snapstate.DeviceContext) error {
 		called = true
 		return errors.New("blocked by test hook")
 	})
@@ -1405,7 +1410,7 @@ func (s *snapmgrTestSuite) TestRemoveSpecificRevisionDoesNotConsultSeedRefreshRe
 	tr.Commit()
 
 	called := false
-	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, *snap.Info, snapstate.DeviceContext) error {
+	restore := snapstate.MockCheckSeedRefreshRemove(func(*state.State, snapstate.SeedRefreshCandidate, snapstate.DeviceContext) error {
 		called = true
 		return errors.New("blocked by test hook")
 	})
@@ -1789,7 +1794,7 @@ type snapdBackend struct {
 }
 
 func (f *snapdBackend) RemoveSnapData(info *snap.Info, opts *dirs.SnapDirOptions) error {
-	dir := snap.DataDir(info.SnapName(), info.Revision)
+	dir := snap.DataDir(info.SnapName().String(), info.Revision)
 	if err := os.Remove(dir); err != nil {
 		return fmt.Errorf("unexpected error: %v", err)
 	}
@@ -1797,7 +1802,7 @@ func (f *snapdBackend) RemoveSnapData(info *snap.Info, opts *dirs.SnapDirOptions
 }
 
 func (f *snapdBackend) RemoveSnapCommonData(info *snap.Info, opts *dirs.SnapDirOptions) error {
-	dir := snap.CommonDataDir(info.SnapName())
+	dir := snap.CommonDataDir(info.SnapName().String())
 	if err := os.Remove(dir); err != nil {
 		return fmt.Errorf("unexpected error: %v", err)
 	}
@@ -1805,7 +1810,7 @@ func (f *snapdBackend) RemoveSnapCommonData(info *snap.Info, opts *dirs.SnapDirO
 }
 
 func (f *snapdBackend) RemoveSnapSaveData(info *snap.Info, dev snap.Device) error {
-	dir := snap.CommonDataSaveDir(info.InstanceName())
+	dir := snap.CommonDataSaveDir(info.InstanceName().String())
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("unexpected error: %v", err)
 	}
@@ -2084,10 +2089,7 @@ func (s *snapmgrTestSuite) TestRemovePrunesRefreshGatingDataOnLastRevision(c *C)
 	st.Lock()
 	defer st.Unlock()
 
-	// enable gate-auto-refresh-hook feature
-	tr := config.NewTransaction(s.state)
-	tr.Set("core", "experimental.gate-auto-refresh-hook", true)
-	tr.Commit()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	for _, sn := range []string{"some-snap", "another-snap", "foo-snap"} {
 		si := snap.SideInfo{
@@ -2165,6 +2167,7 @@ func (s *snapmgrTestSuite) TestRemoveKeepsGatingDataIfNotLastRevision(c *C) {
 	st := s.state
 	st.Lock()
 	defer st.Unlock()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	t := time.Now()
 	snapstate.Set(s.state, "some-snap", &snapstate.SnapState{
@@ -2662,9 +2665,9 @@ func (s *snapmgrTestSuite) TestRemoveWithCompsTasks(c *C) {
 		return nil, errors.New("unexpected component")
 	}))
 
-	s.AddCleanup(snapstate.MockSnapReadInfo(func(name string, si *snap.SideInfo) (*snap.Info, error) {
+	s.AddCleanup(snapstate.MockSnapReadInfo(func(name naming.InstanceName, si *snap.SideInfo) (*snap.Info, error) {
 		info := &snap.Info{
-			SuggestedName: name,
+			SuggestedName: name.SnapName().String(),
 			SideInfo:      *si,
 			SnapType:      snap.TypeApp,
 			Components: map[string]*snap.Component{

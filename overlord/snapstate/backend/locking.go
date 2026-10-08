@@ -40,7 +40,7 @@ func (b Backend) RunInhibitSnapForUnlink(info *snap.Info, hint runinhibit.Hint, 
 	// sufficient to perform the check, even though individual processes
 	// may fork or exit, we will have per-security-tag information about
 	// what is running.
-	lock, err := snaplock.OpenLock(info.InstanceName())
+	lock, err := snaplock.OpenLock(info.InstanceName().String())
 	if err != nil {
 		return nil, err
 	}
@@ -88,5 +88,5 @@ func (b Backend) RunInhibitSnapForUnlink(info *snap.Info, hint runinhibit.Hint, 
 // invoked from doInstall, which does not have access to a backend object.
 func WithSnapLock(info *snap.Info, action func() error) error {
 	// XXX: Should we unlock state while holding snap lock? (ie. pass runinhibit.Unlocker)
-	return snaplock.WithLock(info.InstanceName(), action)
+	return snaplock.WithLock(info.InstanceName().String(), action)
 }

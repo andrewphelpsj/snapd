@@ -32,6 +32,7 @@ import (
 	"github.com/snapcore/snapd/asserts"
 	"github.com/snapcore/snapd/asserts/snapasserts"
 	"github.com/snapcore/snapd/dirs"
+	"github.com/snapcore/snapd/features"
 	"github.com/snapcore/snapd/interfaces"
 	"github.com/snapcore/snapd/interfaces/builtin"
 	"github.com/snapcore/snapd/logger"
@@ -46,6 +47,7 @@ import (
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snaptest"
 	"github.com/snapcore/snapd/store"
 	"github.com/snapcore/snapd/testutil"
@@ -80,6 +82,7 @@ func (s *autorefreshGatingSuite) SetUpTest(c *C) {
 
 	s.state.Lock()
 	defer s.state.Unlock()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, s.state))
 	ifacerepo.Replace(s.state, s.repo)
 
 	s.store = &autoRefreshGatingStore{fakeStore: &fakeStore{}}
@@ -115,12 +118,24 @@ func (r *autoRefreshGatingStore) SnapAction(ctx context.Context, currentSnaps []
 	return res, nil, nil
 }
 
+// mockGateAutoRefreshFeature enables the retained gating implementation for tests.
+// The caller must hold the state lock.
+//
+// TODO:GATEREFRESH: this feature is permanently disabled. Remove this helper
+// and its callers with the gating implementation.
+func mockGateAutoRefreshFeature(c *C, st *state.State) (restore func()) {
+	tr := config.NewTransaction(st)
+	c.Assert(tr.Set("core", "experimental.gate-auto-refresh-hook", true), IsNil)
+	tr.Commit()
+	return features.MockFeaturesPermanentlyDisabled(nil)
+}
+
 func mockInstalledSnap(c *C, st *state.State, snapYaml string, hasHook bool) *snap.Info {
 	snapInfo := snaptest.MockSnap(c, snapYaml, &snap.SideInfo{
 		Revision: snap.R(1),
 	})
 
-	snapName := snapInfo.SnapName()
+	snapName := snapInfo.SnapName().String()
 	si := &snap.SideInfo{RealName: snapName, SnapID: snapName + "-id", Revision: snap.R(1)}
 	snapstate.Set(st, snapName, &snapstate.SnapState{
 		Active:   true,
@@ -1019,7 +1034,7 @@ func (s *autorefreshGatingSuite) TestAffectedByBase(c *C) {
 
 	c.Assert(s.repo.AddAppSet(snapBAppSet), IsNil)
 
-	updates := []string{baseSnapA.InstanceName()}
+	updates := []string{baseSnapA.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1053,7 +1068,7 @@ func (s *autorefreshGatingSuite) TestAffectedByCore(c *C) {
 	c.Assert(s.repo.AddAppSet(snapBAppSet), IsNil)
 	c.Assert(s.repo.AddAppSet(snapCAppSet), IsNil)
 
-	updates := []string{core.InstanceName()}
+	updates := []string{core.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1076,7 +1091,7 @@ func (s *autorefreshGatingSuite) TestAffectedByKernel(c *C) {
 	mockInstalledSnap(c, s.state, snapCyaml, useHook)
 	mockInstalledSnap(c, s.state, snapByaml, noHook)
 
-	updates := []string{kernel.InstanceName()}
+	updates := []string{kernel.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1097,7 +1112,7 @@ func (s *autorefreshGatingSuite) TestAffectedBySelf(c *C) {
 	defer st.Unlock()
 
 	snapC := mockInstalledSnap(c, s.state, snapCyaml, useHook)
-	updates := []string{snapC.InstanceName()}
+	updates := []string{snapC.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1119,7 +1134,7 @@ func (s *autorefreshGatingSuite) TestAffectedByGadget(c *C) {
 	mockInstalledSnap(c, s.state, snapCyaml, useHook)
 	mockInstalledSnap(c, s.state, snapByaml, noHook)
 
-	updates := []string{kernel.InstanceName()}
+	updates := []string{kernel.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1158,7 +1173,7 @@ func (s *autorefreshGatingSuite) TestAffectedBySlot(c *C) {
 	_, err = s.repo.Connect(cref, nil, nil, nil, nil, nil)
 	c.Assert(err, IsNil)
 
-	updates := []string{snapD.InstanceName()}
+	updates := []string{snapD.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1197,7 +1212,7 @@ func (s *autorefreshGatingSuite) TestNotAffectedByCoreOrSnapdSlot(c *C) {
 	_, err = s.repo.Connect(cref, nil, nil, nil, nil, nil)
 	c.Assert(err, IsNil)
 
-	updates := []string{core.InstanceName()}
+	updates := []string{core.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, HasLen, 0)
@@ -1232,7 +1247,7 @@ func (s *autorefreshGatingSuite) TestNotAffectedByPlugWithMountBackend(c *C) {
 	c.Assert(err, IsNil)
 
 	// snapE has a plug using mount backend and is refreshed, this doesn't affect slot of snap-d.
-	updates := []string{snapE.InstanceName()}
+	updates := []string{snapE.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, HasLen, 0)
@@ -1267,7 +1282,7 @@ func (s *autorefreshGatingSuite) TestAffectedByPlugWithMountBackendSnapdSlot(c *
 	c.Assert(err, IsNil)
 
 	// snapE has a plug using mount backend, refreshing snapd affects snapE.
-	updates := []string{snapdSnap.InstanceName()}
+	updates := []string{snapdSnap.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1303,7 +1318,7 @@ func (s *autorefreshGatingSuite) TestAffectedByPlugWithMountBackendCoreSlot(c *C
 	c.Assert(err, IsNil)
 
 	// snapG has a plug using mount backend, refreshing core affects snapE.
-	updates := []string{coreSnap.InstanceName()}
+	updates := []string{coreSnap.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1331,7 +1346,7 @@ func (s *autorefreshGatingSuite) TestAffectedByBootBase(c *C) {
 	mockInstalledSnap(c, s.state, snapEyaml, useHook)
 	core18 := mockInstalledSnap(c, s.state, core18Yaml, noHook)
 
-	updates := []string{core18.InstanceName()}
+	updates := []string{core18.InstanceName().String()}
 	affected, err := snapstate.AffectedByRefresh(st, updates)
 	c.Assert(err, IsNil)
 	c.Check(affected, DeepEquals, map[string]*snapstate.AffectedSnapInfo{
@@ -1470,6 +1485,9 @@ func (s *autorefreshGatingSuite) TestAutorefreshPhase1FeatureFlag(c *C) {
 	mockInstalledSnap(c, s.state, snapAyaml, useHook)
 
 	// gate-auto-refresh-hook feature not enabled, expect old-style refresh.
+	disabled := config.NewTransaction(st)
+	c.Assert(disabled.Set("core", "experimental.gate-auto-refresh-hook", false), IsNil)
+	disabled.Commit()
 	_, updateTss, err := snapstate.AutoRefresh(context.TODO(), st)
 	c.Check(err, IsNil)
 	tss := updateTss.Refresh
@@ -1941,9 +1959,9 @@ func (s *autorefreshGatingSuite) TestUnholdSnaps(c *C) {
 	c.Assert(gating, HasLen, 0)
 }
 
-func fakeReadInfo(name string, si *snap.SideInfo) (*snap.Info, error) {
+func fakeReadInfo(name naming.InstanceName, si *snap.SideInfo) (*snap.Info, error) {
 	info := &snap.Info{
-		SuggestedName: name,
+		SuggestedName: name.SnapName().String(),
 		SideInfo:      *si,
 		Architectures: []string{"all"},
 		SnapType:      snap.TypeApp,
@@ -1971,10 +1989,7 @@ func (s *snapmgrTestSuite) testAutoRefreshPhase2(c *C, beforePhase1 func(), gate
 	st.Lock()
 	defer st.Unlock()
 
-	// enable gate-auto-refresh-hook feature
-	tr := config.NewTransaction(s.state)
-	tr.Set("core", "experimental.gate-auto-refresh-hook", true)
-	tr.Commit()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	s.o.TaskRunner().AddHandler("run-hook", func(t *state.Task, tomb *tomb.Tomb) error {
 		var hsup hookstate.HookSetup
@@ -2272,6 +2287,7 @@ func (s *snapmgrTestSuite) testAutoRefreshPhase2DiskSpaceCheck(c *C, fail bool) 
 	st := s.state
 	st.Lock()
 	defer st.Unlock()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	restore := snapstate.MockOsutilCheckFreeSpace(func(path string, sz uint64) error {
 		c.Check(sz, Equals, uint64(123)+snapstate.DefaultDiskSpaceReservation)
@@ -2287,7 +2303,7 @@ func (s *snapmgrTestSuite) testAutoRefreshPhase2DiskSpaceCheck(c *C, fail bool) 
 		installSizeCalled = true
 		seen := map[string]bool{}
 		for _, sn := range snaps {
-			seen[sn.InstanceName()] = true
+			seen[sn.InstanceName().String()] = true
 		}
 		c.Check(seen, DeepEquals, map[string]bool{
 			"base-snap-b": true,
@@ -2516,10 +2532,7 @@ func (s *snapmgrTestSuite) TestAutoRefreshPhase2GatedSnaps(c *C) {
 	st.Lock()
 	defer st.Unlock()
 
-	// enable gate-auto-refresh-hook feature
-	tr := config.NewTransaction(s.state)
-	tr.Set("core", "experimental.gate-auto-refresh-hook", true)
-	tr.Commit()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	restore := snapstate.MockSnapsToRefresh(func(gatingTask *state.Task) ([]*snapstate.RefreshCandidate, error) {
 		c.Assert(gatingTask.Kind(), Equals, "conditional-auto-refresh")
@@ -2528,7 +2541,7 @@ func (s *snapmgrTestSuite) TestAutoRefreshPhase2GatedSnaps(c *C) {
 		seenSnaps := make(map[string]bool)
 		var filteredByGatingHooks []*snapstate.RefreshCandidate
 		for _, cand := range candidates {
-			seenSnaps[cand.InstanceName()] = true
+			seenSnaps[cand.InstanceName().String()] = true
 			if cand.InstanceName() == "snap-a" {
 				continue
 			}
@@ -2629,6 +2642,7 @@ func (s *snapmgrTestSuite) TestAutoRefreshForGatingSnapErrorAutoRefreshInProgres
 	st := s.state
 	st.Lock()
 	defer st.Unlock()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	chg := st.NewChange("auto-refresh", "...")
 	task := st.NewTask("foo", "...")
@@ -2641,6 +2655,7 @@ func (s *snapmgrTestSuite) TestAutoRefreshForGatingSnapErrorNothingHeld(c *C) {
 	st := s.state
 	st.Lock()
 	defer st.Unlock()
+	s.AddCleanup(mockGateAutoRefreshFeature(c, st))
 
 	c.Assert(snapstate.AutoRefreshForGatingSnap(st, "snap-a"), ErrorMatches, `no snaps are held by snap "snap-a"`)
 }

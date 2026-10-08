@@ -110,8 +110,8 @@ func (csi *ComponentSideInfo) Equal(other *ComponentSideInfo) bool {
 
 // ComponentBaseDir returns where components are to be found for the
 // snap with name instanceName.
-func ComponentsBaseDir(instanceName string) string {
-	return filepath.Join(BaseDir(instanceName), "components")
+func ComponentsBaseDir(instanceName naming.InstanceName) string {
+	return filepath.Join(BaseDir(instanceName.String()), "components")
 }
 
 // componentPlaceInfo holds information about where to put a component in the
@@ -122,7 +122,7 @@ type componentPlaceInfo struct {
 	compName     string
 	compRevision Revision
 	// snapInstance identifies the snap that uses this component.
-	snapInstance string
+	snapInstance naming.InstanceName
 }
 
 var _ ContainerPlaceInfo = (*componentPlaceInfo)(nil)
@@ -130,7 +130,7 @@ var _ ContainerPlaceInfo = (*componentPlaceInfo)(nil)
 // MinimalComponentContainerPlaceInfo returns a ContainerPlaceInfo with just
 // the location information for a component of the given name and revision that
 // is used by a snapInstance.
-func MinimalComponentContainerPlaceInfo(compName string, compRev Revision, snapInstance string) ContainerPlaceInfo {
+func MinimalComponentContainerPlaceInfo(compName string, compRev Revision, snapInstance naming.InstanceName) ContainerPlaceInfo {
 	return &componentPlaceInfo{
 		compName:     compName,
 		compRevision: compRev,
@@ -189,7 +189,7 @@ func (c *componentPlaceInfo) DmVerityDigest() (string, error) {
 // may need to change how the parameters are initialized.
 func ComponentLinkPath(cpi ContainerPlaceInfo, snapRev Revision) string {
 	instanceName, compName, _ := strings.Cut(cpi.ContainerName(), "+")
-	compBase := ComponentsBaseDir(instanceName)
+	compBase := ComponentsBaseDir(naming.InstanceName(instanceName))
 	return filepath.Join(compBase, snapRev.String(), compName)
 }
 
@@ -250,7 +250,7 @@ func ReadComponentInfoFromContainer(compf Container, snapInfo *Info, csi *Compon
 		return componentInfo, nil
 	}
 
-	if snapInfo.SnapName() != componentInfo.Component.SnapName {
+	if snapInfo.SnapName().String() != componentInfo.Component.SnapName {
 		return nil, fmt.Errorf(
 			"component %q is not a component for snap %q", componentInfo.Component, snapInfo.SnapName())
 	}

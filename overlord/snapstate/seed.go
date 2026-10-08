@@ -26,7 +26,7 @@ import (
 	"github.com/snapcore/snapd/features"
 	"github.com/snapcore/snapd/overlord/configstate/config"
 	"github.com/snapcore/snapd/overlord/state"
-	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 )
 
 // SeedRefreshTasks carries the tasks needed to perform a seed refresh.
@@ -49,7 +49,7 @@ type SeedRefreshEvictionPolicy struct {
 // seed refresh.
 type SeedRefreshCandidate struct {
 	// InstanceName is the snap's instance name.
-	InstanceName string
+	InstanceName naming.InstanceName
 	// SnapSetupTaskIDs are the snap tasks that should be considered as inputs to
 	// recovery system creation. Will be empty for component-only refreshes.
 	SnapSetupTaskIDs []string
@@ -82,7 +82,7 @@ var UpdateSeedRefreshChange = func(seedTS *SeedRefreshTasks, dctx DeviceContext,
 //
 // TODO:SEEDREFRESH: remove this hook once seed-refresh supports seeds
 // gaining/losing snaps
-var CheckSeedRefreshRemove = func(st *state.State, si *snap.Info, dctx DeviceContext) error {
+var CheckSeedRefreshRemove = func(st *state.State, candidate SeedRefreshCandidate, dctx DeviceContext) error {
 	panic("internal error: snapstate.CheckSeedRefreshRemove is unset")
 }
 
@@ -193,8 +193,8 @@ func seedRefreshAndSeedSnapTaskSets(st *state.State, stss []snapInstallTaskSet, 
 
 	seedSnapTaskSets := make(map[string]snapInstallTaskSet, len(added))
 	for _, sts := range stss {
-		if added[sts.snapsup.InstanceName()] {
-			seedSnapTaskSets[sts.snapsup.InstanceName()] = sts
+		if added[sts.snapsup.InstanceName().String()] {
+			seedSnapTaskSets[sts.snapsup.InstanceName().String()] = sts
 		}
 	}
 

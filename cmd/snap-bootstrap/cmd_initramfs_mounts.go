@@ -88,7 +88,7 @@ type cmdInitramfsMounts struct{}
 func (c *cmdInitramfsMounts) Execute([]string) error {
 	boot.HookKeyProtectorFactory = hookKeyProtectorFactory
 
-	logger.Noticef("snap-bootstrap version %v starting", snapdtool.Version)
+	logger.Noticef("snap-bootstrap version %v starting", snapdtool.FullVersion())
 
 	return generateInitramfsMounts()
 }
@@ -277,7 +277,7 @@ func canInstallAndRunAtOnce(mst *initramfsMountsState, model *asserts.Model) (bo
 func readSnapInfo(sysSnaps map[snap.Type]*seed.Snap, snapType snap.Type) (*snap.Info, error) {
 	seedSnap := sysSnaps[snapType]
 	mountPoint := filepath.Join(boot.InitramfsRunMntDir, snapTypeToMountDir[snapType])
-	info, err := snap.ReadInfoFromMountPoint(seedSnap.SnapName(), mountPoint, seedSnap.Path, seedSnap.SideInfo)
+	info, err := snap.ReadInfoFromMountPoint(seedSnap.SnapName().AsInstanceName(), mountPoint, seedSnap.Path, seedSnap.SideInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -534,6 +534,21 @@ func doInstall(mst *initramfsMountsState, model *asserts.Model, sysSnaps map[sna
 		return err
 	}
 
+	if useEncryption {
+		// Only when a system has been "made bootable" are the
+		// unlock keys all generated. So we need to wait for
+		// that moment in order to commit keys to the keyring
+		saveBootstrappedContainer := installedSystem.BootstrappedContainerForRole[gadget.SystemSave]
+		dataBootstrappedContainer := installedSystem.BootstrappedContainerForRole[gadget.SystemData]
+
+		if saveBootstrappedContainer != nil {
+			saveBootstrappedContainer.CommitUsedKey()
+		}
+		if dataBootstrappedContainer != nil {
+			dataBootstrappedContainer.CommitUsedKey()
+		}
+	}
+
 	dataMountOpts := setUbuntuCoreDataMountOptions(systemdMountOptions{
 		Bind: true,
 	})
@@ -577,7 +592,7 @@ func doInstall(mst *initramfsMountsState, model *asserts.Model, sysSnaps map[sna
 	// initrd-parse-etc.service does the reload, as it detects entries with the
 	// x-initrd.mount option.
 	hasDriversTree, err := createKernelMounts(
-		rootfsDir, kernelSnap.SnapName(), kernelSnap.Revision, !isCore)
+		rootfsDir, kernelSnap.SnapName().String(), kernelSnap.Revision, !isCore)
 	if err != nil {
 		return err
 	}
@@ -644,7 +659,7 @@ func generateMountsModeInstall(mst *initramfsMountsState) error {
 		// TODO when running normal install or recover/factory-reset,
 		// we would need also this if we want the modules to be
 		// available early.
-		kernSnap, err = theSeed.ModeSnap(kernSnap.SnapName(), "run")
+		kernSnap, err = theSeed.ModeSnap(kernSnap.SnapName().String(), "run")
 		if err != nil {
 			return err
 		}
@@ -2055,7 +2070,7 @@ func createKernelMounts(runWritableDataDir, kernelName string, rev snap.Revision
 	logger.Noticef("drivers tree found in %s", driversDir)
 
 	// 1. Mount unit for the kernel snap
-	cpi := snap.MinimalSnapContainerPlaceInfo(kernelName, rev)
+	cpi := snap.MinimalSnapContainerPlaceInfo(naming.InstanceName(kernelName), rev)
 	squashfsPath := filepath.Join(runWritableDataDir, dirs.StripRootDir(cpi.MountFile()))
 	// snapRoot is where we will find the /snap directory where
 	// snaps/components will be mounted
@@ -2114,7 +2129,7 @@ func createKernelModulesMountUnits(writableRootDir, snapRoot, driversDir, kernel
 	// now create the component units
 	for comp := range compSet {
 		cpi := snap.MinimalComponentContainerPlaceInfo(
-			comp.Component.ComponentName, comp.Revision, kernelName)
+			comp.Component.ComponentName, comp.Revision, naming.InstanceName(kernelName))
 		squashfsPath := filepath.Join(writableRootDir, dirs.StripRootDir(cpi.MountFile()))
 		where := filepath.Join(dirs.GlobalRootDir, snapRoot, dirs.StripRootDir(cpi.MountDir()))
 		if err := writeInitramfsMountUnit(squashfsPath, where, squashfsUnit); err != nil {
@@ -2143,7 +2158,7 @@ func getCompsFromSymlinks(symLinksDir, kernelName string, compSet map[snap.Compo
 		}
 
 		// find out component name from symlink
-		prefix := filepath.Join(snap.ComponentsBaseDir(kernelName), "mnt")
+		prefix := filepath.Join(snap.ComponentsBaseDir(naming.InstanceName(kernelName)), "mnt")
 		subdir := strings.TrimPrefix(dest, prefix+string(os.PathSeparator))
 		if subdir == dest {
 			// Possibly points to $SNAP_DATA instead of to $SNAP,
@@ -2395,7 +2410,7 @@ func generateMountsModeRun(mst *initramfsMountsState) error {
 	// InitramfsRunModeSelectSnapsToMount guarantees we do have a kernel in the map.
 	kernPlaceInfo := mounts[snap.TypeKernel]
 	hasDriversTree, err := createKernelMounts(
-		rootfsDir, kernPlaceInfo.SnapName(), kernPlaceInfo.SnapRevision(), isClassic)
+		rootfsDir, kernPlaceInfo.SnapName().String(), kernPlaceInfo.SnapRevision(), isClassic)
 	if err != nil {
 		return err
 	}
@@ -2490,7 +2505,7 @@ func setupSeedSnapdSnap(rootfsDir string, snapdSeedSnap *seed.Snap) error {
 	if si.Revision.Unset() {
 		si.Revision = snap.R(-1)
 	}
-	cpi := snap.MinimalSnapContainerPlaceInfo(si.RealName, si.Revision)
+	cpi := snap.MinimalSnapContainerPlaceInfo(naming.InstanceName(si.RealName), si.Revision)
 	destRoot := sysconfig.WritableDefaultsDir(rootfsDir)
 	logger.Debugf("writing %s mount unit to %s", si.RealName, destRoot)
 	if err := writeSnapMountUnit(destRoot, snapdSeedSnap.Path, cpi.MountDir(),

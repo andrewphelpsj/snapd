@@ -41,6 +41,7 @@ import (
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/sandbox/cgroup"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/systemd"
 	"github.com/snapcore/snapd/timings"
 )
@@ -107,7 +108,7 @@ func snapRulesFilePath(snapName string) string {
 //
 // If the method fails it should be re-tried (with a sensible strategy) by the caller.
 func (b *Backend) Setup(appSet *interfaces.SnapAppSet, opts interfaces.ConfinementOptions, sctx interfaces.SetupContext, repo *interfaces.Repository, tm timings.Measurer) error {
-	instanceName := appSet.InstanceName().TODOInstanceName()
+	instanceName := appSet.InstanceName().String()
 	spec, err := repo.SnapSpecification(b.Name(), appSet, opts)
 	if err != nil {
 		return fmt.Errorf("cannot obtain udev specification for snap %q: %w", instanceName, err)
@@ -274,9 +275,9 @@ func isKnownSubsystemTrigger(t string) bool {
 // This method should be called after removing a snap.
 //
 // If the method fails it should be re-tried (with a sensible strategy) by the caller.
-func (b *Backend) Remove(snapName string) error {
-	rulesFilePath := snapRulesFilePath(snapName)
-	selfManageDeviceCgroupPath := cgroup.SnapDeviceFile(snap.SecurityTag(snapName))
+func (b *Backend) Remove(instanceName naming.InstanceName) error {
+	rulesFilePath := snapRulesFilePath(instanceName.String())
+	selfManageDeviceCgroupPath := cgroup.SnapDeviceFile(snap.SecurityTag(instanceName.String()))
 
 	// Read subsystem triggers from the rules file before removing it,
 	// so that Remove() can reload the right subsystems.

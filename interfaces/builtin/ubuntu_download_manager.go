@@ -230,7 +230,7 @@ func (iface *ubuntuDownloadManagerInterface) AppArmorConnectedSlot(spec *apparmo
 	new := plug.LabelExpression()
 	snippet := strings.Replace(downloadConnectedSlotAppArmor, old, new, -1)
 	old = "###PLUG_NAME###"
-	new = plug.Snap().InstanceName()
+	new = plug.Snap().InstanceName().String()
 	snippet = strings.Replace(snippet, old, new, -1)
 	spec.AddSnippet(snippet)
 	return nil
@@ -239,6 +239,13 @@ func (iface *ubuntuDownloadManagerInterface) AppArmorConnectedSlot(spec *apparmo
 func (iface *ubuntuDownloadManagerInterface) AutoConnect(*snap.PlugInfo, *snap.SlotInfo) bool {
 	// allow what declarations allowed
 	return true
+}
+
+func (iface *ubuntuDownloadManagerInterface) ParallelInstancesSupportedForSlot(_ *snap.SlotInfo) error {
+	// the download manager owns the well-known bus name
+	// com.canonical.applications.Downloader on the session bus; only one
+	// snap instance can hold it at a time.
+	return errParallelInstancesUniqueResourceOwner
 }
 
 func init() {

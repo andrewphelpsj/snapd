@@ -53,6 +53,7 @@ import (
 	"github.com/snapcore/snapd/sandbox/cgroup"
 	"github.com/snapcore/snapd/sandbox/selinux"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snapenv"
 	"github.com/snapcore/snapd/snapdtool"
 	"github.com/snapcore/snapd/strutil"
@@ -411,11 +412,11 @@ func antialias(snapApp string, args []string) (string, []string) {
 	return actualApp, argsOut
 }
 
-func getSnapInfo(snapName string, revision snap.Revision) (info *snap.Info, err error) {
+func getSnapInfo(instanceName naming.InstanceName, revision snap.Revision) (info *snap.Info, err error) {
 	if revision.Unset() {
-		info, err = snap.ReadCurrentInfo(snapName)
+		info, err = snap.ReadCurrentInfo(instanceName)
 	} else {
-		info, err = snap.ReadInfo(snapName, &snap.SideInfo{
+		info, err = snap.ReadInfo(instanceName, &snap.SideInfo{
 			Revision: revision,
 		})
 	}
@@ -499,7 +500,7 @@ func createUserDataDirs(info *snap.Info, opts *dirs.SnapDirOptions) error {
 		// namespace, namely /home/joe/snap/foo_bar ->
 		// /home/joe/snap/foo, make sure that the mount point exists and
 		// is owned by the user
-		snapUserDir := snap.UserSnapDir(usr.HomeDir, info.SnapName(), opts)
+		snapUserDir := snap.UserSnapDir(usr.HomeDir, info.SnapName().String(), opts)
 		createDirs = append(createDirs, snapUserDir)
 	}
 	for _, d := range createDirs {
@@ -589,16 +590,16 @@ func (x *cmdRun) straceOpts() (opts []string, raw bool, err error) {
 // where a snap refresh/remove/disable could start.
 func checkSnapRunInhibitionConflict(app *snap.AppInfo) error {
 	// Remove hint check takes precedence because we want to exit early
-	snapName := app.Snap.InstanceName()
-	hint, _, err := runinhibit.IsLocked(snapName, nil)
+	instanceName := app.Snap.InstanceName()
+	hint, _, err := runinhibit.IsLocked(instanceName, nil)
 	if err != nil {
 		return err
 	}
 	if hint == runinhibit.HintInhibitedForRemove {
-		return fmt.Errorf(i18n.G("cannot run %q, snap is being removed"), snap.JoinSnapApp(snapName, app.Name))
+		return fmt.Errorf(i18n.G("cannot run %q, snap is being removed"), snap.JoinSnapApp(instanceName.String(), app.Name))
 	}
 	if hint == runinhibit.HintInhibitedForDisable {
-		return fmt.Errorf(i18n.G("cannot run %q, snap is disabled"), snap.JoinSnapApp(snapName, app.Name))
+		return fmt.Errorf(i18n.G("cannot run %q, snap is disabled"), snap.JoinSnapApp(instanceName.String(), app.Name))
 	}
 
 	if app.IsService() {
@@ -611,7 +612,7 @@ func checkSnapRunInhibitionConflict(app *snap.AppInfo) error {
 	// - Or, A refresh was started and finished
 	// Let's retry to avoid either existing with an error due to missing current
 	// symlink or worse starting with the wrong revision.
-	if osutil.FileExists(runinhibit.HintFile(snapName)) {
+	if osutil.FileExists(runinhibit.HintFile(instanceName.String())) {
 		// errSnapRefreshConflict should trigger a retry
 		return errSnapRefreshConflict
 	}
@@ -624,7 +625,7 @@ func (x *cmdRun) snapRunApp(snapApp string, args []string) error {
 		os.Setenv("SNAPD_DEBUG", "1")
 		logger.Debugf("enabled debug logging of early snap startup")
 	}
-	snapName, appName := snap.SplitSnapApp(snapApp)
+	instanceName, appName := snap.SplitSnapApp(snapApp)
 
 	var retryCnt int
 	for {
@@ -634,7 +635,7 @@ func (x *cmdRun) snapRunApp(snapApp string, args []string) error {
 			return fmt.Errorf("race condition detected, snap-run can only retry once")
 		}
 
-		info, app, hintFlock, err := waitWhileInhibited(context.Background(), x.client, snapName, appName)
+		info, app, hintFlock, err := waitWhileInhibited(context.Background(), x.client, naming.InstanceName(instanceName), appName)
 		if errors.Is(err, errInhibitedForRemove) {
 			return fmt.Errorf(i18n.G("cannot run %q, snap is being removed"), snapApp)
 		}
@@ -1475,11 +1476,11 @@ func (r *runnable) SecurityTag() string {
 // app.
 func (r *runnable) Target() string {
 	if r.component != nil {
-		return snap.SnapComponentName(r.info.InstanceName(), r.component.Component.ComponentName)
+		return snap.SnapComponentName(r.info.InstanceName().String(), r.component.Component.ComponentName)
 	}
 
 	if r.hook != nil {
-		return r.info.InstanceName()
+		return r.info.InstanceName().String()
 	}
 
 	return fmt.Sprintf("%s.%s", r.info.InstanceName(), r.app.Name)
@@ -1578,7 +1579,7 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, runner runnable, beforeExec fun
 
 	logger.Debugf("executing snap-confine from %s", snapConfine)
 
-	opts, err := getSnapDirOptions(info.InstanceName())
+	opts, err := getSnapDirOptions(info.InstanceName().String())
 	if err != nil {
 		return fmt.Errorf("cannot get snap dir options: %w", err)
 	}
@@ -1843,7 +1844,7 @@ func (x *cmdRun) runSnapConfine(info *snap.Info, runner runnable, beforeExec fun
 				// For apps using core26+, fail hard unless they don't rely on
 				// cgroup for device control and have the self-managed=true
 				// setting.
-				snapTag := snap.SecurityTag(runner.info.InstanceName())
+				snapTag := snap.SecurityTag(runner.info.InstanceName().String())
 				opts, err2 := cgroup.LoadSnapDeviceCgroupOptions(snapTag)
 				if err2 != nil {
 					logger.Noticef("cannot load snap device cgroup options: %s", err2)

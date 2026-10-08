@@ -40,14 +40,41 @@ import (
 	"github.com/snapcore/snapd/overlord/restart"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/state"
+	"github.com/snapcore/snapd/seclog"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/testutil"
 )
 
 var (
-	CreateQuotaValues = createQuotaValues
-	ParseOptionalTime = parseOptionalTime
+	CreateQuotaValues       = createQuotaValues
+	ParseOptionalTime       = parseOptionalTime
+	SeclogSnapdUserFromAuth = seclogSnapdUserFromAuth
+	NewAuthzRecorder        = newAuthzRecorder
 )
+
+// AuthzRecorder is [authzRecorder] for tests outside package daemon.
+type AuthzRecorder = authzRecorder
+
+// RecordGranted exposes [authzRecorder.recordGranted] for tests.
+func (rec *authzRecorder) RecordGranted(reason seclog.GrantReason, iface string, side seclog.InterfaceSide) {
+	rec.recordGranted(reason, iface, side)
+}
+
+// RecordDenied exposes [authzRecorder.recordDenied] for tests.
+func (rec *authzRecorder) RecordDenied(reason seclog.DenialReason) {
+	rec.recordDenied(reason)
+}
+
+// Log exposes [authzRecorder.log] for tests.
+func (rec *authzRecorder) Log() {
+	rec.log()
+}
+
+// SeclogPeer exposes [ucrednet.seclogPeer] for tests.
+func (un *ucrednet) SeclogPeer() seclog.Peer {
+	return un.seclogPeer()
+}
 
 func APICommands() []*Command {
 	return api
@@ -82,6 +109,45 @@ func (d *Daemon) RequestedRestart() restart.RestartType {
 
 type Ucrednet = ucrednet
 
+func MockAppArmorLabelFromPid(f func(int) (string, error)) (restore func()) {
+	restore = testutil.Backup(&apparmorLabelFromPid)
+	apparmorLabelFromPid = f
+	return restore
+}
+
+func NewUcrednet(securityTag, processExeName string, uid uint32, socket string) *Ucrednet {
+	var tag naming.SecurityTag
+	if securityTag != "" {
+		var err error
+		tag, err = naming.ParseSecurityTag(securityTag)
+		if err != nil {
+			panic(err)
+		}
+	}
+	return &ucrednet{
+		securityTag:             tag,
+		untrustedProcessExeName: processExeName,
+		Uid:                     uid,
+		Socket:                  socket,
+	}
+}
+
+func (un *ucrednet) SetUntrustedProcessExeNameErr(err error) {
+	un.untrustedProcessExeNameErr = err
+}
+
+func AddUcrednetToRequest(r *http.Request, ucred *Ucrednet, ifaces ...string) {
+	ctx := ucrednetWithCredentials(r.Context(), ucred)
+	for _, iface := range ifaces {
+		ctx = ucrednetAttachInterface(ctx, iface)
+	}
+	*r = *r.WithContext(ctx)
+}
+
+func UcrednetFromRequest(r *http.Request) (*Ucrednet, []string, error) {
+	return ucrednetGetWithInterfaces(r.Context())
+}
+
 func BeforeNewChange(beforeNewChange func(st *state.State, kind, summary string, tsets []*state.TaskSet, snapNames []string)) (restore func()) {
 	oldNewChange := newChange
 	newChange = func(st *state.State, kind, summary string, tsets []*state.TaskSet, snapNames []string) *state.Change {
@@ -90,14 +156,6 @@ func BeforeNewChange(beforeNewChange func(st *state.State, kind, summary string,
 	}
 	return func() {
 		newChange = oldNewChange
-	}
-}
-
-func MockUcrednetGet(mock func(remoteAddr string) (ucred *Ucrednet, err error)) (restore func()) {
-	oldUcrednetGet := ucrednetGet
-	ucrednetGet = mock
-	return func() {
-		ucrednetGet = oldUcrednetGet
 	}
 }
 
@@ -315,7 +373,7 @@ func MockSnapstateRemoveComponents(mock func(st *state.State, snapName string, c
 	}
 }
 
-func MockConfigstateConfigureInstalled(f func(st *state.State, name string, patchValues map[string]any, flags int) (*state.TaskSet, error)) (restore func()) {
+func MockConfigstateConfigureInstalled(f func(st *state.State, name naming.InstanceName, patchValues map[string]any, flags int) (*state.TaskSet, error)) (restore func()) {
 	old := configstateConfigureInstalled
 	configstateConfigureInstalled = f
 	return func() {

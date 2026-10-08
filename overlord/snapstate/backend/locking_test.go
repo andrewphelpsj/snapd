@@ -109,7 +109,7 @@ version: 1
 `
 	info := snaptest.MockInfo(c, yaml, nil)
 
-	lock, err := snaplock.OpenLock(info.InstanceName())
+	lock, err := snaplock.OpenLock(info.InstanceName().String())
 	c.Assert(err, IsNil)
 	defer lock.Close()
 	c.Assert(lock.TryLock(), IsNil) // Lock is not held

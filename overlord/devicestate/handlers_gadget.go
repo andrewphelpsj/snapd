@@ -118,7 +118,7 @@ func (m *DeviceManager) doUpdateGadgetAssets(t *state.Task, _ *tomb.Tomb) error 
 	switch snapsup.Type {
 	case snap.TypeGadget:
 		expectedGadgetSnap := model.Gadget()
-		if snapsup.InstanceName() != expectedGadgetSnap {
+		if snapsup.InstanceName().String() != expectedGadgetSnap {
 			return fmt.Errorf("cannot apply gadget assets update from non-model gadget snap %q, expected %q snap",
 				snapsup.InstanceName(), expectedGadgetSnap)
 		}
@@ -129,7 +129,7 @@ func (m *DeviceManager) doUpdateGadgetAssets(t *state.Task, _ *tomb.Tomb) error 
 		}
 	case snap.TypeKernel:
 		expectedKernelSnap := model.Kernel()
-		if snapsup.InstanceName() != expectedKernelSnap {
+		if snapsup.InstanceName().String() != expectedKernelSnap {
 			return fmt.Errorf("cannot apply kernel assets update from non-model kernel snap %q, expected %q snap",
 				snapsup.InstanceName(), expectedKernelSnap)
 		}

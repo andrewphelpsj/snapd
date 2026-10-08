@@ -21,6 +21,7 @@ package hookstate_test
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,13 +29,16 @@ import (
 	"gopkg.in/tomb.v2"
 
 	"github.com/snapcore/snapd/cmd/snaplock/runinhibit"
+	"github.com/snapcore/snapd/features"
 	"github.com/snapcore/snapd/interfaces"
+	"github.com/snapcore/snapd/overlord/configstate/config"
 	"github.com/snapcore/snapd/overlord/hookstate"
 	"github.com/snapcore/snapd/overlord/ifacestate/ifacerepo"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snaptest"
 	"github.com/snapcore/snapd/testutil"
 )
@@ -64,8 +68,17 @@ var _ = Suite(&gateAutoRefreshHookSuite{})
 func (s *gateAutoRefreshHookSuite) SetUpTest(c *C) {
 	s.commonSetUpTest(c)
 
+	// TODO:GATEREFRESH: remove with the gate-auto-refresh-hook implementation
+	s.manager.Register(regexp.MustCompile("^gate-auto-refresh$"), func(context *hookstate.Context) hookstate.Handler {
+		return hookstate.NewGateAutoRefreshHookHandler(context)
+	})
+	s.AddCleanup(features.MockFeaturesPermanentlyDisabled(nil))
+
 	s.state.Lock()
 	defer s.state.Unlock()
+	tr := config.NewTransaction(s.state)
+	c.Assert(tr.Set("core", "experimental.gate-auto-refresh-hook", true), IsNil)
+	tr.Commit()
 
 	si := &snap.SideInfo{RealName: "snap-a", SnapID: "snap-a-id1", Revision: snap.R(1)}
 	snaptest.MockSnap(c, snapaYaml, si)
@@ -130,8 +143,8 @@ func checkIsNotHeld(c *C, st *state.State, heldSnap string) {
 	c.Check(held[heldSnap], IsNil)
 }
 
-func checkRunInhibit(c *C, snapName string, expectedHint runinhibit.Hint, expectedInfo runinhibit.InhibitInfo) {
-	hint, info, err := runinhibit.IsLocked(snapName, nil)
+func checkRunInhibit(c *C, instanceName naming.InstanceName, expectedHint runinhibit.Hint, expectedInfo runinhibit.InhibitInfo) {
+	hint, info, err := runinhibit.IsLocked(instanceName, nil)
 	c.Assert(err, IsNil)
 	c.Check(hint, Equals, expectedHint)
 	c.Check(info, Equals, expectedInfo)
@@ -140,7 +153,7 @@ func checkRunInhibit(c *C, snapName string, expectedHint runinhibit.Hint, expect
 func (s *gateAutoRefreshHookSuite) TestGateAutorefreshHookProceedRuninhibitLock(c *C) {
 	hookInvoke := func(ctx *hookstate.Context, tomb *tomb.Tomb) ([]byte, error) {
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 		ctx.Lock()
 		defer ctx.Unlock()
 
@@ -176,7 +189,7 @@ func (s *gateAutoRefreshHookSuite) TestGateAutorefreshHookProceedRuninhibitLock(
 func (s *gateAutoRefreshHookSuite) TestGateAutorefreshHookHoldUnlocksRuninhibit(c *C) {
 	hookInvoke := func(ctx *hookstate.Context, tomb *tomb.Tomb) ([]byte, error) {
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 		ctx.Lock()
 		defer ctx.Unlock()
 
@@ -219,7 +232,7 @@ func (s *gateAutoRefreshHookSuite) TestGateAutorefreshDefaultProceedUnlocksRunin
 
 		// this hook does nothing (action not set to proceed/hold).
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 		return nil, nil
 	}
 	restore := hookstate.MockRunHook(hookInvoke)
@@ -260,7 +273,7 @@ func (s *gateAutoRefreshHookSuite) TestGateAutorefreshDefaultProceed(c *C) {
 
 		// this hook does nothing (action not set to proceed/hold).
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 		return nil, nil
 	}
 	restore := hookstate.MockRunHook(hookInvoke)
@@ -300,7 +313,7 @@ func (s *gateAutoRefreshHookSuite) TestGateAutorefreshHookError(c *C) {
 
 		// this hook does nothing (action not set to proceed/hold).
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 		return []byte("fail"), fmt.Errorf("boom")
 	}
 	restore := hookstate.MockRunHook(hookInvoke)
@@ -337,7 +350,7 @@ func (s *gateAutoRefreshHookSuite) TestGateAutorefreshHookErrorAfterProceed(c *C
 		checkRunInhibit(c, "snap-a", runinhibit.HintInhibitedGateRefresh, runinhibit.InhibitInfo{Previous: snap.R(1)})
 
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 
 		// action is normally set via snapctl; pretend it is --proceed.
 		ctx.Lock()
@@ -380,7 +393,7 @@ func (s *gateAutoRefreshHookSuite) TestGateAutorefreshHookErrorHoldErrorLogged(c
 
 		// this hook does nothing (action not set to proceed/hold).
 		c.Check(ctx.HookName(), Equals, "gate-auto-refresh")
-		c.Check(ctx.InstanceName(), Equals, "snap-a")
+		c.Check(ctx.InstanceName().String(), Equals, "snap-a")
 
 		// simulate failing hook
 		return []byte("fail"), fmt.Errorf("boom")
