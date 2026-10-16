@@ -60,6 +60,10 @@ systemd_unit_file(snappy_unit_file_t)
 type snappy_tmp_t;
 files_tmp_file(snappy_tmp_t)
 
+# memfd_create() files, e.g. the FDE secret state
+type snappy_tmpfs_t;
+files_tmpfs_file(snappy_tmpfs_t)
+
 # actual snap
 type snappy_snap_t;
 # XXX: snappy_snap_t should be declared a filesystem, but due to how modules are
@@ -248,6 +252,22 @@ allow snappy_t snappy_snap_t:lnk_file { read_lnk_file_perms };
 admin_pattern(snappy_t, snappy_tmp_t)
 files_tmp_filetrans(snappy_t, snappy_tmp_t, { file dir })
 
+# Allow snapd to use memfd_create() files, including when received back
+# from the systemd fdstore
+fs_tmpfs_filetrans(snappy_t, snappy_tmpfs_t, file)
+manage_files_pattern(snappy_t, snappy_tmpfs_t, snappy_tmpfs_t)
+mmap_rw_files_pattern(snappy_t, snappy_tmpfs_t, snappy_tmpfs_t)
+
+# Allow snapd to use memfd_secret() files, including when received back
+# from the systemd fdstore; secretmem_t is only defined by newer policies
+optional_policy(`
+	gen_require(`
+		type secretmem_t;
+		class anon_inode { create getattr read write map };
+	')
+	allow snappy_t secretmem_t:anon_inode { create getattr read write map };
+')
+
 # snap command completions, symlinks going back to snap mount directory
 gen_require(`
 	type usr_t;
@@ -391,9 +411,16 @@ kernel_read_fs_sysctls(snappy_t)
 # $SNAP_COMMON, but lacking auto transition, they end up labeled as var_t
 allow snappy_t var_t:sock_file unlink;
 
-# snapd picks the process start time from /proc/<pid>/stat for polkit
-allow snappy_t unconfined_t:dir search;
-allow snappy_t unconfined_t:file { open read };
+# snapd picks the process start time from /proc/<pid>/stat for polkit, reads the
+# /proc/<pid>/exe symlink to identify the peer's executable path, and reads
+# /proc/<pid>/cgroup to map the peer pid to a snap instance name.
+# unconfined_t and unconfined_service_t (what snap services transition to) are
+# process domain types, so these patterns only ever match /proc/<pid> state,
+# never on-disk files.
+read_files_pattern(snappy_t, unconfined_t, unconfined_t)
+read_lnk_files_pattern(snappy_t, unconfined_t, unconfined_t)
+read_files_pattern(snappy_t, unconfined_service_t, unconfined_service_t)
+read_lnk_files_pattern(snappy_t, unconfined_service_t, unconfined_service_t)
 
 # Allow snapd to get file attributes in policykit{,_auth}_exec_t domain
 gen_require(`
@@ -737,7 +764,7 @@ allow snappy_confine_t etc_t:file mounton;
 allow snappy_confine_t ld_so_cache_t:file mounton;
 allow snappy_confine_t home_root_t:dir mounton;
 allow snappy_confine_t ifconfig_var_run_t:dir mounton;
-allow snappy_confine_t modules_object_t:dir mounton;
+allow snappy_confine_t modules_object_t:dir { getattr mounton };
 allow snappy_confine_t lib_t:dir mounton;
 allow snappy_confine_t ptmx_t:chr_file { getattr mounton };
 allow snappy_confine_t snappy_snap_t:dir { mounton read };
@@ -954,6 +981,20 @@ allow init_t snappy_cli_t:unix_stream_socket create_stream_socket_perms;
 # declare fs_type(snappy_snap_t) outside of core policy, add explicit permission
 # instead
 allow init_t snappy_snap_t:filesystem remount;
+
+# systemd holds snapd's memfd secret state in the fdstore across restarts
+# XXX only needed when FDE related memfd_{create,secret} fds are handed to systemd
+# for safekeeping, while in practice none of the systems where the policy is in use 
+# use snapd managed FDE
+# allow init_t snappy_tmpfs_t:file { read write };
+# optional_policy(`
+#	gen_require(`
+#		type secretmem_t;
+#			class anon_inode { getattr read write };
+#		')
+#		allow init_t secretmem_t:anon_inode { getattr read write };
+#	')
+
 
 ########################################
 #

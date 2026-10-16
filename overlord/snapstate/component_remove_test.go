@@ -21,7 +21,9 @@ package snapstate_test
 
 import (
 	"errors"
+	"fmt"
 
+	"github.com/snapcore/snapd/features"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/snapstate/sequence"
 	"github.com/snapcore/snapd/overlord/snapstate/snapstatetest"
@@ -134,6 +136,48 @@ func (s *snapmgrTestSuite) testRemoveComponent(c *C, opts snapstate.RemoveCompon
 
 func (s *snapmgrTestSuite) TestRemoveComponents(c *C) {
 	s.testRemoveComponents(c, snapstate.RemoveComponentsOpts{})
+}
+
+func (s *snapmgrTestSuite) TestRemoveComponentsParallelInstance(c *C) {
+	const snapName = "mysnap"
+	const instanceName = "mysnap_parallel"
+	const componentName = "parallel-comp"
+	snapRev := snap.R(1)
+
+	s.state.Lock()
+	defer s.state.Unlock()
+
+	for _, tc := range []struct {
+		instanceName string
+		instanceKey  string
+		component    string
+	}{
+		{instanceName: snapName, component: "base-comp"},
+		{instanceName: instanceName, instanceKey: "parallel", component: componentName},
+	} {
+		csi := snap.NewComponentSideInfo(naming.NewComponentRef(snapName, tc.component), snap.R(1))
+		ssi := &snap.SideInfo{RealName: snapName, Revision: snapRev, SnapID: "some-snap-id"}
+		seq := snapstatetest.NewSequenceFromRevisionSideInfos([]*sequence.RevisionSideState{
+			sequence.NewRevisionSideState(ssi, []*sequence.ComponentState{
+				sequence.NewComponentState(csi, snap.StandardComponent),
+			}),
+		})
+		snapstate.Set(s.state, tc.instanceName, &snapstate.SnapState{
+			Active:      true,
+			InstanceKey: tc.instanceKey,
+			Sequence:    seq,
+			Current:     snapRev,
+		})
+	}
+
+	tss, err := snapstate.RemoveComponents(s.state, naming.InstanceName(instanceName),
+		[]string{componentName}, snapstate.RemoveComponentsOpts{})
+	c.Assert(err, IsNil)
+	c.Assert(tss, HasLen, 1)
+
+	snapsup, err := snapstate.TaskSnapSetup(tss[0].Tasks()[0])
+	c.Assert(err, IsNil)
+	c.Check(snapsup.InstanceName().String(), Equals, instanceName)
 }
 
 func (s *snapmgrTestSuite) TestRemoveComponentsRefreshProf(c *C) {
@@ -459,4 +503,34 @@ func (s *snapmgrTestSuite) TestRemoveComponentUpdateNoConflict(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(len(tss), Equals, 1)
 	verifyComponentRemoveTasks(c, compCurrentIsDiscarded, tss[0])
+}
+
+func (s *snapmgrTestSuite) TestRemoveComponentInSeedRefresh(c *C) {
+	const snapName = "some-snap"
+	const compName = "mycomp"
+	snapRev := snap.R(1)
+	info := createTestSnapInfoForComponent(c, snapName, snapRev, compName)
+	ci, _ := createTestComponent(c, snapName, compName, info)
+	s.AddCleanup(snapstate.MockReadComponentInfo(func(compMntDir string,
+		snapInfo *snap.Info, csi *snap.ComponentSideInfo) (*snap.ComponentInfo, error) {
+		return ci, nil
+	}))
+
+	s.state.Lock()
+	defer s.state.Unlock()
+	s.AddCleanup(features.MockFeaturesWIPEnvironment(features.SeedRefresh))
+
+	s.AddCleanup(snapstate.MockCheckSeedRefreshRemove(func(*state.State,
+		snapstate.SeedRefreshCandidate, snapstate.DeviceContext) error {
+		return fmt.Errorf("blocked by seed refresh")
+	}))
+
+	csi1 := snap.NewComponentSideInfo(naming.NewComponentRef(snapName, compName), snap.R(1))
+	cs1 := sequence.NewComponentState(csi1, snap.StandardComponent)
+	setStateWithComponents(s.state, snapName, snapRev, []*sequence.ComponentState{cs1})
+
+	_, err := snapstate.RemoveComponents(s.state, snapName, []string{compName},
+		snapstate.RemoveComponentsOpts{})
+
+	c.Assert(err, ErrorMatches, "blocked by seed refresh")
 }

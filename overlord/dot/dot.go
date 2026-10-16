@@ -45,7 +45,7 @@ func (snapsup *snapSetup) InstanceName() string {
 	if snapsup.SideInfo == nil || snapsup.SideInfo.RealName == "" {
 		return ""
 	}
-	return snap.InstanceName(snapsup.SideInfo.RealName, snapsup.InstanceKey)
+	return snap.InstanceName(snapsup.SideInfo.RealName, snapsup.InstanceKey).String()
 }
 
 type componentSetup struct {
@@ -142,7 +142,7 @@ func taskSnapName(t *state.Task) (string, error) {
 		return "", err
 	}
 	if err == nil && compsup.CompSideInfo != nil {
-		return compsup.CompSideInfo.Component.SnapName, nil
+		return compsup.CompSideInfo.Component.SnapName.String(), nil
 	}
 
 	return "", nil

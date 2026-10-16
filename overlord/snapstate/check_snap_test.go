@@ -38,6 +38,7 @@ import (
 	"github.com/snapcore/snapd/release"
 	seccomp_compiler "github.com/snapcore/snapd/sandbox/seccomp"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/snap/snaptest"
 	"github.com/snapcore/snapd/snapdtool"
 	"github.com/snapcore/snapd/testutil"
@@ -118,19 +119,20 @@ func (s *checkSnapSuite) TestCheckSnapAssumes(c *C) {
 	},
 	}
 
-	restore := snapdtool.MockVersion("2.15")
+	restore := snapdtool.MockVersion("2.15", "")
 	defer restore()
 
 	restore = release.MockOnClassic(false)
 	defer restore()
 
 	for _, test := range assumesTests {
-		snapdtool.Version = test.version
-		if snapdtool.Version == "" {
-			snapdtool.Version = "2.15"
+		// FIXME: This relies on eventual defer of snapdtool.MockVersion above ^^^.
+		snapdtool.UpstreamVersion = test.version
+		if snapdtool.UpstreamVersion == "" {
+			snapdtool.UpstreamVersion = "2.15"
 		}
 
-		comment := Commentf("snap assumes %q, but snapd version is %q", test.assumes, snapdtool.Version)
+		comment := Commentf("snap assumes %q, but snapd version is %q", test.assumes, snapdtool.UpstreamVersion)
 		release.OnClassic = test.classic
 
 		yaml := fmt.Sprintf("name: foo\nversion: 1.0\nassumes: %s\n", test.assumes)
@@ -174,7 +176,7 @@ version: 1.0`
 		data, err := sf.ReadFile("canary")
 		c.Assert(err, IsNil)
 		c.Assert(data, DeepEquals, []byte("canary"))
-		c.Assert(s.InstanceName(), Equals, "foo")
+		c.Assert(s.InstanceName().String(), Equals, "foo")
 		c.Assert(s.SnapID, Equals, "snap-id")
 		checkCbCalled = true
 		return nil
@@ -923,8 +925,8 @@ version: 1.0`
 	checkCbCalled := false
 	checkCb := func(st *state.State, s, cur *snap.Info, sf snap.Container, flags snapstate.Flags, deviceCtx snapstate.DeviceContext) error {
 		c.Assert(sf, NotNil)
-		c.Assert(s.InstanceName(), Equals, "foo_instance")
-		c.Assert(s.SnapName(), Equals, "foo")
+		c.Assert(s.InstanceName().String(), Equals, "foo_instance")
+		c.Assert(s.SnapName().String(), Equals, "foo")
 		c.Assert(s.SnapID, Equals, "snap-id")
 		checkCbCalled = true
 		return nil
@@ -1278,7 +1280,7 @@ func (s *checkSnapSuite) testCheckSnapSystemUsernamesCallsCommon(c *C, expectedU
 		mockUserAdd := testutil.MockCommand(c, "useradd", "")
 		defer mockUserAdd.Restore()
 
-		err = snapstate.CheckSnap(s.st, "snap-path", info.SnapName(), nil, nil, snapstate.Flags{}, nil)
+		err = snapstate.CheckSnap(s.st, "snap-path", info.SnapName().String(), nil, nil, snapstate.Flags{}, nil)
 		c.Assert(err, IsNil)
 		if classic {
 			c.Check(mockGroupAdd.Calls(), DeepEquals, [][]string{
@@ -1451,7 +1453,7 @@ func (s *snapmgrTestSuite) TestCheckDesktopFileIDsConflicts(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(otherSnap.Plugs["desktop"], NotNil)
 
-	restore := snapstate.MockSnapReadInfo(func(name string, si *snap.SideInfo) (*snap.Info, error) {
+	restore := snapstate.MockSnapReadInfo(func(name naming.InstanceName, si *snap.SideInfo) (*snap.Info, error) {
 		switch name {
 		case "some-snap":
 			return someSnap, nil
@@ -1485,7 +1487,7 @@ func (s *snapmgrTestSuite) TestCheckDesktopFileIDsConflictsNoConflictWithSelf(c 
 	c.Assert(err, IsNil)
 	c.Assert(someSnap.Plugs["desktop"], NotNil)
 
-	restore := snapstate.MockSnapReadInfo(func(name string, si *snap.SideInfo) (*snap.Info, error) {
+	restore := snapstate.MockSnapReadInfo(func(name naming.InstanceName, si *snap.SideInfo) (*snap.Info, error) {
 		switch name {
 		case "some-snap":
 			return someSnap, nil
@@ -1520,7 +1522,7 @@ func (s *snapmgrTestSuite) TestInstallDesktopFileIDsConflicts(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(otherSnap.Plugs["desktop"], NotNil)
 
-	restore := snapstate.MockSnapReadInfo(func(name string, si *snap.SideInfo) (*snap.Info, error) {
+	restore := snapstate.MockSnapReadInfo(func(name naming.InstanceName, si *snap.SideInfo) (*snap.Info, error) {
 		switch name {
 		case "some-snap":
 			return someSnap, nil
@@ -1559,7 +1561,7 @@ func (s *snapmgrTestSuite) TestInstallManyDesktopFileIDsConflicts(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(otherSnap.Plugs["desktop"], NotNil)
 
-	restore := snapstate.MockSnapReadInfo(func(name string, si *snap.SideInfo) (*snap.Info, error) {
+	restore := snapstate.MockSnapReadInfo(func(name naming.InstanceName, si *snap.SideInfo) (*snap.Info, error) {
 		switch name {
 		case "some-snap":
 			return someSnap, nil

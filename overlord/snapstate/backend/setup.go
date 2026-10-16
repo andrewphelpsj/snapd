@@ -35,6 +35,7 @@ import (
 	"github.com/snapcore/snapd/progress"
 	"github.com/snapcore/snapd/release"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/systemd"
 )
 
@@ -53,7 +54,7 @@ type SetupSnapOptions struct {
 }
 
 // SetupSnap does prepare and mount the snap for further processing.
-func (b Backend) SetupSnap(snapFilePath, instanceName string, sideInfo *snap.SideInfo, dev snap.Device, setupOpts *SetupSnapOptions, meter progress.Meter) (snapType snap.Type, installRecord *InstallRecord, retErr error) {
+func (b Backend) SetupSnap(snapFilePath string, instanceName naming.InstanceName, sideInfo *snap.SideInfo, dev snap.Device, setupOpts *SetupSnapOptions, meter progress.Meter) (snapType snap.Type, installRecord *InstallRecord, retErr error) {
 	if setupOpts == nil {
 		setupOpts = &SetupSnapOptions{}
 	}
@@ -66,7 +67,7 @@ func (b Backend) SetupSnap(snapFilePath, instanceName string, sideInfo *snap.Sid
 	}
 
 	// update instance key to what was requested
-	_, s.InstanceKey = snap.SplitInstanceName(instanceName)
+	s.InstanceKey = instanceName.InstanceKey()
 
 	instdir := s.MountDir()
 
@@ -127,19 +128,58 @@ func (b Backend) SetupSnap(snapFilePath, instanceName string, sideInfo *snap.Sid
 	return t, installRecord, nil
 }
 
-// SetupKernelSnap does extra configuration for kernel snaps.
-func (b Backend) SetupKernelSnap(instanceName string, rev snap.Revision, meter progress.Meter) (err error) {
+// SetupKernelReason describes why SetupKernelSnap is being called, and
+// therefore which kernel drivers tree update to perform. The zero value is
+// reserved and intentionally invalid: every caller must pick a reason
+// explicitly.
+type SetupKernelReason int
+
+const (
+	_ SetupKernelReason = iota
+
+	// SetupKernelForInstall builds the tree for a kernel snap being
+	// installed right now.
+	SetupKernelForInstall
+	// SetupKernelRegenerate rebuilds the kernel setup time artifacts for an
+	// already-installed kernel.
+	SetupKernelRegenerate
+)
+
+// SetupKernelSnap does extra configuration for kernel snaps. currentComps
+// should be the currently active kernel-modules components for instanceName/rev
+// and is only meaningful when using SetupKernelRegenerate.
+func (b Backend) SetupKernelSnap(instanceName string, rev snap.Revision, currentComps []*snap.ComponentSideInfo, reason SetupKernelReason, meter progress.Meter) error {
+	var mode kernel.KernelDriversTreeMode
+	switch reason {
+	case SetupKernelForInstall:
+		mode = kernel.KernelInstallMode
+	case SetupKernelRegenerate:
+		mode = kernel.RegenerateMode
+	default:
+		return fmt.Errorf("internal error: unsupported kernel snap setup reason %v", reason)
+	}
+	if mode == kernel.KernelInstallMode && currentComps != nil {
+		return fmt.Errorf("internal error: currentComps must be nil unless regenerating the kernel drivers tree")
+	}
+
 	// Build kernel tree that will be mounted from initramfs
-	cpi := snap.MinimalSnapContainerPlaceInfo(instanceName, rev)
+	cpi := snap.MinimalSnapContainerPlaceInfo(naming.InstanceName(instanceName), rev)
 	destDir := kernel.DriversTreeDir(dirs.GlobalRootDir, instanceName, rev)
 
-	// TODO:COMPS: consider components when installed jointly
-	return kernelEnsureKernelDriversTree(
-		kernel.MountPoints{
-			Current: cpi.MountDir(),
-			Target:  cpi.MountDir()},
-		nil, destDir,
-		&kernel.KernelDriversTreeOptions{KernelInstall: true})
+	kMntPts := kernel.MountPoints{
+		Current: cpi.MountDir(),
+		Target:  cpi.MountDir(),
+	}
+
+	kinfo, err := kernel.ReadInfo(kMntPts.Current)
+	if err != nil {
+		return err
+	}
+	compsMntPts := compsMountPoints(currentComps, instanceName, rev, kinfo)
+
+	// TODO:COMPS: consider components when installed jointly (currentComps
+	// is always nil for a fresh install today, see doPrepareKernelSnap)
+	return kernelEnsureKernelDriversTree(kMntPts, compsMntPts, destDir, mode)
 }
 
 func (b Backend) RemoveKernelSnapSetup(instanceName string, rev snap.Revision, meter progress.Meter) error {
@@ -306,7 +346,7 @@ func (b Backend) RemoveComponentFiles(cpi snap.ContainerPlaceInfo, installRecord
 func (b Backend) RemoveSnapDir(s snap.PlaceInfo, hasOtherInstances bool) error {
 	mountDir := s.MountDir()
 
-	_, instanceKey := snap.SplitInstanceName(s.InstanceName())
+	_, instanceKey := snap.SplitInstanceName(s.InstanceName().String())
 	if instanceKey != "" {
 		// always ok to remove instance specific one, failure to remove
 		// is ok, there may be other revisions
@@ -315,7 +355,7 @@ func (b Backend) RemoveSnapDir(s snap.PlaceInfo, hasOtherInstances bool) error {
 	if !hasOtherInstances {
 		// remove only if not used by other instances of the same snap,
 		// failure to remove is ok, there may be other revisions
-		os.Remove(snap.BaseDir(s.SnapName()))
+		os.Remove(snap.BaseDir(s.SnapName().String()))
 	}
 	return nil
 }
@@ -366,7 +406,7 @@ func (b Backend) SetupKernelModulesComponents(currentComps, finalComps []*snap.C
 // moveKModsComponentsState changes kernel-modules set-up from currentComps to
 // finalComps, for the kernel/revision specified by ksnapName/ksnapRev.
 func moveKModsComponentsState(currentComps, finalComps []*snap.ComponentSideInfo, ksnapName string, ksnapRev snap.Revision, cleanErrMsg string) (err error) {
-	cpi := snap.MinimalSnapContainerPlaceInfo(ksnapName, ksnapRev)
+	cpi := snap.MinimalSnapContainerPlaceInfo(naming.InstanceName(ksnapName), ksnapRev)
 	kMntPts := kernel.MountPoints{
 		Current: cpi.MountDir(),
 		Target:  cpi.MountDir(),
@@ -379,12 +419,12 @@ func moveKModsComponentsState(currentComps, finalComps []*snap.ComponentSideInfo
 	finalCompsMntPts := compsMountPoints(finalComps, ksnapName, ksnapRev, kinfo)
 
 	if err := kernelEnsureKernelDriversTree(kMntPts, finalCompsMntPts, destDir,
-		&kernel.KernelDriversTreeOptions{KernelInstall: false}); err != nil {
+		kernel.ComponentChangeMode); err != nil {
 
 		// Revert change on error
 		currentCompsMntPts := compsMountPoints(currentComps, ksnapName, ksnapRev, kinfo)
 		if e := kernelEnsureKernelDriversTree(kMntPts, currentCompsMntPts, destDir,
-			&kernel.KernelDriversTreeOptions{KernelInstall: false}); e != nil {
+			kernel.ComponentChangeMode); e != nil {
 			logger.Noticef("while restoring kernel tree %s: %v", cleanErrMsg, e)
 		}
 
@@ -398,7 +438,7 @@ func compsMountPoints(comps []*snap.ComponentSideInfo, kSnapName string, ksnapRe
 	compsMntPts := make([]kernel.ModulesCompMountPoints, 0, len(comps)+1)
 	for _, csi := range comps {
 		compPlaceInfo := snap.MinimalComponentContainerPlaceInfo(csi.Component.ComponentName,
-			csi.Revision, kSnapName)
+			csi.Revision, naming.InstanceName(kSnapName))
 		if dirHasDrivers(compPlaceInfo.MountDir()) {
 			compsMntPts = append(compsMntPts, kernel.ModulesCompMountPoints{
 				LinkName: csi.Component.ComponentName,

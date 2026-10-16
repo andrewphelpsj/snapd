@@ -51,6 +51,7 @@ import (
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/standby"
 	"github.com/snapcore/snapd/overlord/state"
+	"github.com/snapcore/snapd/seclog"
 	"github.com/snapcore/snapd/snapdenv"
 	"github.com/snapcore/snapd/store"
 	"github.com/snapcore/snapd/systemd"
@@ -87,6 +88,8 @@ type Daemon struct {
 	requestedRestart restart.RestartType
 	// reboot info needed to handle reboots
 	rebootInfo *boot.RebootInfo
+	// reason for a restart request, empty otherwise
+	restartReason restart.RestartReason
 	// set to remember that we need to exit the daemon in a way that
 	// prevents systemd from restarting it
 	restartSocket bool
@@ -132,8 +135,8 @@ func (c *Command) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ucred, err := ucrednetGet(r.RemoteAddr)
-	if err != nil && err != errNoID {
+	ucred, err := ucrednetGet(r.Context())
+	if err != nil && err != errNoPeerCredentials {
 		logger.Noticef("unexpected error when attempting to get UID: %s", err)
 		InternalError(err.Error()).ServeHTTP(w, r)
 		return
@@ -175,7 +178,14 @@ func (c *Command) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rspe := access.CheckAccess(c.d, r, ucred, user); rspe != nil {
+	authzRec := newAuthzRecorder(
+		seclogSnapdUserFromAuth(user),
+		ucred.seclogPeer(),
+		seclog.Endpoint{Method: r.Method, Path: r.URL.Path, Action: action},
+	)
+	rspe := access.CheckAccess(c.d, r, ucred, user, authzRec)
+	authzRec.log()
+	if rspe != nil {
 		rspe.ServeHTTP(w, r)
 		return
 	}
@@ -388,7 +398,8 @@ func logit(handler http.Handler) http.Handler {
 		t := time.Since(t0)
 		url := r.URL.String()
 		if !strings.Contains(url, "/changes/") {
-			logger.Debugf("%s %s %s %s %d", r.RemoteAddr, r.Method, r.URL, t, ww.s)
+			ucred, _ := ucrednetGet(r.Context())
+			logger.Debugf("%s %s %s %s %d", ucred.String(), r.Method, r.URL, t, ww.s)
 		}
 	})
 }
@@ -526,8 +537,9 @@ func (d *Daemon) Start(ctx context.Context) (err error) {
 
 	d.connTracker = &connTracker{conns: make(map[net.Conn]struct{})}
 	d.serve = &http.Server{
-		Handler:   logit(d.router),
-		ConnState: d.connTracker.trackConn,
+		Handler:     logit(d.router),
+		ConnState:   d.connTracker.trackConn,
+		ConnContext: ucrednetConnContext,
 	}
 
 	// enable standby handling
@@ -572,7 +584,7 @@ func (d *Daemon) Start(ctx context.Context) (err error) {
 }
 
 // HandleRestart implements overlord.RestartBehavior.
-func (d *Daemon) HandleRestart(t restart.RestartType, rebootInfo *boot.RebootInfo) {
+func (d *Daemon) HandleRestart(t restart.RestartType, rebootInfo *boot.RebootInfo, reason restart.RestartReason) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -582,6 +594,7 @@ func (d *Daemon) HandleRestart(t restart.RestartType, rebootInfo *boot.RebootInf
 		}
 	}
 	d.rebootInfo = rebootInfo
+	d.restartReason = reason
 
 	// die when asked to restart (systemd should get us back up!) etc
 	switch t {
@@ -606,6 +619,8 @@ func (d *Daemon) HandleRestart(t restart.RestartType, rebootInfo *boot.RebootInf
 		d.requestedRestart = t
 		d.restartSocket = true
 	case restart.StopDaemon:
+		// Preseed runs on the build host, not the device in the field, so no
+		// security event is emitted.
 		logger.Noticef("stopping snapd as requested")
 	default:
 		logger.Noticef("internal error: restart handler called with unknown restart type: %v", t)
@@ -657,6 +672,7 @@ func (d *Daemon) Stop(sigCh chan<- os.Signal) error {
 		return d.doReboot(sigCh, restart.RestartSystem, nil, immediateReboot, rebootRetryWaitTimeout)
 	}
 	if d.overlord == nil {
+		seclog.LogSystemRestartSnapd(d.Version, seclog.SnapdRestartStopFailed)
 		return fmt.Errorf("internal error: no Overlord")
 	}
 
@@ -680,6 +696,7 @@ func (d *Daemon) Stop(sigCh chan<- os.Signal) error {
 	}
 	restartSocket := d.restartSocket
 	rebootInfo := d.rebootInfo
+	restartReason := d.restartReason
 	d.mu.Unlock()
 
 	// before not accepting any new client connections we need to write the
@@ -746,7 +763,7 @@ func (d *Daemon) Stop(sigCh chan<- os.Signal) error {
 		// If this is the case we do a "normal" snapd restart
 		// to process the new changes.
 		if !d.standbyOpinions.CanStandby() {
-			d.restartSocket = false
+			restartSocket = false
 		}
 	}
 	d.overlord.Stop()
@@ -768,22 +785,29 @@ func (d *Daemon) Stop(sigCh chan<- os.Signal) error {
 			// which will lead to confusing results.
 			if needsFullShutdown {
 				logger.Noticef("WARNING: cannot stop daemon: %v", err)
+			} else if snapdenv.Preseeding() {
+				// Preseed stops on the build host and does not restart.
+				return err
 			} else {
+				// Wait failed: this is an aborted shutdown, not a
+				// completed controlled restart or standby.
+				seclog.LogSystemRestartSnapd(d.Version, seclog.SnapdRestartStopFailed)
 				return err
 			}
 		}
 	}
 
 	if needsFullShutdown {
-		return d.doReboot(sigCh, d.requestedRestart, rebootInfo, immediateShutdown, rebootWaitTimeout)
+		return d.doReboot(sigCh, restartType, rebootInfo, immediateShutdown, rebootWaitTimeout)
 	}
 
-	if d.restartSocket {
-		return ErrRestartSocket
-	}
-
-	if d.requestedRestart == restart.RestartDaemon {
-		logger.Noticef("restarting daemon after update")
+	if restartType == restart.RestartDaemon {
+		seclog.LogSystemRestartSnapd(d.Version, string(restartReason))
+		if restartReason == "" {
+			logger.Noticef("restarting daemon")
+		} else {
+			logger.Noticef("restarting daemon (%s)", restartReason)
+		}
 		// This has effect only if snapd was not started by snapd.service, which is the
 		// case on seeding boot in UC (see run-snapd-from-snap script in core* bases).
 		// Otherwise we are simply restarted by systemd after exiting. For the former case,
@@ -792,8 +816,24 @@ func (d *Daemon) Stop(sigCh chan<- os.Signal) error {
 		if err := wrappers.RestartSnapd(); err != nil {
 			logger.Noticef("while restarting snapd: %v", err)
 		}
+		return nil
 	}
 
+	if restartSocket {
+		seclog.LogSystemStandbySnapd(d.Version, string(restartReason))
+		if restartReason == "" {
+			logger.Noticef("entering standby")
+		} else {
+			logger.Noticef("entering standby (%s)", restartReason)
+		}
+		return ErrRestartSocket
+	}
+
+	// Idle standby was requested but pending requests prevented it.
+	if restartType == restart.RestartSocket {
+		seclog.LogSystemRestartSnapd(d.Version, seclog.SnapdRestartIdleAborted)
+		logger.Noticef("restarting daemon (%s)", seclog.SnapdRestartIdleAborted)
+	}
 	return nil
 }
 

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2025 Canonical Ltd
+# SPDX-License-Identifier: GPL-3.0-only
+
+allOf:
+  - $ref: 'AuthQualityEntropyMetrics.yaml'
+  - type: object
+title: SystemActionCheckAuthQualityResponse
+description:
+  Response body containing the quality assessment of the provided passphrase or PIN for actions
+  `check-passphrase-quality` and `check-pin-quality`.

@@ -58,7 +58,36 @@ var (
 
 	SetRepairAttemptResult = setRepairAttemptResult
 	GetRepairAttemptResult = getRepairAttemptResult
+
+	ConsumeDALockoutToken = consumeDALockoutToken
+	ReclaimDALockoutToken = reclaimDALockoutToken
 )
+
+const (
+	DALockoutMaxTokens      = daLockoutMaxTokens
+	DALockoutRefillInterval = daLockoutRefillInterval
+	DALockoutSyncInterval   = daLockoutSyncInterval
+)
+
+// GetDALockoutRateLimit returns the current DA lockout token bucket state.
+func GetDALockoutRateLimit(st *state.State) (tokens int, lastUpdate time.Time, err error) {
+	var s FdeState
+	if err := st.Get(fdeStateKey, &s); err != nil {
+		return 0, time.Time{}, err
+	}
+	return s.DALockoutRateLimit.Tokens, s.DALockoutRateLimit.LastUpdate, nil
+}
+
+// SetDALockoutRateLimit sets the DA lockout token bucket state.
+func SetDALockoutRateLimit(st *state.State, tokens int, lastUpdate time.Time, bootID string) error {
+	var s FdeState
+	if err := st.Get(fdeStateKey, &s); err != nil {
+		return err
+	}
+	s.DALockoutRateLimit = &daLockoutRateLimit{Tokens: tokens, LastUpdate: lastUpdate, BootID: bootID}
+	st.Set(fdeStateKey, &s)
+	return nil
+}
 
 type ExternalOperation = externalOperation
 
@@ -76,8 +105,8 @@ func MockBackendResealKeysForSignaturesDBUpdate(f func(updateState backend.FDESt
 	return restore
 }
 
-func MockBackendNewInMemoryRecoveryKeyCache(f func() backend.RecoveryKeyCache) (restore func()) {
-	return testutil.Mock(&backendNewInMemoryRecoveryKeyCache, f)
+func MockRandutilRandomString(f func(length int) string) (restore func()) {
+	return testutil.Mock(&randutilRandomString, f)
 }
 
 func MockKeysNewRecoveryKey(f func() (keys.RecoveryKey, error)) (restore func()) {
@@ -90,7 +119,8 @@ func MockTimeNow(f func() time.Time) (restore func()) {
 
 var NewModel = newModel
 
-func (m *FDEManager) IsFunctional() error { return m.isFunctional() }
+func (m *FDEManager) IsFunctional() error              { return m.isFunctional() }
+func (m *FDEManager) SecretState() backend.SecretState { return m.secretState }
 
 func MockBootHostUbuntuDataForMode(f func(mode string, mod gadget.Model) ([]string, error)) (restore func()) {
 	old := bootHostUbuntuDataForMode
@@ -144,33 +174,9 @@ func MockSecbootRenameContainerKey(f func(devicePath string, oldName string, new
 	return testutil.Mock(&secbootRenameContainerKey, f)
 }
 
-func MockChangeAuthOptionsInCache(st *state.State, old, new string) (restore func()) {
-	st.Lock()
-	defer st.Unlock()
-	st.Cache(changeAuthOptionsKey{}, &changeAuthOptions{old: old, new: new})
+type ExpiringChangeAuthOptions = expiringChangeAuthOptions
 
-	return func() { st.Cache(changeAuthOptionsKey{}, nil) }
-}
-
-func GetChangeAuthOptionsFromCache(st *state.State) *changeAuthOptions {
-	cached := st.Cached(changeAuthOptionsKey{})
-	if cached == nil {
-		return nil
-	}
-	return cached.(*changeAuthOptions)
-}
-
-func (o *changeAuthOptions) Old() string {
-	return o.old
-}
-
-func (o *changeAuthOptions) New() string {
-	return o.new
-}
-
-func VolumesAuthOptionsKey() volumesAuthOptionsKey {
-	return volumesAuthOptionsKey{}
-}
+type ExpiringVolumesAuthOptions = expiringVolumesAuthOptions
 
 func MockBootLoadDiskUnlockState(f func(name string) (*boot.DiskUnlockState, error)) (restore func()) {
 	return testutil.Mock(&bootLoadDiskUnlockState, f)
@@ -202,10 +208,14 @@ func MockBootloaderFind(f func(rootdir string, opts *bootloader.Options) (bootlo
 	return testutil.Mock(&bootloaderFind, f)
 }
 
+func MockSecbootPostinstallCheck(f func(ctx context.Context, bootImageFiles []bootloader.BootFile) (*secboot.PreinstallCheckContext, []secboot.PreinstallErrorDetails, error)) (restore func()) {
+	return testutil.Mock(&secbootPostinstallCheck, f)
+}
+
 func MockBootReadModeenv(f func(rootdir string) (*boot.Modeenv, error)) (restore func()) {
 	return testutil.Mock(&bootReadModeenv, f)
 }
 
-func MockSecbootPostinstallCheck(f func(ctx context.Context, bootImageFiles []bootloader.BootFile) (*secboot.PreinstallCheckContext, []secboot.PreinstallErrorDetails, error)) (restore func()) {
-	return testutil.Mock(&secbootPostinstallCheck, f)
+func MockBootGetRunBootChain(f func(*boot.Modeenv) ([]bootloader.BootFile, error)) (restore func()) {
+	return testutil.Mock(&bootGetRunBootChain, f)
 }

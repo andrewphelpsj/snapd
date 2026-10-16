@@ -374,7 +374,7 @@ version: 1.0.2
 	const instanceKey = "key"
 	body := makeFormData(c, []string{compPath}, map[string]string{
 		"snap-path": compPath,
-		"name":      snap.InstanceName("local", instanceKey),
+		"name":      snap.InstanceName("local", instanceKey).String(),
 	})
 
 	s.testSideloadComponentAsserted(c, compPath, instanceKey, body)
@@ -394,7 +394,7 @@ version: 1.0.2
 	const instanceKey = "key"
 	body := makeFormData(c, []string{compPath}, map[string]string{
 		"snap-path":      compPath,
-		"name":           snap.InstanceName("local", instanceKey),
+		"name":           snap.InstanceName("local", instanceKey).String(),
 		"component-name": "comp",
 	})
 
@@ -422,7 +422,7 @@ func (s *sideloadSuite) testSideloadComponentAsserted(c *check.C, compPath, inst
 	c.Assert(err, check.IsNil)
 	defer compFile.Close()
 
-	instanceName := snap.InstanceName("local", instanceKey)
+	instanceName := snap.InstanceName("local", instanceKey).String()
 
 	chgSummary, systemRestartImmediate := s.sideloadComponentCheck(c, st, body, headers, instanceName, flags, csi, compFile)
 	c.Check(chgSummary, check.Equals, fmt.Sprintf(`Install "comp" component for %q snap from file %q`, instanceName, compPath))
@@ -1234,6 +1234,27 @@ func (s *sideloadSuite) TestInstallPathUnaliased(c *check.C) {
 	c.Check(chgSummary, check.Equals, `Install "local" snap from file "x"`)
 }
 
+func (s *sideloadSuite) TestInstallPathAllowUnsupportedInstances(c *check.C) {
+	body := "" +
+		"----hello--\r\n" +
+		"Content-Disposition: form-data; name=\"snap\"; filename=\"x\"\r\n" +
+		"\r\n" +
+		"xyzzy\r\n" +
+		"----hello--\r\n" +
+		"Content-Disposition: form-data; name=\"devmode\"\r\n" +
+		"\r\n" +
+		"true\r\n" +
+		"----hello--\r\n" +
+		"Content-Disposition: form-data; name=\"allow-unsupported-instances\"\r\n" +
+		"\r\n" +
+		"true\r\n" +
+		"----hello--\r\n"
+	head := map[string]string{"Content-Type": "multipart/thing; boundary=--hello--"}
+	flags := snapstate.Flags{AllowUnsupportedInstances: true, RemoveSnapPath: true, DevMode: true, Transaction: client.TransactionPerSnap}
+	chgSummary, _ := s.sideloadCheck(c, body, head, "local", flags)
+	c.Check(chgSummary, check.Equals, `Install "local" snap from file "x"`)
+}
+
 func (s *sideloadSuite) TestInstallPathSystemRestartImmediate(c *check.C) {
 	body := "" +
 		"----hello--\r\n" +
@@ -1491,7 +1512,7 @@ func (s *sideloadSuite) testSideloadManySnapsAndComponents(c *check.C, opts side
 
 	restore := daemon.MockSnapstateInstallComponentPath(func(st *state.State, csi *snap.ComponentSideInfo, info *snap.Info,
 		path string, opts snapstate.Options) (*state.TaskSet, error) {
-		c.Check(csi.Component.SnapName, check.Equals, "three")
+		c.Check(csi.Component.SnapName.String(), check.Equals, "three")
 		c.Check(csi.Component.ComponentName, check.Equals, "comp-four")
 		c.Check(opts.Flags, check.DeepEquals, expectedFlags)
 		c.Check(path, testutil.FileEquals, "comp-four")
@@ -1598,7 +1619,7 @@ func (s *sideloadSuite) testSideloadManySnapsAndComponents(c *check.C, opts side
 			snapName = "three"
 		}
 		return &snap.ComponentInfo{
-			Component:   naming.NewComponentRef(snapName, components[readComponentInfoCalled]),
+			Component:   naming.NewComponentRef(naming.SnapName(snapName), components[readComponentInfoCalled]),
 			Type:        snap.TestComponent,
 			CompVersion: "1.0",
 		}, nil
@@ -1680,7 +1701,7 @@ func (s *sideloadSuite) TestSideloadManyAssertedSnapsAndComponents(c *check.C) {
 
 	restore := daemon.MockSnapstateInstallComponentPath(func(st *state.State, csi *snap.ComponentSideInfo, info *snap.Info,
 		path string, opts snapstate.Options) (*state.TaskSet, error) {
-		c.Check(csi.Component.SnapName, check.Equals, "three")
+		c.Check(csi.Component.SnapName.String(), check.Equals, "three")
 		c.Check(csi.Component.ComponentName, check.Equals, "comp-four")
 		c.Check(opts.Flags, check.DeepEquals, expectedFlags)
 
@@ -1754,7 +1775,7 @@ func (s *sideloadSuite) TestSideloadManyAssertedSnapsAndComponents(c *check.C) {
 			info, err := snap.ReadInfoFromSnapFile(container, nil)
 			c.Assert(err, check.IsNil)
 
-			c.Check(info.SnapName(), check.Equals, sn.SideInfo.RealName)
+			c.Check(info.SnapName().String(), check.Equals, sn.SideInfo.RealName)
 
 			ts := state.NewTaskSet(st.NewTask("fake-install-snap", fmt.Sprintf("Doing a fake install of %q", sn.SideInfo.RealName)))
 			tss = append(tss, ts)
@@ -1975,7 +1996,7 @@ func (s *sideloadSuite) TestSideloadManyOnlyComponents(c *check.C) {
 	components := []string{"comp-one", "comp-two", "comp-three", "comp-four"}
 	restore := daemon.MockSnapstateInstallComponentPath(func(st *state.State, csi *snap.ComponentSideInfo, info *snap.Info,
 		path string, opts snapstate.Options) (*state.TaskSet, error) {
-		c.Check(csi.Component.SnapName, check.Equals, "one")
+		c.Check(csi.Component.SnapName.String(), check.Equals, "one")
 		c.Check(components, testutil.Contains, csi.Component.ComponentName)
 		c.Check(opts.Flags, check.DeepEquals, expectedFlags)
 

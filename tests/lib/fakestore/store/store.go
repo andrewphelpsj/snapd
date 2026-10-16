@@ -308,7 +308,7 @@ func (s *Store) snapEssentialInfo(fn, snapID string, bs asserts.Backstore) (*ess
 	}
 
 	return &essentialInfo{
-		Name:        cached.info.SnapName(),
+		Name:        cached.info.SnapName().String(),
 		SnapID:      snapID,
 		DeveloperID: develID,
 		DevelName:   devel,
@@ -334,7 +334,7 @@ func addComponentBlobToRevisionSet(snaps map[string]*revisionSet, snapIDs map[st
 	}
 
 	compName := info.Component.ComponentName
-	snapName := info.Component.SnapName
+	snapName := info.Component.SnapName.String()
 
 	digest, _, err := asserts.SnapFileSHA3_384(fn)
 	if err != nil {
@@ -1389,7 +1389,7 @@ func addSnapIDs(bs asserts.Backstore, initial map[string]string) (map[string]str
 
 	hit := func(a asserts.Assertion) {
 		decl := a.(*asserts.SnapDeclaration)
-		m[decl.SnapID()] = decl.SnapName()
+		m[decl.SnapID()] = decl.SnapName().String()
 	}
 
 	err := bs.Search(asserts.SnapDeclarationType, nil, hit, asserts.SnapDeclarationType.MaxSupportedFormat())

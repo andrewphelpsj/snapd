@@ -20,6 +20,7 @@
 package snapstate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -37,6 +38,7 @@ import (
 	"github.com/snapcore/snapd/randutil"
 	"github.com/snapcore/snapd/snapdenv"
 	"github.com/snapcore/snapd/store"
+	"github.com/snapcore/snapd/strutil"
 	"github.com/snapcore/snapd/timings"
 )
 
@@ -45,7 +47,7 @@ var (
 )
 
 func init() {
-	swfeats.RegisterEnsure("SnapManager", "catalogRefresh.Ensure")
+	swfeats.RegisterEnsure("SnapManager", "catalogRefresh.EnsureAfterSeed")
 }
 
 type catalogRefresh struct {
@@ -53,14 +55,36 @@ type catalogRefresh struct {
 
 	nextCatalogRefresh           time.Time
 	catalogRefreshDelayWithDelta time.Duration
+
+	// ctx parent context for store requests
+	ctx context.Context
+	// cancel cancels ctx and any in-flight store request
+	cancel context.CancelFunc
+
+	catalogC chan struct{}
 }
 
 func newCatalogRefresh(st *state.State) *catalogRefresh {
-	return &catalogRefresh{state: st}
+	// Derive from EnsureContextTODO so IsEnsureContext() still returns true.
+	ctx, cancel := context.WithCancel(auth.EnsureContextTODO())
+	return &catalogRefresh{state: st, ctx: ctx, cancel: cancel}
 }
 
-// Ensure will ensure that the catalog refresh happens
-func (r *catalogRefresh) Ensure() error {
+func (r *catalogRefresh) ShutDown() {
+	r.cancel()
+}
+
+// Stop cancels any in-flight refresh and waits for it to finish. It must be
+// called without holding the state lock.
+func (r *catalogRefresh) Stop() {
+	r.cancel()
+	if r.catalogC != nil {
+		<-r.catalogC
+	}
+}
+
+// EnsureAfterSeed will ensure that the catalog refresh happens after seeding.
+func (r *catalogRefresh) EnsureAfterSeed(deviceCtx DeviceContext) error {
 	r.state.Lock()
 	defer r.state.Unlock()
 
@@ -78,31 +102,14 @@ func (r *catalogRefresh) Ensure() error {
 		return nil
 	}
 
-	// if system is not seeded yet, it is first boot situation
-	// do not bother refreshing catalog, snap list is empty anyway
-	// beside there is high change device has no internet
-	var seeded bool
-	err = r.state.Get("seeded", &seeded)
-	if errors.Is(err, state.ErrNoState) || !seeded {
-		logger.Debugf("CatalogRefresh:Ensure: skipping refresh, system is not seeded yet")
-		// not seeded yet
-		return nil
-	}
-
 	// similar to the not yet seeded case, on uc20 install mode it doesn't make
 	// sense to refresh the catalog for an ephemeral system
-	deviceCtx, err := DeviceCtx(r.state, nil, nil)
-	if err != nil {
-		// if we are seeded we should have a device context
-		return err
-	}
-
 	if deviceCtx.SystemMode() == "install" {
 		// skip the refresh
 		return nil
 	}
 
-	logger.Trace("ensure", "manager", "SnapManager", "func", "catalogRefresh.Ensure")
+	logger.Trace("ensure", "manager", "SnapManager", "func", "catalogRefresh.EnsureAfterSeed")
 
 	now := time.Now()
 	delay := catalogRefreshDelayBase
@@ -128,92 +135,101 @@ func (r *catalogRefresh) Ensure() error {
 	// catalog refresh does not carry on trying on error
 	r.nextCatalogRefresh = next
 
+	if r.catalogC != nil {
+		// we already have a refresh running
+		select {
+		case <-r.catalogC:
+			// channel got closed, previous refresh is done
+			r.catalogC = nil
+		default:
+			logger.Debugf("Previous catalog refresh still running; next scheduled for %s.", next)
+			return nil
+		}
+	}
+
 	logger.Debugf("Catalog refresh starting now; next scheduled for %s.", next)
 
-	err = refreshCatalogs(r.state, theStore)
-	switch err {
-	case nil:
-		logger.Debugf("Catalog refresh succeeded.")
-	case advisor.ErrNotSupported:
-		// This may happen if Bolt is disabled (e.g. Debian on RISC V).
-		logger.Debugf("Catalog refresh is not supported on this system")
-		// Do not fail silently so that tests can have the right expectations.
-	case store.ErrTooManyRequests:
-		logger.Debugf("Catalog refresh postponed.")
-		err = nil
-	case errSkipCatalogRefreshWhenTesting:
-		logger.Debugf("Catalog refresh skipped when testing is enabled")
-		err = nil
-	default:
-		logger.Debugf("Catalog refresh failed: %v.", err)
-	}
-	return err
+	r.catalogC = make(chan struct{})
+
+	go func() {
+		defer close(r.catalogC)
+		timings, err := refreshCatalogs(r.ctx, theStore)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrTooManyRequests):
+				logger.Debug("Catalog refresh postponed.")
+			case errors.Is(err, errSkipCatalogRefreshWhenTesting):
+				logger.Debug("Catalog refresh skipped when testing is enabled")
+			case errors.Is(err, context.Canceled):
+				// Canceled catalog refresh is not treated as an error.
+				logger.Debug("Catalog refresh canceled.")
+			default:
+				logger.Noticef("Catalog refresh failed: %v.", err)
+			}
+			return
+		}
+		logger.Debug("Catalog refresh succeeded.")
+		r.state.Lock()
+		defer r.state.Unlock()
+		// save the timings, since we're holding the lock anyway
+		timings.Save(r.state)
+	}()
+	return nil
 }
 
 var newCmdDB = advisor.Create
 
 var errSkipCatalogRefreshWhenTesting = errors.New("skipping when testing is enabled")
 
-func refreshCatalogs(st *state.State, theStore StoreService) error {
+func refreshCatalogs(ctx context.Context, theStore StoreService) (*timings.Timings, error) {
 	if snapdenv.Testing() && !osutil.GetenvBool("SNAPD_CATALOG_REFRESH") {
 		// with snapd testing enabled, SNAPD_CATALOG_REFRESH is gating
 		// the catalog refresh
-		return errSkipCatalogRefreshWhenTesting
+		return nil, errSkipCatalogRefreshWhenTesting
 	}
-
-	st.Unlock()
-	defer st.Lock()
 
 	perfTimings := timings.New(map[string]string{"ensure": "refresh-catalogs"})
 
 	if err := os.MkdirAll(dirs.SnapCacheDir, 0755); err != nil {
-		return fmt.Errorf("cannot create directory %q: %v", dirs.SnapCacheDir, err)
+		return nil, fmt.Errorf("cannot create directory %q: %v", dirs.SnapCacheDir, err)
 	}
 
 	var sections []string
 	var err error
 	timings.Run(perfTimings, "get-sections", "query store for sections", func(tm timings.Measurer) {
-		sections, err = theStore.Sections(auth.EnsureContextTODO(), nil)
+		sections, err = theStore.Sections(ctx, nil)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sort.Strings(sections)
 	if err := osutil.AtomicWriteFile(dirs.SnapSectionsFile, []byte(strings.Join(sections, "\n")), 0644, 0); err != nil {
-		return err
+		return nil, err
 	}
 
 	namesFile, err := osutil.NewAtomicFile(dirs.SnapNamesFile, 0644, 0, osutil.NoChown, osutil.NoChown)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer namesFile.Cancel()
 
 	cmdDB, err := newCmdDB()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// if all goes well we'll Commit() making this a NOP:
 	defer cmdDB.Rollback()
 
 	timings.Run(perfTimings, "write-catalogs", "query store for catalogs", func(tm timings.Measurer) {
-		err = theStore.WriteCatalogs(auth.EnsureContextTODO(), namesFile, cmdDB)
+		err = theStore.WriteCatalogs(ctx, namesFile, cmdDB)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	err1 := namesFile.Commit()
 	err2 := cmdDB.Commit()
 
-	if err2 != nil {
-		return err2
-	}
-
-	st.Lock()
-	perfTimings.Save(st)
-	st.Unlock()
-
-	return err1
+	return perfTimings, strutil.JoinErrors(err1, err2)
 }

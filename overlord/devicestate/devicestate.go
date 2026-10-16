@@ -259,11 +259,11 @@ func checkGadgetOrKernel(st *state.State, snapInfo, curInfo *snap.Info, _ snap.C
 		return fmt.Errorf("cannot install %s snap on classic if not requested by the model", kind)
 	}
 
-	if snapInfo.InstanceName() != snapInfo.SnapName() {
+	if snapInfo.InstanceName().String() != snapInfo.SnapName().String() {
 		return fmt.Errorf("cannot install %q, parallel installation of kernel or gadget snaps is not supported", snapInfo.InstanceName())
 	}
 
-	if snapInfo.InstanceName() != expectedName {
+	if snapInfo.InstanceName().String() != expectedName {
 		return fmt.Errorf("cannot install %s %q, model assertion requests %q", kind, snapInfo.InstanceName(), expectedName)
 	}
 
@@ -297,6 +297,7 @@ func delayedCrossMgrInit() {
 	snapstate.CanAutoRefresh = canAutoRefresh
 	snapstate.IsOnMeteredConnection = netutil.IsOnMeteredConnection
 	snapstate.DeviceCtx = DeviceCtx
+	snapstate.EarlyDeviceCtxForEnsure = EarlyDeviceCtx
 	snapstate.RemodelingChange = RemodelingChange
 	snapstate.CreateSeedRefreshTasks = SeedRefreshTasks
 	snapstate.PendingSeedRefreshTasks = PendingSeedRefreshTasks
@@ -330,8 +331,8 @@ func proxyStore(st *state.State, tr *config.Transaction) (*asserts.Store, error)
 
 // interfaceConnected returns true if the given snap/interface names
 // are connected
-func interfaceConnected(st *state.State, snapName, ifName string) bool {
-	conns, err := ifacerepo.Get(st).Connected(snapName, ifName)
+func interfaceConnected(st *state.State, instanceName naming.InstanceName, ifName string) bool {
+	conns, err := ifacerepo.Get(st).Connected(instanceName, ifName)
 	return err == nil && len(conns) > 0
 }
 
@@ -443,10 +444,10 @@ func modelSnapChannelFromDefaultOrPinnedTrack(new *asserts.Model, s *asserts.Mod
 type modelSnapsForRemodel struct {
 	new *asserts.Model
 
-	oldSnap      string
+	oldSnap      naming.SnapName
 	oldModelSnap *asserts.ModelSnap
 
-	newSnap      string
+	newSnap      naming.SnapName
 	newModelSnap *asserts.ModelSnap
 }
 
@@ -466,7 +467,7 @@ type remodeler struct {
 // remodeling to.
 type remodelSnapTarget struct {
 	// name is the name of the snap.
-	name string
+	name naming.SnapName
 	// channel is the channel that the snap should be installed from and track.
 	channel string
 	// newModelSnap is the model snap for this target. This might be nil for
@@ -524,7 +525,7 @@ func (r *remodeler) maybeInstallOrUpdate(ctx context.Context, st *state.State, r
 	}
 
 	var snapst snapstate.SnapState
-	if err := snapstate.Get(st, rt.name, &snapst); err != nil {
+	if err := snapstate.Get(st, rt.name.String(), &snapst); err != nil {
 		if !errors.Is(err, state.ErrNoState) {
 			return 0, nil, err
 		}
@@ -596,7 +597,7 @@ func (r *remodeler) maybeInstallOrUpdate(ctx context.Context, st *state.State, r
 	switch {
 	case needsRevisionChange || needsChannelChange:
 		if r.shouldSwitchWithoutRefresh(rt, needsRevisionChange) && !needsComponentChanges {
-			ts, err := snapstate.Switch(st, rt.name, &snapstate.RevisionOptions{
+			ts, err := snapstate.Switch(st, rt.name.String(), &snapstate.RevisionOptions{
 				Channel: rt.channel,
 			}, r.tracker)
 			if err != nil {
@@ -716,7 +717,7 @@ func (r *remodeler) shouldSwitchWithoutRefresh(rt remodelSnapTarget, needsRevisi
 
 	// if we have a local container for this snap, then we should use that in
 	// addition to switching the tracked channel
-	if _, ok := r.localSnaps[rt.name]; ok {
+	if _, ok := r.localSnaps[rt.name.String()]; ok {
 		return false
 	}
 
@@ -742,7 +743,7 @@ func (r *remodeler) installedRevisionUpdateGoal(
 	constraints snapasserts.SnapPresenceConstraints,
 ) (snapstate.UpdateGoal, error) {
 	var snapst snapstate.SnapState
-	if err := snapstate.Get(st, sn.name, &snapst); err != nil {
+	if err := snapstate.Get(st, sn.name.String(), &snapst); err != nil {
 		return nil, err
 	}
 
@@ -758,7 +759,7 @@ func (r *remodeler) installedRevisionUpdateGoal(
 	ss := snapst.Sequence.Revisions[index]
 	comps := make([]snapstate.PathComponent, 0, len(ss.Components))
 	for _, c := range components {
-		cref := naming.NewComponentRef(snap.InstanceSnap(sn.name), c)
+		cref := naming.NewComponentRef(sn.name, c)
 		cs := ss.FindComponent(cref)
 		if cs == nil {
 			return nil, fmt.Errorf("cannot find required component in set of already installed components: %s", cref)
@@ -790,8 +791,8 @@ func (r *remodeler) installedRevisionUpdateGoal(
 	}
 
 	return snapstatePathUpdateGoal(snapstate.PathSnap{
-		InstanceName: sn.name,
-		Path:         snap.MountFile(sn.name, constraints.Revision),
+		InstanceName: sn.name.String(),
+		Path:         snap.MountFile(naming.InstanceName(sn.name), constraints.Revision),
 		SideInfo:     &sideInfo,
 		Components:   comps,
 		RevOpts: snapstate.RevisionOptions{
@@ -804,7 +805,7 @@ func (r *remodeler) installedRevisionUpdateGoal(
 
 func (r *remodeler) updateGoal(st *state.State, sn remodelSnapTarget, components []string, constraints snapasserts.SnapPresenceConstraints) (snapstate.UpdateGoal, error) {
 	if r.offline {
-		ls, ok := r.localSnaps[sn.name]
+		ls, ok := r.localSnaps[sn.name.String()]
 		if !ok {
 			// this attempts to create a snapstate.UpdateGoal that will switch
 			// back to a previously installed snap revision that is still in the
@@ -857,7 +858,7 @@ func (r *remodeler) updateGoal(st *state.State, sn remodelSnapTarget, components
 	// and it might already contain any of the components that are already
 	// installed. the snapstate code handles this case correctly.
 	return snapstateStoreUpdateGoal(snapstate.StoreUpdate{
-		InstanceName:         sn.name,
+		InstanceName:         sn.name.String(),
 		AdditionalComponents: components,
 		InstallIfMissing:     true,
 		RevOpts: snapstate.RevisionOptions{
@@ -975,7 +976,7 @@ func remodelEssentialSnapTasks(
 		// already be handled
 		return tss, nil
 	case remodelNoAction, remodelAddComponentsAction:
-		ts, err := switchEssentialTasks(ms.newSnap, rm.fromChange)
+		ts, err := switchEssentialTasks(ms.newSnap.String(), rm.fromChange)
 		if err != nil {
 			return nil, err
 		}
@@ -1023,10 +1024,10 @@ func tasksForEssentialSnap(
 	}
 
 	ms := modelSnapsForRemodel{
-		oldSnap:      currentSnap,
+		oldSnap:      naming.SnapName(currentSnap),
 		oldModelSnap: currentModelSnap,
 		new:          new,
-		newSnap:      newSnap,
+		newSnap:      naming.SnapName(newSnap),
 		newModelSnap: newModelSnap,
 	}
 	return remodelEssentialSnapTasks(ctx, st, rm, ms)
@@ -1383,7 +1384,7 @@ func verifyModelValidationSets(st *state.State, newModel *asserts.Model, offline
 func checkForRequiredSnapsNotRequiredInModel(model *asserts.Model, vSets *snapasserts.ValidationSets) error {
 	snapsInModel := make(map[string]bool, len(model.RequiredWithEssentialSnaps()))
 	for _, sn := range model.RequiredWithEssentialSnaps() {
-		snapsInModel[sn.SnapName()] = true
+		snapsInModel[sn.SnapName().String()] = true
 	}
 
 	for _, sn := range vSets.RequiredSnaps() {
@@ -1760,7 +1761,7 @@ func SeedRefreshTasks(
 		if !ok {
 			continue
 		}
-		added[candidate.InstanceName] = true
+		added[candidate.InstanceName.String()] = true
 
 		snapsups = append(snapsups, candidate.SnapSetupTaskIDs...)
 		for _, tid := range candidate.ComponentSetupTaskIDs {
@@ -1851,14 +1852,14 @@ func UpdateSeedRefreshChange(seedTS *snapstate.SeedRefreshTasks, dctx snapstate.
 
 	// we've already calculated which candidates are allowed to go into the
 	// seed. avoid opening the seed again by using that list
-	if !strutil.ListContains(setup.Allowlist.Snaps, candidate.InstanceName) {
+	if !strutil.ListContains(setup.Allowlist.Snaps, candidate.InstanceName.String()) {
 		return false, nil
 	}
 
 	// also filter the component setup tasks ids using the allow list
 	var compsups []string
 	for comp, tid := range candidate.ComponentSetupTaskIDs {
-		if strutil.ListContains(setup.Allowlist.Components[candidate.InstanceName], comp) {
+		if strutil.ListContains(setup.Allowlist.Components[candidate.InstanceName.String()], comp) {
 			compsups = append(compsups, tid)
 		}
 	}
@@ -1877,22 +1878,20 @@ func UpdateSeedRefreshChange(seedTS *snapstate.SeedRefreshTasks, dctx snapstate.
 	return true, nil
 }
 
-// CheckSeedRefreshRemove prevents removing optional snaps that are still
-// present in the current seed while seed-refresh is enabled.
+// CheckSeedRefreshRemove prevents removing optional snaps and components that
+// are still present in the current seed while seed-refresh is enabled.
 //
 // TODO:SEEDREFRESH: remove this once we support seed-refresh seeds
 // gaining/losing snaps
-func CheckSeedRefreshRemove(st *state.State, si *snap.Info, dctx snapstate.DeviceContext) error {
+func CheckSeedRefreshRemove(st *state.State, candidate snapstate.SeedRefreshCandidate, dctx snapstate.DeviceContext) error {
 	filter, _ := seedRefreshPolicy(st, dctx)
-	_, ok, err := filter(snapstate.SeedRefreshCandidate{
-		InstanceName: si.SnapName(),
-	})
+	_, ok, err := filter(candidate)
 	if err != nil {
 		return err
 	}
 
 	if ok {
-		return errors.New("cannot remove snap present in the current seed while seed-refresh is enabled")
+		return errors.New("cannot remove snaps or components present in the current seed while seed-refresh is enabled")
 	}
 	return nil
 }
@@ -1915,12 +1914,12 @@ func seedRefreshPolicy(st *state.State, dctx snapstate.DeviceContext) (filter fu
 	components := make(map[string]string)
 
 	for _, sn := range dctx.Model().AllSnaps() {
-		snaps[sn.SnapName()] = sn
+		snaps[sn.SnapName().String()] = sn
 
 		for compName, comp := range sn.Components {
 			// use the snap component name to avoid collision caused by
 			// the same name for components that belong to different snaps
-			components[snap.SnapComponentName(sn.SnapName(), compName)] = comp.Presence
+			components[snap.SnapComponentName(sn.SnapName().String(), compName)] = comp.Presence
 		}
 	}
 
@@ -1946,7 +1945,7 @@ func seedRefreshPolicy(st *state.State, dctx snapstate.DeviceContext) (filter fu
 
 	filter = func(candidate snapstate.SeedRefreshCandidate) (snapstate.SeedRefreshCandidate, bool, error) {
 		instanceName := candidate.InstanceName
-		sn, ok := snaps[instanceName]
+		sn, ok := snaps[instanceName.String()]
 		if !ok {
 			// snaps not in the model do not trigger a seed refresh
 			return snapstate.SeedRefreshCandidate{}, false, nil
@@ -1958,7 +1957,7 @@ func seedRefreshPolicy(st *state.State, dctx snapstate.DeviceContext) (filter fu
 				return snapstate.SeedRefreshCandidate{}, false, err
 			}
 
-			if !strutil.ListContains(optionalInSeed.Snaps, instanceName) {
+			if !strutil.ListContains(optionalInSeed.Snaps, instanceName.String()) {
 				// optional snaps not in the seed do not trigger a seed refresh
 				return snapstate.SeedRefreshCandidate{}, false, nil
 			}
@@ -1966,7 +1965,7 @@ func seedRefreshPolicy(st *state.State, dctx snapstate.DeviceContext) (filter fu
 
 		candidateComponentTriggers := make(map[string]string)
 		for compName, compsupID := range candidate.ComponentSetupTaskIDs {
-			fullCompName := snap.SnapComponentName(candidate.InstanceName, compName)
+			fullCompName := snap.SnapComponentName(candidate.InstanceName.String(), compName)
 			compPresence, ok := components[fullCompName]
 			if !ok {
 				continue
@@ -1978,7 +1977,7 @@ func seedRefreshPolicy(st *state.State, dctx snapstate.DeviceContext) (filter fu
 					return snapstate.SeedRefreshCandidate{}, false, err
 				}
 
-				if !strutil.ListContains(optionalInSeed.Components[instanceName], compName) {
+				if !strutil.ListContains(optionalInSeed.Components[instanceName.String()], compName) {
 					// optional component in the seed triggers a seed refresh
 					continue
 				}
@@ -2323,7 +2322,7 @@ func RemoveRecoverySystem(st *state.State, label string) (*state.Change, error) 
 func checkForRequiredSnapsNotPresentInModel(model *asserts.Model, vSets *snapasserts.ValidationSets) error {
 	snapsInModel := make(map[string]bool, len(model.AllSnaps()))
 	for _, sn := range model.AllSnaps() {
-		snapsInModel[sn.SnapName()] = true
+		snapsInModel[sn.SnapName().String()] = true
 	}
 
 	for _, sn := range vSets.RequiredSnaps() {
@@ -2438,7 +2437,7 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 		requiredComponents := make([]string, 0, len(sn.Components))
 
 		for name, comp := range sn.Components {
-			compInstalled, currentCompRevision, err := installedComponentRevision(st, sn.Name, name)
+			compInstalled, currentCompRevision, err := installedComponentRevision(st, naming.InstanceName(sn.Name), name)
 			if err != nil {
 				return nil, err
 			}
@@ -2499,7 +2498,7 @@ func CreateRecoverySystem(st *state.State, label string, opts CreateRecoverySyst
 			tracker.Add(info)
 
 			for comp := range sn.Components {
-				cref := naming.NewComponentRef(sn.Name, comp)
+				cref := naming.NewComponentRef(naming.SnapName(sn.Name), comp)
 				rev := constraints.Component(comp).Revision
 
 				localComp, err := offlineComponentInfo(cref, rev, opts.LocalComponents)
@@ -2686,16 +2685,16 @@ func installedSnapRevision(st *state.State, name string) (bool, snap.Revision, e
 	return true, snapst.Current, nil
 }
 
-func installedComponentRevision(st *state.State, snapName, compName string) (bool, snap.Revision, error) {
+func installedComponentRevision(st *state.State, snapName naming.InstanceName, compName string) (bool, snap.Revision, error) {
 	var snapst snapstate.SnapState
-	if err := snapstate.Get(st, snapName, &snapst); err != nil {
+	if err := snapstate.Get(st, snapName.String(), &snapst); err != nil {
 		if errors.Is(err, state.ErrNoState) {
 			return false, snap.Revision{}, nil
 		}
 		return false, snap.Revision{}, err
 	}
 
-	csi := snapst.CurrentComponentSideInfo(naming.NewComponentRef(snapName, compName))
+	csi := snapst.CurrentComponentSideInfo(naming.NewComponentRef(snapName.SnapName(), compName))
 	if csi == nil {
 		return false, snap.Revision{}, nil
 	}

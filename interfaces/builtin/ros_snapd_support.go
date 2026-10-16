@@ -37,11 +37,13 @@ const rosSnapdSupportBaseDeclarationSlots = `
 
 func init() {
 	registerIface(&commonInterface{
-		name:                 "ros-snapd-support",
-		summary:              rosSnapdSupportSummary,
-		implicitOnCore:       true,
-		implicitOnClassic:    true,
-		baseDeclarationPlugs: rosSnapdSupportBaseDeclarationPlugs,
-		baseDeclarationSlots: rosSnapdSupportBaseDeclarationSlots,
+		name:                     "ros-snapd-support",
+		summary:                  rosSnapdSupportSummary,
+		implicitOnCore:           true,
+		implicitOnClassic:        true,
+		baseDeclarationPlugs:     rosSnapdSupportBaseDeclarationPlugs,
+		baseDeclarationSlots:     rosSnapdSupportBaseDeclarationSlots,
+		parallelInstancesPlugErr: errParallelInstancesSupportInterfacePlug,
+		parallelInstancesSlotErr: errParallelInstancesSystemSlot,
 	})
 }

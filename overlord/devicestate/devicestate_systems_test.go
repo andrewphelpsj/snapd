@@ -43,6 +43,7 @@ import (
 	"github.com/snapcore/snapd/gadget"
 	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/osutil"
+	"github.com/snapcore/snapd/osutil/keyboard"
 	"github.com/snapcore/snapd/overlord/assertstate"
 	"github.com/snapcore/snapd/overlord/assertstate/assertstatetest"
 	"github.com/snapcore/snapd/overlord/auth"
@@ -1393,6 +1394,13 @@ func (s *deviceMgrSystemsCreateSuite) SetUpTest(c *C) {
 	s.bootloader = s.deviceMgrSystemsBaseSuite.bootloader.WithRecoveryAwareTrustedAssets()
 	bootloader.Force(s.bootloader)
 	s.AddCleanup(func() { bootloader.Force(nil) })
+
+	s.AddCleanup(devicestate.MockKeyboardCurrentXKBConfig(func() (*keyboard.XKBConfig, error) {
+		return &keyboard.XKBConfig{}, nil
+	}))
+	s.AddCleanup(devicestate.MockKeyboardNewXKBConfigListener(func(ctx context.Context, cb func(config *keyboard.XKBConfig)) (*keyboard.XKBConfigListener, error) {
+		return nil, nil
+	}))
 }
 
 func (s *deviceMgrSystemsCreateSuite) TestDeviceManagerCreateRecoverySystemConflict(c *C) {
@@ -1559,7 +1567,7 @@ func (s *deviceMgrSystemsCreateSuite) makeSnapInState(c *C, name string, rev sna
 			continue
 		}
 
-		cref := naming.NewComponentRef(name, comp)
+		cref := naming.NewComponentRef(naming.SnapName(name), comp)
 
 		compYaml, ok := componentYamls[cref.String()]
 		c.Assert(ok, Equals, true, Commentf("component.yaml not found for %q", name))
@@ -1576,7 +1584,7 @@ func (s *deviceMgrSystemsCreateSuite) makeSnapInState(c *C, name string, rev sna
 		cpi := snap.MinimalComponentContainerPlaceInfo(
 			comp,
 			compRev,
-			name,
+			naming.InstanceName(name),
 		)
 		err := os.Rename(compPath, cpi.MountFile())
 		c.Assert(err, IsNil)
@@ -1603,7 +1611,7 @@ func (s *deviceMgrSystemsCreateSuite) makeSnapInState(c *C, name string, rev sna
 		c.Assert(err, IsNil)
 	}
 
-	snapstate.Set(s.state, info.InstanceName(), &snapstate.SnapState{
+	snapstate.Set(s.state, info.InstanceName().String(), &snapstate.SnapState{
 		SnapType: string(info.Type()),
 		Active:   true,
 		Sequence: seq,
@@ -2852,7 +2860,7 @@ func (s *deviceMgrSystemsCreateSuite) TestSeedRefreshTasksFinalizeUndoDoesNotRes
 	dctx := &snapstatetest.TrivialDeviceContext{DeviceModel: s.model}
 	seedTS, added, err := devicestate.SeedRefreshTasks(s.state, dctx, []snapstate.SeedRefreshCandidate{
 		{
-			InstanceName: s.model.Kernel(),
+			InstanceName: naming.InstanceName(s.model.Kernel()),
 		},
 	}, snapstate.SeedRefreshEvictionPolicy{SeedsToRetain: 1})
 	c.Assert(err, IsNil)
@@ -4969,7 +4977,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 		res := make(map[string]snap.ComponentType)
 		for _, comps := range snapComponents {
 			for _, comp := range comps {
-				res[comp] = componentTypes[naming.NewComponentRef(snapName, comp).String()]
+				res[comp] = componentTypes[naming.NewComponentRef(naming.SnapName(snapName), comp).String()]
 			}
 		}
 		return res
@@ -5057,7 +5065,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 						snapsup.SideInfo.RealName,
 						snapsup.Type,
 					),
-					compsToTypes(snapsup.InstanceName()),
+					compsToTypes(snapsup.InstanceName().String()),
 				),
 				nil,
 			)
@@ -5075,7 +5083,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 						snapsup.Base,
 						snapsup.Type,
 					),
-					compsToTypes(snapsup.InstanceName()),
+					compsToTypes(snapsup.InstanceName().String()),
 				),
 				files,
 			)
@@ -5096,7 +5104,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 
 		s.setupSnapResourceRevision(
 			c,
-			compsup.BlobPath(snapsup.InstanceName()),
+			compsup.BlobPath(snapsup.InstanceName().String()),
 			compsup.ComponentName(),
 			snapsup.SideInfo.SnapID,
 			"canonical",
@@ -5132,7 +5140,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 			compsup.CompType,
 		))
 
-		err = os.Rename(path, compsup.BlobPath(snapsup.InstanceName()))
+		err = os.Rename(path, compsup.BlobPath(snapsup.InstanceName().String()))
 		c.Assert(err, IsNil)
 
 		return nil
@@ -5172,7 +5180,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 
 		var compsupTaskIDs []string
 		for _, comp := range components {
-			cref := naming.NewComponentRef(name, comp)
+			cref := naming.NewComponentRef(naming.SnapName(name), comp)
 
 			download := s.state.NewTask("mock-download-component", fmt.Sprintf("Download component %q", cref))
 			download.Set("component-setup", &snapstate.ComponentSetup{
@@ -5232,7 +5240,7 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 
 		var compsupTaskIDs []string
 		for _, comp := range components {
-			cref := naming.NewComponentRef(name, comp)
+			cref := naming.NewComponentRef(naming.SnapName(name), comp)
 
 			download := s.state.NewTask("mock-download-component", fmt.Sprintf("Download component %q", cref))
 			download.Set("component-setup", &snapstate.ComponentSetup{
@@ -6271,14 +6279,14 @@ func (s *deviceMgrSystemsCreateSuite) testDeviceManagerCreateRecoverySystemValid
 	localComponents := make([]snapstate.PathComponent, 0, len(opts.componentsToProvide))
 	for _, cref := range opts.componentsToProvide {
 		compRev := componentRevisions[cref]
-		compType := snapComponents[cref.SnapName][cref.ComponentName]
+		compType := snapComponents[cref.SnapName.String()][cref.ComponentName]
 
 		yaml := fmt.Sprintf("component: %s\nversion: 1.0\ntype: %s\n", cref, compType)
 		compPath := snaptest.MakeTestComponent(c, yaml)
 
-		snapID := fakeSnapID(cref.SnapName)
+		snapID := fakeSnapID(cref.SnapName.String())
 		s.setupSnapResourceRevision(c, compPath, cref.ComponentName, snapID, "canonical", compRev)
-		s.setupSnapResourcePair(c, cref.ComponentName, snapID, "canonical", compRev, snapRevisions[cref.SnapName])
+		s.setupSnapResourcePair(c, cref.ComponentName, snapID, "canonical", compRev, snapRevisions[cref.SnapName.String()])
 
 		localComponents = append(localComponents, snapstate.PathComponent{
 			SideInfo: snap.NewComponentSideInfo(cref, compRev),

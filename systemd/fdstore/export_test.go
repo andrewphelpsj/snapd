@@ -30,12 +30,8 @@ func MockOsGetpid(f func() int) (restore func()) {
 	return testutil.Mock(&osGetpid, f)
 }
 
-func MockUnixCloseOnExec(f func(fd int)) (restore func()) {
-	return testutil.Mock(&unixCloseOnExec, f)
-}
-
-func MockUnixDup(f func(oldfd int) (fd int, err error)) (restore func()) {
-	return testutil.Mock(&unixDup, f)
+func MockFcntl(f func(fd uintptr, cmd, arg int) (int, error)) (restore func()) {
+	return testutil.Mock(&fcntl, f)
 }
 
 func MockSdNotify(f func(notifyState string) error) (restore func()) {
@@ -46,12 +42,20 @@ func MockSdNotifyWithFds(f func(notifyState string, files ...*os.File) error) (r
 	return testutil.Mock(&sdNotifyWithFds, f)
 }
 
+func MockSdNotifySocket(f func() (string, error)) (restore func()) {
+	return testutil.Mock(&sdNotifySocket, f)
+}
+
 func MockNetFileListener(f func(f *os.File) (ln net.Listener, err error)) (restore func()) {
 	return testutil.Mock(&netFileListener, f)
 }
 
 func MockOsFileClose(f func(*os.File) error) (restore func()) {
 	return testutil.Mock(&osFileClose, f)
+}
+
+func MockSelinuxIsEnabled(f func() (bool, error)) (restore func()) {
+	return testutil.Mock(&selinuxIsEnabled, f)
 }
 
 func KnownFdNames() map[FdName]bool {

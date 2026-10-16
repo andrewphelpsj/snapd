@@ -2,6 +2,7 @@
 
 show_help() {
     echo "usage: prepare"
+    echo "       prepare-kernel"
     echo "       restore"
     echo "       build-image IMAGE-TYPE"
     echo "       create-vm IMAGE-TYPE [--param-cdrom PARAM] [--param-cpus PARAM] [--param-mem PARAM]"
@@ -19,12 +20,14 @@ show_help() {
     echo "       snap-rev <snap-name> [channel]"
     echo "       build-seed <seed-dir> <seed-name> <label>"
     echo "       nested-system"
+    echo "       enable-wip-features <FEATURE>..."
     echo ""
     echo "Available options:"
     echo "  -h --help   show this help message."
     echo ""
     echo "COMMANDS:"
     echo "  prepare:                    creates all the directories needed to run a nested test"
+    echo "  prepare-kernel:             downloads and repacks the kernel snap for a nested test"
     echo "  restore:                    removes all the directories and data used by nested tests"
     echo "  build-image:                creates an image using ubuntu image tool"
     echo "  create-vm:                  creates new virtual machine and leave it running"
@@ -45,6 +48,7 @@ show_help() {
     echo "  prepare-essential-snaps     download and repack essential snaps (gadget, kernel, snapd) to include current snapd, and debug command lines"
     echo "  configure-default-user      add either cloudinit user or a system-user assertion that will be auto-imported"
     echo "  nested-system               retrieves the nested system used for spread nested tests"
+    echo "  enable-wip-features         enables work-in-progress features of snapd in the vm and restarts snapd"
     echo ""
     echo "IMAGE-TYPES:"
     echo "  core:    work with a core image"
@@ -83,6 +87,10 @@ show_help() {
 
 prepare() {
     nested_prepare_env
+}
+
+prepare_kernel() {
+    nested_prepare_kernel
 }
 
 restore() {
@@ -440,6 +448,14 @@ prepare_essential_snaps() {
 
 configure_default_user() {
     nested_configure_default_user
+}
+
+enable_wip_features() {
+    if [ $# -eq 0 ]; then
+        show_help
+        exit 1
+    fi
+    nested_enable_wip_features "$@"
 }
 
 nested_system() {

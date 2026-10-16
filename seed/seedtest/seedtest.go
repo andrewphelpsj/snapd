@@ -134,12 +134,12 @@ func (ss *SeedSnaps) makeAssertedSnap(
 
 	snapFile := snaptest.MakeTestSnapWithFiles(c, snapYaml, files)
 
-	snapID := ss.AssertedSnapID(snapName)
+	snapID := ss.AssertedSnapID(snapName.String())
 	headers := map[string]any{
 		"series":       "16",
 		"snap-id":      snapID,
 		"publisher-id": developerID,
-		"snap-name":    snapName,
+		"snap-name":    snapName.String(),
 		"timestamp":    ss.snapAssertionNow().UTC().Format(time.RFC3339),
 	}
 	if revisionAuthority != nil {
@@ -207,12 +207,12 @@ func (ss *SeedSnaps) makeAssertedSnap(
 		ss.resPairs = make(map[string][]*asserts.SnapResourcePair)
 	}
 
-	ss.snaps[snapName] = snapFile
-	info.SideInfo.RealName = snapName
-	ss.infos[snapName] = info
+	ss.snaps[snapName.String()] = snapFile
+	info.SideInfo.RealName = snapName.String()
+	ss.infos[snapName.String()] = info
 	snapDecl := declA.(*asserts.SnapDeclaration)
 	snapRev := revA.(*asserts.SnapRevision)
-	ss.snapRevs[snapName] = snapRev
+	ss.snapRevs[snapName.String()] = snapRev
 
 	if len(compRevisions) == 0 {
 		compRevisions = make(map[string]snap.Revision, len(info.Components))
@@ -304,10 +304,10 @@ func (ss *SeedSnaps) makeAssertedSnap(
 		cinfo.ComponentSideInfo = *snap.NewComponentSideInfo(cref, compRev)
 		cinfos = append(cinfos, cinfo)
 	}
-	ss.compInfos[snapName] = cinfos
-	ss.comps[snapName] = resResults
-	ss.resRevs[snapName] = resRevs
-	ss.resPairs[snapName] = resPairs
+	ss.compInfos[snapName.String()] = cinfos
+	ss.comps[snapName.String()] = resResults
+	ss.resRevs[snapName.String()] = resRevs
+	ss.resPairs[snapName.String()] = resPairs
 
 	return snapDecl, snapRev
 }
@@ -370,7 +370,7 @@ func (s *TestingSeed16) AssertsDir() string {
 func (s *TestingSeed16) MakeAssertedSnap(c *C, snapYaml string, files [][]string, revision snap.Revision, developerID string) (snapFname string, snapDecl *asserts.SnapDeclaration, snapRev *asserts.SnapRevision) {
 	decl, rev := s.SeedSnaps.MakeAssertedSnap(c, snapYaml, files, revision, developerID)
 
-	snapFile := s.snaps[decl.SnapName()]
+	snapFile := s.snaps[decl.SnapName().String()]
 
 	snapFname = filepath.Base(snapFile)
 	targetFile := filepath.Join(s.SnapsDir(), snapFname)
@@ -523,7 +523,7 @@ func (s *TestingSeed20) MakeSeedWithModel(c *C, label string, model *asserts.Mod
 		c.Assert(err, IsNil)
 
 		// Add components from option paths
-		compPaths := compPathsBySnap[info.SnapName()]
+		compPaths := compPathsBySnap[info.SnapName().String()]
 		seedComps := make(map[string]*seedwriter.SeedComponent, len(compPaths))
 		for _, compPath := range compPaths {
 			compf, err := snapfile.Open(compPath)
@@ -562,7 +562,7 @@ func (s *TestingSeed20) MakeSeedWithModel(c *C, label string, model *asserts.Mod
 			return aRefs, nil
 		}
 		prev := len(sf.Refs())
-		if err = sf.Save(s.snapRevs[sn.SnapName()]); err != nil {
+		if err = sf.Save(s.snapRevs[sn.SnapName().String()]); err != nil {
 			return nil, err
 		}
 
@@ -572,7 +572,7 @@ func (s *TestingSeed20) MakeSeedWithModel(c *C, label string, model *asserts.Mod
 		}
 
 		// Components assertions
-		for _, resRev := range s.resRevs[sn.SnapName()] {
+		for _, resRev := range s.resRevs[sn.SnapName().String()] {
 			if _, ok := seededResources[resRev.ResourceName()]; !ok {
 				continue
 			}
@@ -581,7 +581,7 @@ func (s *TestingSeed20) MakeSeedWithModel(c *C, label string, model *asserts.Mod
 				return nil, err
 			}
 		}
-		for _, resPair := range s.resPairs[sn.SnapName()] {
+		for _, resPair := range s.resPairs[sn.SnapName().String()] {
 			if _, ok := seededResources[resPair.ResourceName()]; !ok {
 				continue
 			}
@@ -599,7 +599,7 @@ func (s *TestingSeed20) MakeSeedWithModel(c *C, label string, model *asserts.Mod
 		c.Assert(err, IsNil)
 
 		for _, sn := range snaps {
-			name := sn.SnapName()
+			name := sn.SnapName().String()
 
 			info := s.AssertedSnapInfo(name)
 			c.Assert(info, NotNil, Commentf("no snap info for %q", name))

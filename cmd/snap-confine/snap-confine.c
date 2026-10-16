@@ -856,8 +856,7 @@ static void enter_non_classic_execution_environment(sc_invocation *inv, struct s
      *
      * For compatibility with current installations of ubuntu-core
      * distributions the legacy mode is used when: the distribution is
-     * SC_DISTRO_CORE16 or when the base snap name is not "core" or
-     * "ubuntu-core".
+     * SC_DISTRO_CORE16 and the base snap name is "core".
      *
      * The SC_DISTRO_CORE16 is applied to systems that boot with the "core",
      * "ubuntu-core" or "core16" snap. Systems using the "core18" base snap do
@@ -877,7 +876,7 @@ static void enter_non_classic_execution_environment(sc_invocation *inv, struct s
        To capture it we will need a helper process so make one. */
     sc_fork_helper(group, aa);
     sc_debug_capabilities("caps on join");
-    int retval = sc_join_preserved_ns(group, aa, inv, snap_discard_ns_fd);
+    int retval = sc_join_preserved_ns(group, aa, inv, distro, snap_discard_ns_fd);
     if (retval == ESRCH) {
         /* Create and populate the mount namespace. This performs all
            of the bootstrapping mounts, pivots into the new root filesystem and
@@ -900,8 +899,15 @@ static void enter_non_classic_execution_environment(sc_invocation *inv, struct s
            fixed, always-lowest id instead of a batched one. Both commits are
            on git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git. */
         sc_ensure_mount_ns_id_ordered(group);
-        sc_populate_mount_ns(aa, snap_update_ns_fd, inv, real_gid, saved_gid);
-        sc_store_ns_info(inv);
+        char *managed_ca_generation SC_CLEANUP(sc_cleanup_string) = NULL;
+        sc_populate_mount_ns(&(struct sc_populate_mount_ns_options){.apparmor = aa,
+                                                                    .snap_update_ns_fd = snap_update_ns_fd,
+                                                                    .inv = inv,
+                                                                    .distro = distro,
+                                                                    .real_gid = real_gid,
+                                                                    .saved_gid = saved_gid},
+                             &managed_ca_generation);
+        sc_store_ns_info(inv, managed_ca_generation);
 
         /* Preserve the mount namespace. */
         sc_preserve_populated_mount_ns(group);

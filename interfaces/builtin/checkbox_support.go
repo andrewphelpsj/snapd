@@ -83,12 +83,14 @@ dbus (receive)
 
 func init() {
 	registerIface(&commonInterface{
-		name:                  "checkbox-support",
-		summary:               checkboxSupportSummary,
-		implicitOnCore:        true,
-		implicitOnClassic:     true,
-		connectedPlugAppArmor: checkboxSupportConnectedPlugAppArmor,
-		baseDeclarationSlots:  checkboxSupportBaseDeclarationSlots,
-		baseDeclarationPlugs:  checkboxSupportBaseDeclarationPlugs,
+		name:                     "checkbox-support",
+		summary:                  checkboxSupportSummary,
+		implicitOnCore:           true,
+		implicitOnClassic:        true,
+		connectedPlugAppArmor:    checkboxSupportConnectedPlugAppArmor,
+		baseDeclarationSlots:     checkboxSupportBaseDeclarationSlots,
+		baseDeclarationPlugs:     checkboxSupportBaseDeclarationPlugs,
+		parallelInstancesPlugErr: errParallelInstancesSupportInterfacePlug,
+		parallelInstancesSlotErr: errParallelInstancesSystemSlot,
 	})
 }

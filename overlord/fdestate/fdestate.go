@@ -43,6 +43,7 @@ var (
 	secbootGetPrimaryKeyDigest    = secboot.GetPrimaryKeyDigest
 	secbootVerifyPrimaryKeyDigest = secboot.VerifyPrimaryKeyDigest
 	secbootGetPCRHandle           = secboot.GetPCRHandle
+	secbootGetDALockoutInfo       = secboot.GetDALockoutInfo
 )
 
 // Model is a json serializable secboot.ModelForSealing
@@ -175,6 +176,147 @@ type FdeState struct {
 	// PendingExternalOperations keeps a list of changes that capture FDE
 	// related operations running outside of snapd.
 	PendingExternalOperations []externalOperation `json:"pending-external-operations"`
+
+	// DALockoutRateLimit is a token bucket that rate-limits operations
+	// which trial a credential against the sealed key (e.g. change-auth).
+	// Each token represents one permitted credential trial; a token is
+	// consumed before an attempt and reclaimed on success, so only failed
+	// attempts deplete the bucket. It mirrors the TPM Dictionary Attack (DA)
+	// lockout parameters so that snapd never lets enough failed attempts
+	// through to trip actual hardware DA lockout. A zero-value bucket is
+	// treated as full.
+	DALockoutRateLimit *daLockoutRateLimit `json:"da-lockout-rate-limit"`
+}
+
+const (
+	// daLockoutMaxTokens is the maximum number of tries snapd allows before
+	// throttling. It is kept below the TPM's maximum number of tries (32)
+	// (see secboot tpm2/provisioning.go).
+	daLockoutMaxTokens = 16
+	// daLockoutRefillInterval is the TPM DA lockout recoveryTime (7200s), i.e.
+	// the interval at which the TPM lockout counter is decremented by 1 (see
+	// secboot tpm2/provisioning.go). It is only used to approximate the
+	// retry-after hint returned when throttled.
+	daLockoutRefillInterval = 2 * time.Hour
+	// daLockoutSyncInterval is the interval at which the DA lockout rate limiter is
+	// synchronized with the actual TPM DA lockout counter. This avoids an unprivileged
+	// user from spamming snapd by doing expensive syncs with the TPM.
+	daLockoutSyncInterval = 5 * time.Minute
+)
+
+// daLockoutRateLimit is a token bucket mirroring the TPM DA lockout counter.
+type daLockoutRateLimit struct {
+	Tokens     int       `json:"tokens"`
+	LastUpdate time.Time `json:"last-update"`
+
+	BootID    string `json:"last-boot-id"`
+	InLockout bool   `json:"in-lockout"`
+}
+
+func (rl *daLockoutRateLimit) syncNeeded(currentBootID string) bool {
+	syncInterval := daLockoutSyncInterval
+	if rl.InLockout {
+		// If we are currently in lockout, we increase the sync interval to reduce
+		// the frequency of expensive TPM syncs.
+		syncInterval = daLockoutSyncInterval * 3
+	}
+	if elapsed := timeNow().Sub(rl.LastUpdate); elapsed >= syncInterval {
+		return true
+	}
+
+	return rl.BootID != currentBootID
+}
+
+func initDALockoutRateLimit(currentBootID string) (*daLockoutRateLimit, error) {
+	daLockoutInfo, err := secbootGetDALockoutInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	tokens := daLockoutMaxTokens - int(daLockoutInfo.LockoutCounter)
+	if tokens < 0 || daLockoutInfo.InLockout {
+		tokens = 0
+	}
+
+	return &daLockoutRateLimit{
+		Tokens:     tokens,
+		LastUpdate: timeNow(),
+		BootID:     currentBootID,
+		InLockout:  daLockoutInfo.InLockout,
+	}, nil
+}
+
+// consumeDALockoutToken lazily synchronizes the DA lockout token bucket with
+// the TPM DA lockout counter and then consumes a single token. It must be
+// called with the state lock held.
+//
+// If the bucket is empty a *DALockoutThrottledError is returned and no token
+// is consumed.
+func consumeDALockoutToken(st *state.State) error {
+	var s FdeState
+	if err := st.Get(fdeStateKey, &s); err != nil {
+		return err
+	}
+
+	currentBootID, err := osutilBootID()
+	if err != nil {
+		return fmt.Errorf("cannot obtain current boot ID: %w", err)
+	}
+
+	bucket := s.DALockoutRateLimit
+	if bucket == nil || bucket.syncNeeded(currentBootID) {
+		bucket, err = initDALockoutRateLimit(currentBootID)
+		if err != nil {
+			return err
+		}
+
+		s.DALockoutRateLimit = bucket
+		st.Set(fdeStateKey, &s)
+	}
+
+	if bucket.Tokens < 1 {
+		// this is not exact retry-after time as it might be less, but a good approximation.
+		return &DALockoutThrottledError{RetryAfter: bucket.LastUpdate.Add(daLockoutRefillInterval)}
+	}
+
+	bucket.Tokens--
+	bucket.LastUpdate = timeNow()
+	s.DALockoutRateLimit = bucket
+	st.Set(fdeStateKey, &s)
+
+	return nil
+}
+
+// reclaimDALockoutToken is called when a credential trial was successful
+// and the consumed token should be returned to the bucket. It must be
+// called with the state lock held.
+func reclaimDALockoutToken(st *state.State) error {
+	var s FdeState
+	if err := st.Get(fdeStateKey, &s); err != nil {
+		return err
+	}
+
+	bucket := s.DALockoutRateLimit
+	if bucket == nil {
+		// not initialized yet, do nothing
+		return nil
+	}
+
+	bucket.Tokens++
+	s.DALockoutRateLimit = bucket
+	st.Set(fdeStateKey, &s)
+
+	return nil
+}
+
+func MockSecbootGetDALockoutInfo(f func() (*secboot.DALockoutInfo, error)) (restore func()) {
+	osutil.MustBeTestBinary("mocking GetDALockoutInfo can be done only from tests")
+
+	old := secbootGetDALockoutInfo
+	secbootGetDALockoutInfo = f
+	return func() {
+		secbootGetDALockoutInfo = old
+	}
 }
 
 const fdeStateKey = "fde"
@@ -539,14 +681,12 @@ func (k KeyslotRef) Validate(keyslotType KeyslotType) error {
 }
 
 func checkRecoveryKeyIDExists(fdemgr *FDEManager, recoveryKeyID string) error {
-	rkeyInfo, err := fdemgr.recoveryKeyCache.Key(recoveryKeyID)
+	var rkeyInfo RecoveryKeyInfo
+	err := fdemgr.secretState.Get(recoveryKeyID, &rkeyInfo)
 	if err != nil {
-		if errors.Is(err, backend.ErrNoRecoveryKey) {
-			// This might mean that the recovery key id is not valid or snapd
-			// restarted and the associated recovery key was lost from the cache.
-			//
-			// TODO:FDEM: Mitigate snapd restart case by introducing an alternative secret
-			// backend that survives restarts.
+		if errors.Is(err, backend.ErrNoSecret) {
+			// This might mean that the recovery key id is not valid or system
+			// rebooted and the associated recovery key was lost from the cache.
 			return &InvalidRecoveryKeyError{Reason: InvalidRecoveryKeyReasonNotFound}
 		}
 		return err
@@ -765,11 +905,12 @@ func ReplaceRecoveryKey(st *state.State, recoveryKeyID string, keyslotRefs []Key
 	return ts, nil
 }
 
-type changeAuthOptions struct {
-	old, new string
-}
+type expiringChangeAuthOptions struct {
+	expiringSecretMixin
 
-type changeAuthOptionsKey struct{}
+	Old string `json:"old"`
+	New string `json:"new"`
+}
 
 // ChangeAuth creates a taskset that changes the PIN or
 // passphrase for the specified target key slots.
@@ -841,11 +982,27 @@ func ChangeAuth(st *state.State, authMode device.AuthMode, old, new string, keys
 		}
 	}
 
-	// Auth data must be in memory to avoid leaking credentials.
-	if st.Cached(changeAuthOptionsKey{}) != nil {
-		logger.Noticef("WARNING: authentication change options already exists in memory")
+	// Consume a rate-limit token as the final gate before the credentials are
+	// trialed against the sealed key. This mirrors the TPM DA lockout counter
+	// and ensures snapd never lets enough attempts through to trip actual
+	// hardware DA lockout. This is intentionally response-agnostic: every
+	// attempt consumes a token regardless of the eventual trial result, the
+	// fde-change-auth task handler is responsible for reclaiming the consumed
+	// token on success.
+	if err := consumeDALockoutToken(st); err != nil {
+		return nil, err
 	}
-	st.Cache(changeAuthOptionsKey{}, &changeAuthOptions{old: old, new: new})
+
+	// Auth data must be in memory to avoid leaking credentials.
+	changeAuthID, err := mgr.newChangeAuthID()
+	if err != nil {
+		return nil, err
+	}
+	opts := &expiringChangeAuthOptions{Old: old, New: new}
+	opts.Expiration = timeNow().Add(secretExpireAfter)
+	if err := mgr.secretState.Set(changeAuthID, opts); err != nil {
+		return nil, fmt.Errorf("cannot store authentication options: %v", err)
+	}
 
 	ts := state.NewTaskSet()
 
@@ -859,6 +1016,7 @@ func ChangeAuth(st *state.State, authMode device.AuthMode, old, new string, keys
 	changeAuth := st.NewTask("fde-change-auth", summary)
 	changeAuth.Set("keyslots", keyslotRefs)
 	changeAuth.Set("auth-mode", authMode)
+	changeAuth.Set("change-auth-id", changeAuthID)
 	ts.AddTask(changeAuth)
 
 	return ts, nil
@@ -875,7 +1033,11 @@ func SystemEncryptedFromState(st *state.State) (bool, error) {
 	return encrypted, nil
 }
 
-type volumesAuthOptionsKey struct{}
+type expiringVolumesAuthOptions struct {
+	expiringSecretMixin
+
+	device.VolumesAuthOptions
+}
 
 // ReplacePlatformKey creates a taskset that replaces the
 // platform protected key for the specified target key slots.
@@ -970,20 +1132,25 @@ func ReplacePlatformKey(st *state.State, volumesAuth *device.VolumesAuthOptions,
 		tmpKeyslotRoles[tmpKeyslotRef.String()] = kd.Roles()
 	}
 
-	if volumesAuth != nil {
-		// Auth data must be in memory to avoid leaking credentials.
-		if st.Cached(volumesAuthOptionsKey{}) != nil {
-			logger.Noticef("WARNING: authentication options already exists in memory")
-		}
-		st.Cache(volumesAuthOptionsKey{}, volumesAuth)
-	}
-
 	ts := state.NewTaskSet()
 
 	addTemporaryKeys := st.NewTask("fde-add-platform-keys", fmt.Sprintf("Add temporary %s key slots", keyType))
 	addTemporaryKeys.Set("keyslots", tmpKeyslotRefs)
 	addTemporaryKeys.Set("auth-mode", authMode)
 	addTemporaryKeys.Set("roles", tmpKeyslotRoles)
+	if volumesAuth != nil {
+		// Auth data must be in memory to avoid leaking credentials.
+		volumesAuthID, err := mgr.newVolumesAuthID()
+		if err != nil {
+			return nil, err
+		}
+		opts := &expiringVolumesAuthOptions{VolumesAuthOptions: *volumesAuth}
+		opts.Expiration = timeNow().Add(secretExpireAfter)
+		if err := mgr.secretState.Set(volumesAuthID, opts); err != nil {
+			return nil, fmt.Errorf("cannot store authentication options: %v", err)
+		}
+		addTemporaryKeys.Set("volumes-auth-id", volumesAuthID)
+	}
 	// Force remove all tmp keyslots during cleanup in case of erroring
 	// after a re-run (e.g. after system or snapd restart) where we might
 	// have lost the credentials (e.g. passphrase) stored in-memory after

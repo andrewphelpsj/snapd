@@ -88,11 +88,11 @@ func (s *installSuite) SetUpTest(c *C) {
 	info1 := snaptest.MockSnapCurrent(c, string(snapWithCompsYaml), &snap.SideInfo{
 		Revision: snap.R(1),
 	})
-	snapstate.Set(s.st, info1.InstanceName(), &snapstate.SnapState{
+	snapstate.Set(s.st, info1.InstanceName().String(), &snapstate.SnapState{
 		Active: true,
 		Sequence: snapstatetest.NewSequenceFromSnapSideInfos([]*snap.SideInfo{
 			{
-				RealName: info1.SnapName(),
+				RealName: info1.SnapName().String(),
 				Revision: info1.Revision,
 				SnapID:   "test-snap-id",
 			},
@@ -126,7 +126,7 @@ func (s *installSuite) testMngmtCommand(c *C, cmd string) {
 			return []*state.TaskSet{&ts}, nil
 		})
 	case "remove":
-		ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, snapName string, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
+		ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, instanceName naming.InstanceName, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
 			c.Check(compNames, DeepEquals, []string{"comp1", "comp2"})
 			c.Check(opts, DeepEquals,
 				snapstate.RemoveComponentsOpts{RefreshProfile: true,
@@ -223,7 +223,7 @@ func (s *installSuite) testEphemeralMngmtCommand(c *C, cmd string) {
 			return []*state.TaskSet{&ts}, nil
 		})
 	case "remove":
-		ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, snapName string, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
+		ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, instanceName naming.InstanceName, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
 			c.Check(compNames, DeepEquals,
 				[]string{"comp1", "comp2", "comp3", "comp4", "comp5", "comp6"})
 			c.Check(opts, DeepEquals,
@@ -316,7 +316,7 @@ func (s *installSuite) TestNoWaitNonEphemeralReturnsError(c *C) {
 			})
 			defer restore()
 		case "remove":
-			restore := ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, snapName string, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
+			restore := ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, instanceName naming.InstanceName, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
 				return []*state.TaskSet{state.NewTaskSet(task)}, nil
 			})
 			defer restore()
@@ -343,7 +343,7 @@ func (s *installSuite) TestNoWaitInstallAndRemoveCommands(c *C) {
 			})
 			defer restore()
 		case "remove":
-			restore := ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, snapName string, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
+			restore := ctlcmd.MockSnapstateRemoveComponentsFunc(func(st *state.State, instanceName naming.InstanceName, compNames []string, opts snapstate.RemoveComponentsOpts) ([]*state.TaskSet, error) {
 				c.Check(compNames, DeepEquals, []string{"comp1"})
 				c.Check(opts, DeepEquals, snapstate.RemoveComponentsOpts{RefreshProfile: true})
 				return []*state.TaskSet{state.NewTaskSet(task)}, nil

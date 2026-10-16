@@ -31,6 +31,7 @@ import (
 	"github.com/snapcore/snapd/dirs"
 	"github.com/snapcore/snapd/gadget/device"
 	"github.com/snapcore/snapd/logger"
+	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/overlord/fdestate"
 	fdeBackend "github.com/snapcore/snapd/overlord/fdestate/backend"
 	"github.com/snapcore/snapd/overlord/snapstate"
@@ -160,7 +161,7 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		for _, disk := range []string{dataDisk.DevPath(), saveDisk.DevPath()} {
 			platformKeyslots, err := secbootListContainerUnlockKeyNames(disk)
 			if err != nil {
-				logger.Debugf("cannot list keyslots on %s, ignoring disk.", disk)
+				logger.Debugf("cannot list keyslots on %s, ignoring disk: %v", disk, err)
 				continue
 			}
 			hasPlatformKeyslot := map[string]bool{}
@@ -182,10 +183,10 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 				if hasPlatformKeyslot[rename.old] && hasPlatformKeyslot[rename.new] {
 					nv, err := secbootGetPCRHandleFromToken(disk, rename.new)
 					if err != nil {
-						logger.Debugf("cannot read nv index for %s on %s", rename.new, disk)
+						logger.Debugf("cannot read nv index for %s on %s: %v", rename.new, disk, err)
 					} else if (nv != 0) && !removedNvIndices[nv] {
 						if err := secbootReleasePCRResourceHandle(nv); err != nil {
-							logger.Debugf("cannot release nv index for %s on %s", rename.new, disk)
+							logger.Debugf("cannot release nv index for %s on %s: %v", rename.new, disk, err)
 						} else {
 							removedNvIndices[nv] = true
 						}
@@ -203,26 +204,41 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 					continue
 				}
 				if err := secbootDeleteContainerKey(disk, rename.new); err != nil {
-					logger.Debugf("cannot remove %s on %s", rename.new, disk)
+					logger.Debugf("cannot remove %s on %s: %v", rename.new, disk, err)
 				}
 				if err := secbootRenameContainerKey(disk, rename.old, rename.new); err != nil {
-					logger.Debugf("cannot rename %s to %s on %s", rename.old, rename.new, disk)
+					logger.Debugf("cannot rename %s to %s on %s: %v", rename.old, rename.new, disk, err)
 				}
 			}
 		}
 		if err := secbootDeleteContainerKey(dataDisk.DevPath(), "bootstrap-key"); err != nil {
-			logger.Debugf("cannot delete bootstrap-key on %s", dataDisk.DevPath())
+			logger.Debugf("cannot delete bootstrap-key on %s: %v", dataDisk.DevPath(), err)
 		}
 		if err := secbootDeleteContainerKey(saveDisk.DevPath(), "bootstrap-key"); err != nil {
-			logger.Debugf("cannot delete bootstrap-key on %s", saveDisk.DevPath())
+			logger.Debugf("cannot delete bootstrap-key on %s: %v", saveDisk.DevPath(), err)
 		}
 
-		// The last clean up
-		if err := secbootDeleteContainerKey(saveDisk.DevPath(), "default"); err != nil {
-			logger.Debugf("could remove default on %s", saveDisk.DevPath())
+		savePlatformKeyslots, err := secbootListContainerUnlockKeyNames(saveDisk.DevPath())
+		if err != nil {
+			logger.Debugf("cannot list keyslots on %s, ignoring disk: %v", saveDisk.DevPath(), err)
+			return
 		}
-		if err := secbootRenameContainerKey(saveDisk.DevPath(), "snapd-reprovision-default", "default"); err != nil {
-			logger.Debugf("cannot rename snapd-reprovision-default to default on %s", saveDisk.DevPath())
+		for _, k := range savePlatformKeyslots {
+			if k == "snapd-reprovision-default" {
+				// The last clean up. The reason we want to do it last is because this is the key
+				// we will use to detect incomplete reprovision. It is important to do that
+				// cleanup when re executing reprovision, since all "new" are wrong and must
+				// be removed before we try to do step 1 (rename existing key slots). But those
+				// "new" keys are wrong only if the "snapd-reprovision-default" of save matches
+				// the protector key file.
+				if err := secbootDeleteContainerKey(saveDisk.DevPath(), "default"); err != nil {
+					logger.Debugf("could not remove default on %s: %v", saveDisk.DevPath(), err)
+				}
+				if err := secbootRenameContainerKey(saveDisk.DevPath(), "snapd-reprovision-default", "default"); err != nil {
+					logger.Debugf("cannot rename snapd-reprovision-default to default on %s: %v", saveDisk.DevPath(), err)
+				}
+				break
+			}
 		}
 	}
 
@@ -244,6 +260,7 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 			// For example we could store a digest of the plainkey's primary key, and if it matches, we could
 			// just jump to after step 6.
 			if oldKeyMatches {
+				logger.Debugf("detected previous reprovision attempt was unsuccessful, reverting.")
 				// We must have been restarted in the middle, before step 6.
 				// The backed up keys are the correct ones, we need to cancel that previous
 				// attempt and then go back to expected name.
@@ -284,6 +301,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		}
 		revertReprovisionAttempt()
 	}()
+
+	osutil.MaybeInjectFault("reprovision-rename")
 
 	// Step 1. rename existing keyslots that we will overwrite
 
@@ -327,6 +346,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		}
 	}
 
+	osutil.MaybeInjectFault("reprovision-re-bootstrap-containers")
+
 	dataContainer, err := convertToBootstrappedContainer(dataDisk.DevPath())
 	if err != nil {
 		return err
@@ -349,6 +370,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		return err
 	}
 
+	osutil.MaybeInjectFault("reprovision-plainkey-and-primary-key")
+
 	// Steps:
 	//  2. Generate primary key
 	//  3. Create plainkey protector key (and save to keyslot)
@@ -368,6 +391,11 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		return err
 	}
 
+	// Note: the default keyslot unlock key for dataContainer
+	// will be generated and registered in the sealing of keys
+	// within call to boot.MakeRunnableReprovision.
+	saveContainer.RegisterKeyAsUsed(primaryKey, unlockPlainKey)
+
 	kernelInfo, err := snapstateKernelInfo(st, deviceCtx)
 	if err != nil {
 		return fmt.Errorf("cannot get kernel info: %v", err)
@@ -380,6 +408,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 
 	// No volumes option, we reprovision without PIN or passphrase
 	var volumesAuth *device.VolumesAuthOptions = nil
+
+	osutil.MaybeInjectFault("reprovision-post-install-check")
 
 	errorDetails, err := secbootPreinstallCheckAction(setupData.checkContext, context.Background(), &secboot.PreinstallAction{Action: secboot.ActionNone})
 	if err != nil {
@@ -405,6 +435,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		return err
 	}
 
+	osutil.MaybeInjectFault("reprovision-make-runnable")
+
 	// Steps:
 	//   4. Reprovision the TPM
 	//   5. Create new set of keyslots
@@ -429,6 +461,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 		return fmt.Errorf("cannot make system runnable: %v", err)
 	}
 
+	osutil.MaybeInjectFault("reprovision-reset-state")
+
 	// Prepare for step 7 (swap the state)
 	var oldState any
 	errGetState := st.Get("fde", &oldState)
@@ -440,6 +474,8 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 	// system rebuild it on reboot instead of having a state that
 	// does not match.
 	st.Set("fde", nil)
+
+	osutil.MaybeInjectFault("reprovision-save-protector-key")
 
 	// Step 6. write the protector key
 	if err := keysSaveProtectorKey(protectorKey, saveKeyPath); err != nil {
@@ -453,6 +489,10 @@ func (m *DeviceManager) doReprovision(t *state.Task, _ *tomb.Tomb) error {
 
 	// Step 7. swap the state
 	st.Set("fde", fdeState)
+
+	// It is now safe to replace the keys in kernel keyring.
+	saveContainer.CommitUsedKey()
+	dataContainer.CommitUsedKey()
 
 	// Steps:
 	//   8. Erase nv counters associated to the old keys

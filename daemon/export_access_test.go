@@ -23,6 +23,7 @@ import (
 	"net/http"
 
 	"github.com/snapcore/snapd/polkit"
+	"github.com/snapcore/snapd/seclog"
 )
 
 type (
@@ -41,6 +42,16 @@ type (
 	ByActionAccess               = byActionAccess
 
 	InterfaceAccessReqs = interfaceAccessReqs
+
+	InterfaceAccessMatch = interfaceAccessMatch
+
+	AccessLevel = accessLevel
+)
+
+const (
+	AccessLevelOpen          = accessLevelOpen
+	AccessLevelAuthenticated = accessLevelAuthenticated
+	AccessLevelRoot          = accessLevelRoot
 )
 
 var (
@@ -65,18 +76,20 @@ func MockPolkitCheckAuthorization(new func(pid int32, uid uint32, actionId strin
 	}
 }
 
-func MockCgroupSnapNameFromPid(new func(pid int) (string, error)) (restore func()) {
-	old := cgroupSnapNameFromPid
-	cgroupSnapNameFromPid = new
-	return func() {
-		cgroupSnapNameFromPid = old
-	}
-}
-
-func MockRequireInterfaceApiAccess(new func(d *Daemon, r *http.Request, ucred *ucrednet, reqs InterfaceAccessReqs) *apiError) (restore func()) {
+func MockRequireInterfaceApiAccess(new func(d *Daemon, r *http.Request, ucred *ucrednet, reqs InterfaceAccessReqs, rec *authzRecorder, level AccessLevel) (InterfaceAccessMatch, *apiError)) (restore func()) {
 	old := requireInterfaceApiAccess
 	requireInterfaceApiAccess = new
 	return func() {
 		requireInterfaceApiAccess = old
 	}
+}
+
+// AuthzGrantedReason returns the grant reason stored on rec.
+func AuthzGrantedReason(rec *authzRecorder) seclog.GrantReason {
+	return rec.reasonGranted
+}
+
+// AuthzDeniedReason returns the denial reason stored on rec.
+func AuthzDeniedReason(rec *authzRecorder) seclog.DenialReason {
+	return rec.reasonDenied
 }

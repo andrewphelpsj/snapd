@@ -21,10 +21,11 @@ package snapstate_test
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	. "gopkg.in/check.v1"
@@ -47,11 +48,32 @@ type catalogStore struct {
 
 	ops     []string
 	tooMany bool
+	// wrapCtxErr wraps ctx errors
+	wrapCtxErr bool
+	// sectionsStarted, if set, receives a signal when Sections is called.
+	// Sections then waits for cancellation and, if set, sectionsRelease.
+	sectionsStarted  chan struct{}
+	sectionsCanceled chan struct{}
+	sectionsRelease  chan struct{}
+}
+
+func (r *catalogStore) ctxErr(ctx context.Context) error {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	if r.wrapCtxErr {
+		return fmt.Errorf("cannot perform request: %w", err)
+	}
+	return err
 }
 
 func (r *catalogStore) WriteCatalogs(ctx context.Context, w io.Writer, a store.SnapAdder) error {
 	if ctx == nil || !auth.IsEnsureContext(ctx) {
 		panic("Ensure marked context required")
+	}
+	if err := r.ctxErr(ctx); err != nil {
+		return err
 	}
 	r.ops = append(r.ops, "write-catalog")
 	if r.tooMany {
@@ -66,6 +88,19 @@ func (r *catalogStore) WriteCatalogs(ctx context.Context, w io.Writer, a store.S
 func (r *catalogStore) Sections(ctx context.Context, _ *auth.UserState) ([]string, error) {
 	if ctx == nil || !auth.IsEnsureContext(ctx) {
 		panic("Ensure marked context required")
+	}
+	if r.sectionsStarted != nil {
+		r.sectionsStarted <- struct{}{}
+		<-ctx.Done()
+		if r.sectionsCanceled != nil {
+			close(r.sectionsCanceled)
+		}
+		if r.sectionsRelease != nil {
+			<-r.sectionsRelease
+		}
+	}
+	if err := r.ctxErr(ctx); err != nil {
+		return nil, err
 	}
 	r.ops = append(r.ops, "sections")
 	if r.tooMany {
@@ -116,6 +151,7 @@ func (s *catalogRefreshTestSuite) TestCatalogRefresh(c *C) {
 
 	err := cr7.Ensure()
 	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 
 	// next now has a delta (next refresh is not before t0 + delta)
 	c.Check(snapstate.NextCatalogRefresh(cr7).Before(t0.Add(cr7.GetCatalogRefreshDelayWithDelta())), Equals, false)
@@ -130,9 +166,6 @@ func (s *catalogRefreshTestSuite) TestCatalogRefresh(c *C) {
 
 	c.Check(osutil.FileExists(dirs.SnapCommandsDB), Equals, true)
 	dump, err := advisor.DumpCommands()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Assert(err, IsNil)
 	c.Check(dump, DeepEquals, map[string]string{
 		"foo": `[{"snap":"foo","version":"1.0"}]`,
@@ -150,10 +183,8 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshTooMany(c *C) {
 	t0 := time.Now()
 
 	err := cr7.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Check(err, IsNil) // !!
+	snapstate.WaitCatalogRefresh(cr7)
 
 	// next now has a delta (next refresh is not before t0 + delta)
 	c.Check(snapstate.NextCatalogRefresh(cr7).Before(t0.Add(cr7.GetCatalogRefreshDelayWithDelta())), Equals, false)
@@ -172,6 +203,7 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshNotNeeded(c *C) {
 	snapstate.MockCatalogRefreshNextRefresh(cr7, time.Now().Add(1*time.Hour))
 	err := cr7.Ensure()
 	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 	c.Check(s.store.ops, HasLen, 0)
 	c.Check(osutil.FileExists(dirs.SnapSectionsFile), Equals, false)
 	c.Check(osutil.FileExists(dirs.SnapNamesFile), Equals, false)
@@ -190,6 +222,7 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshNewEnough(c *C) {
 	c.Check(snapstate.NextCatalogRefresh(cr7).IsZero(), Equals, true)
 	err := cr7.Ensure()
 	c.Assert(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 	c.Check(s.store.ops, HasLen, 0)
 	next := snapstate.NextCatalogRefresh(cr7)
 	// next is no longer zero,
@@ -208,10 +241,8 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshTooNew(c *C) {
 
 	cr7 := snapstate.NewCatalogRefresh(s.state)
 	err := cr7.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 	c.Check(s.store.ops, DeepEquals, []string{"sections", "write-catalog"})
 }
 
@@ -227,6 +258,7 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshUnSeeded(c *C) {
 
 	err := cr7.Ensure()
 	c.Assert(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 
 	// next should be still zero as we skipped refresh on unseeded system
 	c.Check(snapstate.NextCatalogRefresh(cr7).IsZero(), Equals, true)
@@ -252,6 +284,7 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshUC20InstallMode(c *C) {
 
 	err := cr7.Ensure()
 	c.Assert(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 
 	// next should be still zero as we skipped refresh on unseeded system
 	c.Check(snapstate.NextCatalogRefresh(cr7).IsZero(), Equals, true)
@@ -279,6 +312,7 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshSkipWhenTesting(c *C) {
 
 	err := cr7.Ensure()
 	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 
 	c.Check(s.store.ops, HasLen, 0)
 
@@ -295,10 +329,8 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshSkipWhenTesting(c *C) {
 	c.Check(snapstate.NextCatalogRefresh(cr7).IsZero(), Equals, true)
 
 	err = cr7.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
 	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
 
 	// refresh happened
 	c.Check(s.store.ops, DeepEquals, []string{"sections", "write-catalog"})
@@ -306,6 +338,124 @@ func (s *catalogRefreshTestSuite) TestCatalogRefreshSkipWhenTesting(c *C) {
 	c.Check(dirs.SnapSectionsFile, testutil.FilePresent)
 	c.Check(dirs.SnapNamesFile, testutil.FilePresent)
 	c.Check(dirs.SnapCommandsDB, testutil.FilePresent)
+}
+
+func (s *catalogRefreshTestSuite) testCatalogRefreshShutDown(c *C, wrapCtxErr bool) {
+	s.store.wrapCtxErr = wrapCtxErr
+
+	cr7 := snapstate.NewCatalogRefresh(s.state)
+	cr7.ShutDown()
+
+	err := cr7.Ensure()
+	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(cr7)
+	// store was not contacted after shutdown
+	c.Check(s.store.ops, HasLen, 0)
+}
+
+func (s *catalogRefreshTestSuite) TestCatalogRefreshShutDown(c *C) {
+	wrapCtxErr := false
+	s.testCatalogRefreshShutDown(c, wrapCtxErr)
+}
+
+func (s *catalogRefreshTestSuite) TestCatalogRefreshShutDownWrappedCancelError(c *C) {
+	// simulates an HTTP client wrapping context.Canceled (e.g. *url.Error).
+	wrapCtxErr := true
+	s.testCatalogRefreshShutDown(c, wrapCtxErr)
+}
+
+func (s *catalogRefreshTestSuite) TestCatalogRefreshEnsureDoesNotBlockAndStopWaits(c *C) {
+	s.store.sectionsStarted = make(chan struct{})
+	s.store.sectionsCanceled = make(chan struct{})
+	s.store.sectionsRelease = make(chan struct{})
+
+	cr7 := snapstate.NewCatalogRefresh(s.state)
+	var releaseOnce sync.Once
+	releaseSections := func() {
+		releaseOnce.Do(func() { close(s.store.sectionsRelease) })
+	}
+	defer func() {
+		releaseSections()
+		cr7.Stop()
+	}()
+
+	ensureDone := make(chan error, 1)
+	go func() {
+		ensureDone <- cr7.Ensure()
+	}()
+
+	// the refresh is in a background goroutine
+	select {
+	case <-s.store.sectionsStarted:
+	case <-time.After(time.Second):
+		c.Fatal("catalog refresh did not start")
+	}
+	select {
+	case err := <-ensureDone:
+		c.Assert(err, IsNil)
+	case <-time.After(time.Second):
+		c.Fatal("Ensure blocked on the catalog refresh")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		cr7.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-s.store.sectionsCanceled:
+	case <-time.After(time.Second):
+		c.Fatal("Stop did not cancel the catalog request")
+	}
+	select {
+	case <-stopDone:
+		c.Fatal("Stop returned before the catalog refresh finished")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	releaseSections()
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		c.Fatal("Stop did not return after the catalog refresh finished")
+	}
+
+	c.Check(s.store.ops, HasLen, 0)
+	c.Check(dirs.SnapSectionsFile, testutil.FileAbsent)
+}
+
+func (s *catalogRefreshTestSuite) TestCatalogRefreshSecondEnsureDuringRefresh(c *C) {
+	s.store.sectionsStarted = make(chan struct{}, 2)
+
+	cr7 := snapstate.NewCatalogRefresh(s.state)
+	defer cr7.Stop()
+
+	err := cr7.Ensure()
+	c.Assert(err, IsNil)
+	select {
+	case <-s.store.sectionsStarted:
+	case <-time.After(time.Second):
+		c.Fatal("catalog refresh did not start")
+	}
+
+	// Make another refresh due while the first store request is still blocked.
+	snapstate.MockCatalogRefreshNextRefresh(cr7, time.Time{})
+	ensureDone := make(chan error, 1)
+	go func() {
+		ensureDone <- cr7.Ensure()
+	}()
+	select {
+	case err := <-ensureDone:
+		c.Assert(err, IsNil)
+	case <-time.After(time.Second):
+		c.Fatal("Ensure blocked while another catalog refresh was running")
+	}
+
+	select {
+	case <-s.store.sectionsStarted:
+		c.Fatal("second catalog refresh started while the first was running")
+	case <-time.After(10 * time.Millisecond):
+	}
 }
 
 func (s *catalogRefreshTestSuite) TestSnapStoreOffline(c *C) {
@@ -320,11 +470,8 @@ func (s *catalogRefreshTestSuite) TestSnapStoreOffline(c *C) {
 	setStoreAccess(s.state, nil)
 
 	err = af.Ensure()
-	if errors.Is(err, advisor.ErrNotSupported) {
-		c.Skip("bolt is not supported")
-	}
-
 	c.Check(err, IsNil)
+	snapstate.WaitCatalogRefresh(af)
 
 	c.Check(s.store.ops, DeepEquals, []string{"sections", "write-catalog"})
 }

@@ -187,6 +187,7 @@ func sideloadOrTrySnap(ctx context.Context, c *Command, body io.ReadCloser, boun
 	flags.RemoveSnapPath = true
 	flags.Unaliased = isTrue(form, "unaliased")
 	flags.IgnoreRunning = isTrue(form, "ignore-running")
+	flags.AllowUnsupportedInstances = isTrue(form, "allow-unsupported-instances")
 	trasactionVals := form.Values["transaction"]
 	flags.Transaction = client.TransactionPerSnap
 	if len(trasactionVals) > 0 {
@@ -341,7 +342,7 @@ func sideloadInfo(st *state.State, uploads []*uploadedContainer, flags sideloadF
 
 	onlyComponents := make([]sideloadComponentInfo, 0)
 	for _, ci := range components {
-		snapName := ci.sideInfo.Component.SnapName
+		snapName := ci.sideInfo.Component.SnapName.String()
 
 		ssi, ok := snapByName(snapName)
 		if !ok {
@@ -440,7 +441,7 @@ func sideloadManySnaps(ctx context.Context, st *state.State, uploads []*uploaded
 	}
 
 	for _, ci := range slInfo.components {
-		snapToComps[ci.sideInfo.Component.SnapName] = append(snapToComps[ci.sideInfo.Component.SnapName], ci.sideInfo.Component.ComponentName)
+		snapToComps[ci.sideInfo.Component.SnapName.String()] = append(snapToComps[ci.sideInfo.Component.SnapName.String()], ci.sideInfo.Component.ComponentName)
 	}
 
 	msg := multiPathInstallMessage(slInfo)
@@ -621,7 +622,7 @@ func readInfoAndDeriveSideInfo(st *state.State, tempPath string, origPath string
 		if err != nil {
 			return nil, BadRequest("cannot read snap file: %v", err)
 		}
-		info.SideInfo = snap.SideInfo{RealName: info.SnapName()}
+		info.SideInfo = snap.SideInfo{RealName: info.SnapName().String()}
 		return info, nil
 	}
 
@@ -652,7 +653,7 @@ func readInfoAndDeriveSideInfo(st *state.State, tempPath string, origPath string
 	if si != nil {
 		info.SideInfo = *si
 	} else {
-		info.SideInfo = snap.SideInfo{RealName: info.SnapName()}
+		info.SideInfo = snap.SideInfo{RealName: info.SnapName().String()}
 	}
 
 	return info, nil
@@ -705,10 +706,10 @@ func readComponentInfoAndDeriveSideInfo(
 			return nil, nil, BadRequest("cannot infer component name from filename: %v", upload.filename, err)
 		}
 		cref = ref
-		instanceName = ref.SnapName
+		instanceName = ref.SnapName.String()
 	} else {
 		snapName, _ := snap.SplitInstanceName(upload.instanceName)
-		cref = naming.NewComponentRef(snapName, upload.componentName)
+		cref = naming.NewComponentRef(naming.SnapName(snapName), upload.componentName)
 	}
 
 	// we should still override the potentially derived snap name with the given
@@ -786,7 +787,7 @@ func readComponentInfoDangerous(
 	// the component
 	instanceName := upload.instanceName
 	if instanceName == "" {
-		instanceName = compInfo.Component.SnapName
+		instanceName = compInfo.Component.SnapName.String()
 	}
 
 	info, apiErr := matchingSnap(instanceName, compInfo.Component)
@@ -988,16 +989,16 @@ func trySnap(st *state.State, trydir string, flags snapstate.Flags) Response {
 	}
 
 	// TODO consider support for trying snaps plus components
-	tset, err := snapstateTryPath(st, info.InstanceName(), trydir, flags)
+	tset, err := snapstateTryPath(st, info.InstanceName().String(), trydir, flags)
 	if err != nil {
-		return errToResponse(err, []string{info.InstanceName()}, BadRequest, "cannot try %s: %s", trydir)
+		return errToResponse(err, []string{info.InstanceName().String()}, BadRequest, "cannot try %s: %s", trydir)
 	}
 
 	msg := fmt.Sprintf(i18n.G("Try %q snap from %s"), info.InstanceName(), trydir)
-	chg := newChange(st, trySnapChangeKind, msg, []*state.TaskSet{tset}, []string{info.InstanceName()})
+	chg := newChange(st, trySnapChangeKind, msg, []*state.TaskSet{tset}, []string{info.InstanceName().String()})
 	chg.Set("api-data", map[string]any{
 		"snap-name":  info.InstanceName(),
-		"snap-names": []string{info.InstanceName()},
+		"snap-names": []string{info.InstanceName().String()},
 	})
 
 	ensureStateSoon(st)

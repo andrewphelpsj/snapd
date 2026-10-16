@@ -181,11 +181,13 @@ func (iface *adbSupportInterface) vendorIDs() []int {
 
 func init() {
 	registerIface(&adbSupportInterface{commonInterface: commonInterface{
-		name:                  "adb-support",
-		summary:               adbSupportSummary,
-		implicitOnCore:        true,
-		implicitOnClassic:     true,
-		baseDeclarationSlots:  adbSupportBaseDeclarationSlots,
-		connectedPlugAppArmor: adbSupportConnectedPlugAppArmor,
+		name:                     "adb-support",
+		summary:                  adbSupportSummary,
+		implicitOnCore:           true,
+		implicitOnClassic:        true,
+		baseDeclarationSlots:     adbSupportBaseDeclarationSlots,
+		connectedPlugAppArmor:    adbSupportConnectedPlugAppArmor,
+		parallelInstancesPlugErr: errParallelInstancesSupportInterfacePlug,
+		parallelInstancesSlotErr: errParallelInstancesSystemSlot,
 	}})
 }

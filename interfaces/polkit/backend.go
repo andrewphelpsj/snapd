@@ -35,6 +35,7 @@ import (
 	"github.com/snapcore/snapd/interfaces"
 	"github.com/snapcore/snapd/osutil"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/strutil"
 	"github.com/snapcore/snapd/timings"
 )
@@ -78,7 +79,7 @@ func (b *Backend) Setup(appSet *interfaces.SnapAppSet, opts interfaces.Confineme
 	}
 
 	// Get the policy files that this snap should have
-	glob := polkitPolicyName(instanceName.TODOInstanceName(), "*")
+	glob := polkitPolicyName(instanceName.String(), "*")
 	content := derivePoliciesContent(spec.(*Specification), appSet)
 	dir := dirs.SnapPolkitPolicyDir
 	// If we do not have any content to write, there is no point
@@ -94,7 +95,7 @@ func (b *Backend) Setup(appSet *interfaces.SnapAppSet, opts interfaces.Confineme
 	}
 
 	// Get the rule files that this snap should have
-	glob = polkitRuleName(instanceName.TODOInstanceName(), "*")
+	glob = polkitRuleName(instanceName.String(), "*")
 	content = deriveRulesContent(spec.(*Specification), appSet)
 	// Rules directory should already exist as it comes with distro packaging, don't attempt
 	// to create it to avoid messing with permissions and just fail if it doesn't exist.
@@ -109,14 +110,14 @@ func (b *Backend) Setup(appSet *interfaces.SnapAppSet, opts interfaces.Confineme
 // Remove removes polkit policy and rule files of a given snap.
 //
 // This method should be called after removing a snap.
-func (b *Backend) Remove(snapName string) error {
+func (b *Backend) Remove(instanceName naming.InstanceName) error {
 	// Removal must be best-effort to avoid leaving dangling files on early errors.
-	glob := polkitPolicyName(snapName, "*")
+	glob := polkitPolicyName(instanceName.String(), "*")
 	_, _, policyErr := osutil.EnsureDirState(dirs.SnapPolkitPolicyDir, glob, nil)
-	glob = polkitRuleName(snapName, "*")
+	glob = polkitRuleName(instanceName.String(), "*")
 	_, _, ruleErr := osutil.EnsureDirState(dirs.SnapPolkitRuleDir, glob, nil)
 	if policyErr != nil || ruleErr != nil {
-		return fmt.Errorf("cannot synchronize polkit files for snap %q: %s", snapName, strutil.JoinErrors(policyErr, ruleErr))
+		return fmt.Errorf("cannot synchronize polkit files for snap %q: %s", instanceName, strutil.JoinErrors(policyErr, ruleErr))
 	}
 	return nil
 }
@@ -130,7 +131,7 @@ func derivePoliciesContent(spec *Specification, appSet *interfaces.SnapAppSet) m
 	}
 	content := make(map[string]osutil.FileState, len(policies)+1)
 	for nameSuffix, policyContent := range policies {
-		filename := polkitPolicyName(appSet.InstanceName().TODOInstanceName(), nameSuffix)
+		filename := polkitPolicyName(appSet.InstanceName().String(), nameSuffix)
 		content[filename] = &osutil.MemoryFileState{
 			Content: policyContent,
 			Mode:    0644,
@@ -148,7 +149,7 @@ func deriveRulesContent(spec *Specification, appSet *interfaces.SnapAppSet) map[
 	}
 	content := make(map[string]osutil.FileState, len(rules)+1)
 	for nameSuffix, ruleContent := range rules {
-		filename := polkitRuleName(appSet.InstanceName().TODOInstanceName(), nameSuffix)
+		filename := polkitRuleName(appSet.InstanceName().String(), nameSuffix)
 		content[filename] = &osutil.MemoryFileState{
 			Content: ruleContent,
 			Mode:    0644,

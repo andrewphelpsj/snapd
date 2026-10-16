@@ -37,11 +37,13 @@ const firmwareUpdaterSupportBaseDeclarationSlots = `
 
 func init() {
 	registerIface(&commonInterface{
-		name:                 "firmware-updater-support",
-		summary:              firmwareUpdaterSupportSummary,
-		implicitOnCore:       true,
-		implicitOnClassic:    true,
-		baseDeclarationPlugs: firmwareUpdaterSupportBaseDeclarationPlugs,
-		baseDeclarationSlots: firmwareUpdaterSupportBaseDeclarationSlots,
+		name:                     "firmware-updater-support",
+		summary:                  firmwareUpdaterSupportSummary,
+		implicitOnCore:           true,
+		implicitOnClassic:        true,
+		baseDeclarationPlugs:     firmwareUpdaterSupportBaseDeclarationPlugs,
+		baseDeclarationSlots:     firmwareUpdaterSupportBaseDeclarationSlots,
+		parallelInstancesPlugErr: errParallelInstancesSupportInterfacePlug,
+		parallelInstancesSlotErr: errParallelInstancesSystemSlot,
 	})
 }

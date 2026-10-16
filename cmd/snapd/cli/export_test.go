@@ -35,14 +35,13 @@ import (
 	"github.com/snapcore/snapd/sandbox/selinux"
 	"github.com/snapcore/snapd/seed/seedwriter"
 	"github.com/snapcore/snapd/snap"
+	"github.com/snapcore/snapd/snap/naming"
 	"github.com/snapcore/snapd/store"
 	"github.com/snapcore/snapd/store/tooling"
 	"github.com/snapcore/snapd/testutil"
 )
 
 var RunMain = run
-
-var ExitCodeFromError = exitCodeFromError
 
 var (
 	Client = mkClient
@@ -388,14 +387,6 @@ func MockCgroupSnapNameFromPid(f func(pid int) (string, error)) (restore func())
 	}
 }
 
-func MockLogindSessionClass(f func(ctx context.Context) (string, error)) (restore func()) {
-	old := logindSessionClass
-	logindSessionClass = f
-	return func() {
-		logindSessionClass = old
-	}
-}
-
 func MockSyscallUmount(f func(string, int) error) (restore func()) {
 	old := syscallUnmount
 	syscallUnmount = f
@@ -452,7 +443,7 @@ func MockOsChmod(f func(string, os.FileMode) error) (restore func()) {
 	}
 }
 
-func MockWaitWhileInhibited(f func(ctx context.Context, snapName string, notInhibited func(ctx context.Context) error, inhibited func(ctx context.Context, hint runinhibit.Hint, inhibitInfo *runinhibit.InhibitInfo) (cont bool, err error), interval time.Duration) (flock *osutil.FileLock, retErr error)) (restore func()) {
+func MockWaitWhileInhibited(f func(ctx context.Context, instanceName naming.InstanceName, notInhibited func(ctx context.Context) error, inhibited func(ctx context.Context, hint runinhibit.Hint, inhibitInfo *runinhibit.InhibitInfo) (cont bool, err error), interval time.Duration) (flock *osutil.FileLock, retErr error)) (restore func()) {
 	restore = testutil.Backup(&runinhibitWaitWhileInhibited)
 	runinhibitWaitWhileInhibited = f
 	return restore
@@ -460,7 +451,7 @@ func MockWaitWhileInhibited(f func(ctx context.Context, snapName string, notInhi
 
 func MockInhibitionFlow(flow inhibitionFlow) (restore func()) {
 	old := newInhibitionFlow
-	newInhibitionFlow = func(cli *client.Client, name string) inhibitionFlow {
+	newInhibitionFlow = func(cli *client.Client, name naming.InstanceName) inhibitionFlow {
 		return flow
 	}
 	return func() {
@@ -474,6 +465,10 @@ func MockAutostartSessionApps(f func(string) error) func() {
 	return func() {
 		autostartSessionApps = old
 	}
+}
+
+func MockSystemdInitSdNotifySocket(f func()) (restore func()) {
+	return testutil.Mock(&systemdInitSdNotifySocket, f)
 }
 
 func ParseQuotaValues(maxMemory, cpuMax, cpuSet, threadsMax, journalSizeMax, journalRateLimit string) (*client.QuotaValues, error) {

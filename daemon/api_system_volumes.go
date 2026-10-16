@@ -57,8 +57,9 @@ var systemVolumesCmd = &Command{
 			// deprecated
 			"check-passphrase": interfaceOpenAccess{Interfaces: []string{"snap-fde-control"}},
 			"check-pin":        interfaceOpenAccess{Interfaces: []string{"snap-fde-control"}},
-			// anyone can change passphrase or PIN given they know the old passphrase
-			// TODO:FDEM: rate limiting is needed to avoid DA lockout.
+			// anyone can change passphrase or PIN given they know the old passphrase.
+			// Attempts are rate-limited in fdestate.ChangeAuth (mirroring the TPM
+			// DA lockout counter) to avoid tripping actual hardware DA lockout.
 			"change-passphrase": interfaceOpenAccess{Interfaces: []string{"snap-fde-control"}},
 			"change-pin":        interfaceOpenAccess{Interfaces: []string{"snap-fde-control"}},
 			// only root and admins (authenticated via Polkit) can do recovery key
@@ -317,6 +318,10 @@ func postSystemVolumesActionJSON(c *Command, r *http.Request) Response {
 
 func postSystemVolumesActionGenerateRecoveryKey(c *Command) Response {
 	fdemgr := c.d.overlord.FDEManager()
+
+	st := c.d.overlord.State()
+	st.Lock()
+	defer st.Unlock()
 
 	rkey, keyID, err := fdeMgrGenerateRecoveryKey(fdemgr)
 	if err != nil {

@@ -124,7 +124,7 @@ func addConfigfilesForSystemLibrarySourcePaths(iface string, spec *configfiles.S
 		return err
 	}
 	content := strings.Join(slot.AppSet().ExpandSliceSnapVariablesInRootfs(libDirs), "\n") + "\n"
-	return spec.AddPathContent(systemLibrarySourcePath(slot.Snap().InstanceName(), slot.Name(), iface),
+	return spec.AddPathContent(systemLibrarySourcePath(slot.Snap().InstanceName().String(), slot.Name(), iface),
 		&osutil.MemoryFileState{Content: []byte(content), Mode: 0644})
 }
 

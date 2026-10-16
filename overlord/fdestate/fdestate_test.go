@@ -38,7 +38,6 @@ import (
 	"github.com/snapcore/snapd/gadget/device"
 	"github.com/snapcore/snapd/logger"
 	"github.com/snapcore/snapd/overlord/fdestate"
-	"github.com/snapcore/snapd/overlord/fdestate/backend"
 	"github.com/snapcore/snapd/overlord/snapstate"
 	"github.com/snapcore/snapd/overlord/state"
 	"github.com/snapcore/snapd/overlord/swfeats/swfeatstest"
@@ -113,11 +112,11 @@ func (s *fdeMgrSuite) TestAddRecoveryKey(c *C) {
 	manager := s.startedManager(c, onClassic)
 	s.mockCurrentKeys(c, []fdestate.KeyslotRef{{ContainerRole: "system-data", Name: "some-key"}}, nil)
 
-	_, recoveryKeyID, err := manager.GenerateRecoveryKey()
-	c.Assert(err, IsNil)
-
 	s.st.Lock()
 	defer s.st.Unlock()
+
+	_, recoveryKeyID, err := manager.GenerateRecoveryKey()
+	c.Assert(err, IsNil)
 
 	ts, err := fdestate.AddRecoveryKey(s.st, recoveryKeyID, []fdestate.KeyslotRef{
 		{ContainerRole: "system-data", Name: "default-recovery"},
@@ -147,23 +146,8 @@ func (s *fdeMgrSuite) TestAddRecoveryKey(c *C) {
 }
 
 func (s *fdeMgrSuite) TestAddRecoveryKeyErrors(c *C) {
-	defer fdestate.MockBackendNewInMemoryRecoveryKeyCache(func() backend.RecoveryKeyCache {
-		return &mockRecoveryKeyCache{
-			getRecoveryKey: func(keyID string) (rkeyInfo backend.CachedRecoverKey, err error) {
-				switch keyID {
-				case "good-key-id":
-					return backend.CachedRecoverKey{Expiration: time.Now().Add(100 * time.Hour)}, nil
-				case "expired-key-id":
-					return backend.CachedRecoverKey{Expiration: time.Now().Add(-100 * time.Hour)}, nil
-				default:
-					return backend.CachedRecoverKey{}, backend.ErrNoRecoveryKey
-				}
-			},
-		}
-	})()
-
 	const onClassic = true
-	s.startedManager(c, onClassic)
+	m := s.startedManager(c, onClassic)
 	s.mockCurrentKeys(c,
 		[]fdestate.KeyslotRef{{ContainerRole: "system-data", Name: "some-key-1"}},
 		[]fdestate.KeyslotRef{{ContainerRole: "system-data", Name: "some-key-2"}},
@@ -173,6 +157,14 @@ func (s *fdeMgrSuite) TestAddRecoveryKeyErrors(c *C) {
 
 	s.st.Lock()
 	defer s.st.Unlock()
+
+	rkeyGood := fdestate.RecoveryKeyInfo{}
+	rkeyGood.Expiration = time.Now().Add(100 * time.Hour) // not expired
+	c.Assert(m.SecretState().Set("good-key-id", &rkeyGood), IsNil)
+
+	rkeyExpired := fdestate.RecoveryKeyInfo{}
+	rkeyExpired.Expiration = time.Now().Add(-100 * time.Hour) // expired
+	c.Assert(m.SecretState().Set("expired-key-id", &rkeyExpired), IsNil)
 
 	// no key slots
 	_, err := fdestate.AddRecoveryKey(s.st, "good-key-id", nil)
@@ -312,11 +304,11 @@ func (s *fdeMgrSuite) testReplaceRecoveryKey(c *C, defaultKeyslots bool) {
 	onClassic := true
 	manager := s.startedManager(c, onClassic)
 
-	_, recoveryKeyID, err := manager.GenerateRecoveryKey()
-	c.Assert(err, IsNil)
-
 	s.st.Lock()
 	defer s.st.Unlock()
+
+	_, recoveryKeyID, err := manager.GenerateRecoveryKey()
+	c.Assert(err, IsNil)
 
 	var ts *state.TaskSet
 	if defaultKeyslots {
@@ -381,22 +373,6 @@ func (s *fdeMgrSuite) TestReplaceRecoveryKeyDefaultKeyslots(c *C) {
 }
 
 func (s *fdeMgrSuite) TestReplaceRecoveryKeyErrors(c *C) {
-	mockStore := &mockRecoveryKeyCache{
-		getRecoveryKey: func(keyID string) (rkeyInfo backend.CachedRecoverKey, err error) {
-			switch keyID {
-			case "good-key-id":
-				return backend.CachedRecoverKey{Expiration: time.Now().Add(100 * time.Hour)}, nil
-			case "expired-key-id":
-				return backend.CachedRecoverKey{Expiration: time.Now().Add(-100 * time.Hour)}, nil
-			default:
-				return backend.CachedRecoverKey{}, backend.ErrNoRecoveryKey
-			}
-		},
-	}
-	defer fdestate.MockBackendNewInMemoryRecoveryKeyCache(func() backend.RecoveryKeyCache {
-		return mockStore
-	})()
-
 	// mock no existing key slots, except one non-recovery keyslot
 	defer fdestate.MockDisksDMCryptUUIDFromMountPoint(func(mountpoint string) (string, error) {
 		switch mountpoint {
@@ -419,12 +395,19 @@ func (s *fdeMgrSuite) TestReplaceRecoveryKeyErrors(c *C) {
 
 	// initialize fde manager
 	onClassic := true
-	s.startedManager(c, onClassic)
+	m := s.startedManager(c, onClassic)
 
 	keyslots := []fdestate.KeyslotRef{{ContainerRole: "system-save", Name: "default-recovery"}}
 
 	s.st.Lock()
 	defer s.st.Unlock()
+
+	rkeyGood := fdestate.RecoveryKeyInfo{}
+	rkeyGood.Expiration = time.Now().Add(100 * time.Hour) // not expired
+	c.Assert(m.SecretState().Set("good-key-id", &rkeyGood), IsNil)
+	rkeyExpired := fdestate.RecoveryKeyInfo{}
+	rkeyExpired.Expiration = time.Now().Add(-100 * time.Hour) // expired
+	c.Assert(m.SecretState().Set("expired-key-id", &rkeyExpired), IsNil)
 
 	// invalid recovery key id
 	_, err := fdestate.ReplaceRecoveryKey(s.st, "bad-key-id", keyslots)
@@ -477,7 +460,7 @@ func (s *fdeMgrSuite) TestEnsureLoopLogging(c *C) {
 	swfeatstest.CheckEnsureLoopLogging("fdemgr.go", c, false)
 }
 
-func (s *fdeMgrSuite) testChangeAuth(c *C, authMode device.AuthMode, withWarning, defaultKeyslots bool) {
+func (s *fdeMgrSuite) testChangeAuth(c *C, authMode device.AuthMode, defaultKeyslots bool) {
 	keyslots := []fdestate.KeyslotRef{
 		{ContainerRole: "system-data", Name: "default"},
 	}
@@ -501,20 +484,21 @@ func (s *fdeMgrSuite) testChangeAuth(c *C, authMode device.AuthMode, withWarning
 		}
 	})()
 
+	now := time.Now()
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
 	// initialize fde manager
 	onClassic := true
-	s.startedManager(c, onClassic)
+	m := s.startedManager(c, onClassic)
 
 	s.st.Lock()
 	defer s.st.Unlock()
 
+	// reset the DA lockout rate limiter
+	fdestate.SetDALockoutRateLimit(s.st, fdestate.DALockoutMaxTokens, time.Now(), s.bootId)
+
 	logBuf, restore := logger.MockLogger()
 	defer restore()
-	if withWarning {
-		s.st.Unlock()
-		defer fdestate.MockChangeAuthOptionsInCache(s.st, "old-stale", "new-stale")()
-		s.st.Lock()
-	}
 
 	old := "old"
 	new := "new"
@@ -552,43 +536,35 @@ func (s *fdeMgrSuite) testChangeAuth(c *C, authMode device.AuthMode, withWarning
 	c.Assert(tsks[0].Get("auth-mode", &tskAuthMode), IsNil)
 	c.Check(tskAuthMode, Equals, authMode)
 
-	authOptions := fdestate.GetChangeAuthOptionsFromCache(s.st)
-	c.Check(authOptions.Old(), Equals, old)
-	c.Check(authOptions.New(), Equals, new)
+	// check authentication options are stored in the persistent secret state
+	var changeAuthID string
+	c.Assert(tsks[0].Get("change-auth-id", &changeAuthID), IsNil)
+	c.Check(changeAuthID, Not(Equals), "")
+	var authOptions fdestate.ExpiringChangeAuthOptions
+	c.Assert(m.SecretState().Get(changeAuthID, &authOptions), IsNil)
+	c.Check(authOptions.Old, Equals, old)
+	c.Check(authOptions.New, Equals, new)
+	c.Check(authOptions.Expiration.Equal(now.Add(5*time.Minute)), Equals, true)
 
-	if withWarning {
-		c.Check(logBuf.String(), Matches, ".*WARNING: authentication change options already exists in memory\n")
-	} else {
-		c.Check(logBuf.Len(), Equals, 0)
-	}
+	c.Check(logBuf.Len(), Equals, 0)
 }
 
 func (s *fdeMgrSuite) TestChangeAuthModePassphrase(c *C) {
 	const authMode = device.AuthModePassphrase
-	const withWarning = false
 	const defaultKeyslots = false
-	s.testChangeAuth(c, authMode, withWarning, defaultKeyslots)
-}
-
-func (s *fdeMgrSuite) TestChangeAuthWithCachedAuthOptionsWarning(c *C) {
-	const authMode = device.AuthModePassphrase
-	const withWarning = true
-	const defaultKeyslots = false
-	s.testChangeAuth(c, authMode, withWarning, defaultKeyslots)
+	s.testChangeAuth(c, authMode, defaultKeyslots)
 }
 
 func (s *fdeMgrSuite) TestChangeAuthModePassphraseDefaultKeyslots(c *C) {
 	const authMode = device.AuthModePassphrase
-	const withWarning = false
 	const defaultKeyslots = true
-	s.testChangeAuth(c, authMode, withWarning, defaultKeyslots)
+	s.testChangeAuth(c, authMode, defaultKeyslots)
 }
 
 func (s *fdeMgrSuite) TestChangeAuthModePIN(c *C) {
 	const authMode = device.AuthModePIN
-	const withWarning = false
 	const defaultKeyslots = false
-	s.testChangeAuth(c, authMode, withWarning, defaultKeyslots)
+	s.testChangeAuth(c, authMode, defaultKeyslots)
 }
 
 func (s *fdeMgrSuite) TestChangeAuthErrors(c *C) {
@@ -675,6 +651,333 @@ func (s *fdeMgrSuite) TestChangeAuthErrors(c *C) {
 	c.Check(err, testutil.ErrorIs, &snapstate.ChangeConflictError{})
 }
 
+func (s *fdeMgrSuite) TestConsumeDALockoutToken(c *C) {
+	// initialize fde manager so that the fde state exists
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	currentDALockoutCounter := 5
+	defer fdestate.MockSecbootGetDALockoutInfo(func() (*secboot.DALockoutInfo, error) {
+		return &secboot.DALockoutInfo{LockoutCounter: uint32(currentDALockoutCounter)}, nil
+	})()
+
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// rate limiter is initialized with value from the TPM DA lockout counter
+	// consume remaining tokens
+	for i := 0; i < fdestate.DALockoutMaxTokens-currentDALockoutCounter; i++ {
+		c.Assert(fdestate.ConsumeDALockoutToken(s.st), IsNil)
+	}
+
+	tokens, lastUpdate, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 0)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+
+	// the next attempt is throttled
+	err = fdestate.ConsumeDALockoutToken(s.st)
+	var throttledErr *fdestate.DALockoutThrottledError
+	c.Assert(errors.As(err, &throttledErr), Equals, true)
+	c.Check(throttledErr.RetryAfter.Equal(now.Add(fdestate.DALockoutRefillInterval)), Equals, true)
+
+	tokens, lastUpdate, err = fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 0)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+}
+
+func (s *fdeMgrSuite) TestConsumeDALockoutTokenLazySync(c *C) {
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// drain the bucket
+	c.Assert(fdestate.SetDALockoutRateLimit(s.st, 0, start, s.bootId), IsNil)
+
+	// throttled while empty
+	c.Check(fdestate.ConsumeDALockoutToken(s.st), ErrorMatches, "too many authentication attempts, try again after .*")
+
+	currentDALockoutCounter := 5
+	restore := fdestate.MockSecbootGetDALockoutInfo(func() (*secboot.DALockoutInfo, error) {
+		return &secboot.DALockoutInfo{LockoutCounter: uint32(currentDALockoutCounter)}, nil
+	})
+	defer restore()
+
+	// after one sync interval, TPM is consulted for the current DA lockout counter
+	now = start.Add(fdestate.DALockoutSyncInterval)
+	c.Assert(fdestate.ConsumeDALockoutToken(s.st), IsNil)
+	tokens, lastUpdate, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, fdestate.DALockoutMaxTokens-currentDALockoutCounter-1)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+
+	currentDALockoutCounter = 16
+
+	// after another sync interval, TPM is consulted again
+	now = now.Add(fdestate.DALockoutSyncInterval)
+	err = fdestate.ConsumeDALockoutToken(s.st)
+	c.Assert(err, ErrorMatches, "too many authentication attempts, try again after .*")
+	tokens, lastUpdate, err = fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 0)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+}
+
+func (s *fdeMgrSuite) TestConsumeDALockoutTokenNoSyncWithinInterval(c *C) {
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	// the TPM must not be consulted within the sync interval
+	defer fdestate.MockSecbootGetDALockoutInfo(func() (*secboot.DALockoutInfo, error) {
+		c.Fatal("unexpected TPM DA lockout counter read within the sync interval")
+		return nil, nil
+	})()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// seed a valid, partially-filled bucket for the current boot
+	c.Assert(fdestate.SetDALockoutRateLimit(s.st, 5, start, s.bootId), IsNil)
+
+	// consume a few tokens just before the sync interval elapses
+	now = start.Add(fdestate.DALockoutSyncInterval - time.Second)
+	for i := 0; i < 3; i++ {
+		c.Assert(fdestate.ConsumeDALockoutToken(s.st), IsNil)
+	}
+
+	// tokens were decremented locally without re-syncing with the TPM
+	tokens, lastUpdate, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 2)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+}
+
+func (s *fdeMgrSuite) TestConsumeDALockoutTokenBadBootID(c *C) {
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	now := time.Now()
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	currentDALockoutCounter := 9
+	defer fdestate.MockSecbootGetDALockoutInfo(func() (*secboot.DALockoutInfo, error) {
+		return &secboot.DALockoutInfo{LockoutCounter: uint32(currentDALockoutCounter)}, nil
+	})()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// full bucket, but with a bad boot ID forces a TPM counter sync.
+	c.Assert(fdestate.SetDALockoutRateLimit(s.st, fdestate.DALockoutMaxTokens, now, "bad-boot-id"), IsNil)
+
+	c.Assert(fdestate.ConsumeDALockoutToken(s.st), IsNil)
+	tokens, lastUpdate, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, fdestate.DALockoutMaxTokens-currentDALockoutCounter-1)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+}
+
+func (s *fdeMgrSuite) TestConsumeDALockoutTokenInLockoutZeroesTokens(c *C) {
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	defer fdestate.MockSecbootGetDALockoutInfo(func() (*secboot.DALockoutInfo, error) {
+		return &secboot.DALockoutInfo{LockoutCounter: 0, InLockout: true}, nil
+	})()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	err := fdestate.ConsumeDALockoutToken(s.st)
+	var throttledErr *fdestate.DALockoutThrottledError
+	c.Assert(errors.As(err, &throttledErr), Equals, true)
+	c.Check(throttledErr.RetryAfter.Equal(now.Add(fdestate.DALockoutRefillInterval)), Equals, true)
+
+	tokens, lastUpdate, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 0)
+	c.Check(lastUpdate.Equal(now), Equals, true)
+}
+
+func (s *fdeMgrSuite) TestConsumeDALockoutTokenInLockoutUsesLongerSyncInterval(c *C) {
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	start := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	now := start
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	calls := 0
+	defer fdestate.MockSecbootGetDALockoutInfo(func() (*secboot.DALockoutInfo, error) {
+		calls++
+		return &secboot.DALockoutInfo{LockoutCounter: 0, InLockout: true}, nil
+	})()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// First attempt initializes state from TPM and marks it as in-lockout.
+	err := fdestate.ConsumeDALockoutToken(s.st)
+	var throttledErr *fdestate.DALockoutThrottledError
+	c.Assert(errors.As(err, &throttledErr), Equals, true)
+	c.Check(calls, Equals, 1)
+
+	// Within the regular sync interval, the lockout state must avoid a TPM resync.
+	now = start.Add(fdestate.DALockoutSyncInterval)
+	err = fdestate.ConsumeDALockoutToken(s.st)
+	c.Assert(errors.As(err, &throttledErr), Equals, true)
+	c.Check(calls, Equals, 1)
+
+	// At the extended interval (3x), TPM is consulted again.
+	now = start.Add(3 * fdestate.DALockoutSyncInterval)
+	err = fdestate.ConsumeDALockoutToken(s.st)
+	c.Assert(errors.As(err, &throttledErr), Equals, true)
+	c.Check(calls, Equals, 2)
+}
+
+func (s *fdeMgrSuite) TestChangeAuthConsumesToken(c *C) {
+	keyslots := []fdestate.KeyslotRef{
+		{ContainerRole: "system-data", Name: "default"},
+	}
+	s.mockCurrentKeys(c, nil, keyslots)
+
+	defer fdestate.MockSecbootReadContainerKeyData(func(devicePath, slotName string) (secboot.KeyData, error) {
+		return &mockKeyData{authMode: device.AuthModePassphrase}, nil
+	})()
+
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// leave a single token in the bucket
+	c.Assert(fdestate.SetDALockoutRateLimit(s.st, 1, now, s.bootId), IsNil)
+
+	// first change-auth consumes the last token
+	_, err := fdestate.ChangeAuth(s.st, device.AuthModePassphrase, "old", "new", keyslots)
+	c.Assert(err, IsNil)
+
+	tokens, _, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 0)
+
+	// the next change-auth is throttled and creates no change
+	_, err = fdestate.ChangeAuth(s.st, device.AuthModePassphrase, "old", "new", keyslots)
+	var throttledErr *fdestate.DALockoutThrottledError
+	c.Assert(errors.As(err, &throttledErr), Equals, true)
+	c.Check(throttledErr.RetryAfter.Equal(now.Add(fdestate.DALockoutRefillInterval)), Equals, true)
+}
+
+func (s *fdeMgrSuite) TestReclaimDALockoutToken(c *C) {
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// nil bucket: reclaim is a no-op and does not error
+	c.Assert(fdestate.ReclaimDALockoutToken(s.st), IsNil)
+
+	// seed a partially-drained bucket, reclaim returns the token
+	c.Assert(fdestate.SetDALockoutRateLimit(s.st, 3, now, s.bootId), IsNil)
+	c.Assert(fdestate.ReclaimDALockoutToken(s.st), IsNil)
+
+	tokens, _, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 4)
+}
+
+func (s *fdeMgrSuite) TestDoChangeAuthReclaimsTokenOnSuccess(c *C) {
+	keyslots := []fdestate.KeyslotRef{
+		{ContainerRole: "system-data", Name: "default"},
+	}
+	s.mockCurrentKeys(c, nil, keyslots)
+
+	var failChange bool
+	defer fdestate.MockSecbootReadContainerKeyData(func(devicePath, slotName string) (secboot.KeyData, error) {
+		changeHandler := func(oldVal, newVal string) error {
+			if failChange {
+				return fmt.Errorf("boom")
+			}
+			return nil
+		}
+		return &mockKeyData{
+			authMode:         device.AuthModePassphrase,
+			changePassphrase: changeHandler,
+			writeTokenAtomic: func(devicePath, slotName string) error { return nil },
+		}, nil
+	})()
+
+	const onClassic = true
+	s.startedManager(c, onClassic)
+
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
+
+	s.st.Lock()
+	defer s.st.Unlock()
+
+	// seed a partially-drained bucket
+	c.Assert(fdestate.SetDALockoutRateLimit(s.st, 5, now, s.bootId), IsNil)
+
+	// successful change-auth: token consumed by ChangeAuth then reclaimed by handler
+	ts, err := fdestate.ChangeAuth(s.st, device.AuthModePassphrase, "old", "new", keyslots)
+	c.Assert(err, IsNil)
+	tokens, _, err := fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 4) // consumed, not yet reclaimed
+
+	chg := s.st.NewChange("change-auth", "...")
+	chg.AddTask(ts.Tasks()[0])
+	s.settle(c)
+
+	c.Check(chg.Status(), Equals, state.DoneStatus)
+	tokens, _, err = fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 5) // reclaimed on success
+
+	// failing change-auth: token consumed and NOT reclaimed
+	failChange = true
+	ts, err = fdestate.ChangeAuth(s.st, device.AuthModePassphrase, "old", "new", keyslots)
+	c.Assert(err, IsNil)
+	tokens, _, err = fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 4)
+
+	chg = s.st.NewChange("change-auth-fail", "...")
+	chg.AddTask(ts.Tasks()[0])
+	s.settle(c)
+
+	c.Check(chg.Status(), Equals, state.ErrorStatus)
+	tokens, _, err = fdestate.GetDALockoutRateLimit(s.st)
+	c.Assert(err, IsNil)
+	c.Check(tokens, Equals, 4) // stays consumed on failure
+}
+
 func (s *fdeMgrSuite) testSystemEncryptedFromState(c *C, hasEncryptedDisks bool) {
 	onClassic := true
 	if hasEncryptedDisks {
@@ -743,7 +1046,10 @@ func (s *fdeMgrSuite) testReplacePlatformKey(c *C, authMode device.AuthMode, def
 
 	// initialize fde manager
 	onClassic := true
-	s.startedManager(c, onClassic)
+	m := s.startedManager(c, onClassic)
+
+	now := time.Now()
+	defer fdestate.MockTimeNow(func() time.Time { return now })()
 
 	s.st.Lock()
 	defer s.st.Unlock()
@@ -815,10 +1121,17 @@ func (s *fdeMgrSuite) testReplacePlatformKey(c *C, authMode device.AuthMode, def
 		})
 	}
 
+	// check authentication options are stored in the persistent secret state
+	var volumesAuthID string
 	if authMode == device.AuthModeNone {
-		c.Check(s.st.Cached(fdestate.VolumesAuthOptionsKey()), IsNil)
+		c.Check(tsks[0].Get("volumes-auth-id", &volumesAuthID), testutil.ErrorIs, state.ErrNoState)
 	} else {
-		c.Check(s.st.Cached(fdestate.VolumesAuthOptionsKey()), Equals, volumesAuth)
+		c.Assert(tsks[0].Get("volumes-auth-id", &volumesAuthID), IsNil)
+		c.Check(volumesAuthID, Not(Equals), "")
+		var authOptions fdestate.ExpiringVolumesAuthOptions
+		c.Assert(m.SecretState().Get(volumesAuthID, &authOptions), IsNil)
+		c.Check(authOptions.VolumesAuthOptions, DeepEquals, *volumesAuth)
+		c.Check(authOptions.Expiration.Equal(now.Add(5*time.Minute)), Equals, true)
 	}
 }
 

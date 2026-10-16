@@ -605,11 +605,11 @@ func (s *imageSeeder) downloadSnaps(snapsToDownload []*seedwriter.SeedSnap, curS
 	byName := make(map[string]*seedwriter.SeedSnap, len(snapsToDownload))
 	revisions := make(map[string]snap.Revision)
 	beforeDownload := func(info *snap.Info, cinfos map[string]*snap.ComponentInfo) (string, map[string]string, error) {
-		sn := byName[info.SnapName()]
+		sn := byName[info.SnapName().String()]
 		if sn == nil {
 			return "", nil, fmt.Errorf("internal error: downloading unexpected snap %q", info.SnapName())
 		}
-		rev := revisions[info.SnapName()]
+		rev := revisions[info.SnapName().String()]
 		if rev.Unset() {
 			rev = info.Revision
 		}
@@ -639,7 +639,7 @@ func (s *imageSeeder) downloadSnaps(snapsToDownload []*seedwriter.SeedSnap, curS
 	}
 	snapToDownloadOptions := make([]tooling.SnapToDownload, len(snapsToDownload))
 	for i, sn := range snapsToDownload {
-		vss, rev, err := s.validationSetKeysAndRevisionForSnap(sn.SnapName())
+		vss, rev, err := s.validationSetKeysAndRevisionForSnap(sn.SnapName().String())
 		if err != nil {
 			return nil, err
 		}
@@ -660,8 +660,8 @@ func (s *imageSeeder) downloadSnaps(snapsToDownload []*seedwriter.SeedSnap, curS
 			channel = sn.Channel
 		}
 
-		byName[sn.SnapName()] = sn
-		revisions[sn.SnapName()] = rev
+		byName[sn.SnapName().String()] = sn
+		revisions[sn.SnapName().String()] = rev
 		snapToDownloadOptions[i].Snap = sn
 		snapToDownloadOptions[i].Channel = channel
 		snapToDownloadOptions[i].Revision = rev
@@ -698,7 +698,7 @@ func localSnapsWithID(snaps localSnapRefs) []*tooling.CurrentSnap {
 			continue
 		}
 		localSnaps = append(localSnaps, &tooling.CurrentSnap{
-			SnapName: sn.Info.SnapName(),
+			SnapName: sn.Info.SnapName().String(),
 			SnapID:   sn.Info.ID(),
 			Revision: sn.Info.Revision,
 			Epoch:    sn.Info.Epoch,
@@ -721,13 +721,13 @@ func (s *imageSeeder) downloadAllSnaps(localSnaps localSnapRefs, fetchAsserts se
 		}
 
 		for _, sn := range toDownload {
-			dlsn := downloadedSnaps[sn.SnapName()]
+			dlsn := downloadedSnaps[sn.SnapName().String()]
 			if err := s.w.SetRedirectChannel(sn, dlsn.RedirectChannel); err != nil {
 				return err
 			}
 
 			curSnaps = append(curSnaps, &tooling.CurrentSnap{
-				SnapName: sn.Info.SnapName(),
+				SnapName: sn.Info.SnapName().String(),
 				SnapID:   sn.Info.ID(),
 				Revision: sn.Info.Revision,
 				Epoch:    sn.Info.Epoch,
@@ -860,7 +860,7 @@ func (s *imageSeeder) warnOnUnassertedSnaps() error {
 	if len(unassertedSnaps) > 0 {
 		locals := make([]string, len(unassertedSnaps))
 		for i, sn := range unassertedSnaps {
-			locals[i] = sn.SnapName()
+			locals[i] = sn.SnapName().String()
 		}
 		fmt.Fprintf(Stderr, "WARNING: %s installed from local snaps disconnected from a store cannot be refreshed subsequently!\n", strutil.Quoted(locals))
 	}
@@ -963,7 +963,7 @@ func optionSnaps(opts *Options) ([]*seedwriter.OptionsSnap, []string, error) {
 			// --comp <snap>+<comp> implicitly pulls also the snap)
 			snapFound := false
 			for _, optSn := range optSnaps {
-				if optSn.Name == snapName {
+				if optSn.Name == snapName.String() {
 					optSn.Components = append(optSn.Components, optComp)
 					snapFound = true
 					break
@@ -971,7 +971,7 @@ func optionSnaps(opts *Options) ([]*seedwriter.OptionsSnap, []string, error) {
 			}
 			if !snapFound {
 				optSnaps = append(optSnaps, &seedwriter.OptionsSnap{
-					Name:       snapName,
+					Name:       snapName.String(),
 					Components: []seedwriter.OptionsComponent{optComp},
 				})
 			}
